@@ -172,26 +172,51 @@ async function confirmRestart() {
   if (restarting.value) return
   try {
     await ElMessageBox.confirm(
-      '重启 gateway？所有实例子进程会被回收 + 重启（等同于在服务器执行 digital-life restart，裸跑也自动重启）。',
+      '重启 gateway？所有实例子进程会被回收并重新 spawn（等同执行 digital-life restart）。\n\n'
+      + '约 5-10 秒完成；期间页面请求会短暂失败，请勿关闭浏览器。',
       '重启网关',
       { type: 'warning', confirmButtonText: '立即重启', cancelButtonText: '取消' },
     )
   } catch { return }
 
   restarting.value = true
+  const startedAt = Date.now()
   try {
     const d = await systemApi.gatewayRestart('console manual reset')
     if (d.error) {
       ElMessage.error(`重启失败：${d.error}`)
       return
     }
-    ElMessage.success('重启请求已发出，gateway 秒级自动 stop + start')
-    // gateway 重启期间 connection 会短暂断 —— 5s 后提示刷新
-    setTimeout(() => {
-      ElMessage.warning('若 5 秒后页面无响应，请刷新浏览器')
-    }, 5000)
+    ElMessage.info('重启请求已发出，等待新 master 复活…')
+
+    // gateway 重启期间请求会短暂失败；用指数 backoff 轮询 overview，
+    // 直到新 master 复活（最多 ~20s）。复活后立即 reload instances 顶栏数据。
+    const backoffMs = [1000, 1500, 2000, 2000, 2000, 3000, 3000, 5000]
+    let alive = false
+    let attempts = 0
+    for (const wait of backoffMs) {
+      await new Promise((r) => setTimeout(r, wait))
+      attempts++
+      try {
+        const resp = await systemApi.overview()
+        if (!resp.error) {
+          alive = true
+          await loadInstances()
+          break
+        }
+      } catch {
+        // 还没复活，继续等
+      }
+    }
+    const elapsed = Math.round((Date.now() - startedAt) / 1000)
+    if (alive) {
+      ElMessage.success(`✓ 网关已重启完成（${elapsed}s, ${attempts} 次轮询）`)
+    } else {
+      ElMessage.warning(`⚠ 网关可能仍在重启（${elapsed}s 无响应）。请刷新页面确认；若长期无响应请检查日志。`)
+    }
   } finally {
-    setTimeout(() => { restarting.value = false }, 8000)
+    // 给一点缓冲让用户看到结果
+    setTimeout(() => { restarting.value = false }, 1500)
   }
 }
 

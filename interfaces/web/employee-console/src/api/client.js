@@ -79,6 +79,7 @@ export const systemApi = {
   instances: () => api.get('/api/system/instances'),
   createInstance: (body) => api.post('/api/system/instances', body),
   patchInstance: (iid, body) => api.patch(`/api/system/instances/${iid}`, body),
+  deleteInstance: (iid) => api.delete(`/api/system/instances/${iid}`),
   resetAffair: (iid, body) => api.post(`/api/system/instances/${iid}/affairs/reset`, body),
   abortWake: (iid, wakeId, reason) => api.post(`/api/system/instances/${iid}/wakes/${wakeId}/abort`, { reason }),
   setInstanceActive: (iid, active, reason) => api.post(`/api/system/instances/${iid}/active`, { active, reason }),

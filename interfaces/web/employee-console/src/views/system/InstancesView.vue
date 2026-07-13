@@ -102,6 +102,14 @@
             :loading="toggling === inst.id"
             @click="toggleActive(inst)"
           >{{ inst.active ? '离线' : '上线' }}</el-button>
+          <el-button
+            size="small"
+            type="danger"
+            text
+            :loading="deleting === inst.id"
+            @click="confirmDelete(inst)"
+            style="margin-left: auto"
+          >删除</el-button>
         </div>
       </div>
     </div>
@@ -163,6 +171,7 @@ const instances = ref([])
 const edits = reactive({})
 const saving = ref('')
 const toggling = ref('')
+const deleting = ref('')
 
 const createDlg = reactive({
   open: false,
@@ -279,6 +288,34 @@ async function toggleActive(inst) {
     await load()
   } finally {
     toggling.value = ''
+  }
+}
+
+async function confirmDelete(inst) {
+  if (deleting.value) return
+  // 简单二次确认：显示 display_name + 不可恢复提示
+  try {
+    await ElMessageBox.confirm(
+      `彻底删除实例「${inst.display_name}」？\n\n`
+      + `将停止实例子进程 + 物理删除 apps/${inst.id.slice(0, 8)}…/ 整个目录：\n`
+      + `  · state.db（生命周期数据）\n`
+      + `  · runtime_log.db（运行日志）\n`
+      + `  · memories/、persona/、todos/\n`
+      + `  · secrets.env（API 凭证）\n\n`
+      + `此操作不可恢复。`,
+      '删除实例',
+      { type: 'error', confirmButtonText: '彻底删除', cancelButtonText: '取消' },
+    )
+  } catch { return }
+
+  deleting.value = inst.id
+  try {
+    const d = await systemApi.deleteInstance(inst.id)
+    if (d.error) return ElMessage.error(`删除失败：${d.error}`)
+    ElMessage.success(`✓ ${inst.display_name} 已删除（${d.disk || ''}）`)
+    await load()
+  } finally {
+    deleting.value = ''
   }
 }
 

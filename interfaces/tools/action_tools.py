@@ -2337,6 +2337,13 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
     reuse_raw = args.get("reuse")
     reason = (args.get("reason") or "").strip() or "休息"
     mental = (args.get("mental_context") or "").strip()
+    # confirm 语义：默认 False（reuse 路径下默认 True）。
+    #   - False：本次调用是"预览"，返回睡前提示卡但不真睡——模型应看完提示卡
+    #     决定要不要补刀（更新过期待办、固化新想法），处理完再调 confirm=true。
+    #   - True：真的进 BLOCKED + 结束 session。
+    _SENTINEL_UNSET = object()
+    confirm_raw = args.get("confirm", _SENTINEL_UNSET)
+    confirm_explicit = confirm_raw if confirm_raw is not _SENTINEL_UNSET else None
     # 处理 reuse（可能是 int 或 str）
     reuse_id: int = 0
     if reuse_raw not in (None, "", 0):
@@ -2361,6 +2368,9 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
 
     # ─── 路径 A：reuse=<alarm_id>，复用现有 timer ───
     if reuse_id > 0:
+        # reuse 场景：confirm 默认 True（你已知有闹钟在那里，没有歧义）。
+        # 除非显式 confirm=False，否则直接睡觉。
+        confirm_a = True if confirm_explicit is None else confirm_explicit
         # 找对应的 timer 闹钟
         target_alarm = None
         for a in list_pending_alarms("timer"):
@@ -2374,6 +2384,27 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
             )
 
         target_fire_at = target_alarm.get("fire_at") or ""
+        if not confirm_a:
+            # 预览模式：不进 BLOCKED，不合并 mental，直接返回提示卡
+            existing_payload_preview = {}
+            try:
+                import json as _j_preview
+                existing_payload_preview = _j_preview.loads(target_alarm.get("payload_json") or "{}") or {}
+            except Exception:
+                pass
+            return _j({
+                "preview": True,
+                "will_reuse_alarm_id": reuse_id,
+                "fire_at": target_fire_at,
+                "existing_reason": existing_payload_preview.get("reason", ""),
+                "previous_mental_context": (existing_payload_preview.get("mental_context") or "").strip(),
+                "pre_rest_card": _build_pre_rest_card() or None,
+                "message": (
+                    f"⏸️ 预览：将复用 timer 闹钟 #{reuse_id}（{target_fire_at}）休息。"
+                    "看完提示卡决定要不要补 todo/project 的事，处理完再调 "
+                    f"rest(reuse={reuse_id}, confirm=true) 真正入眠。"
+                ),
+            })
         # 合并 mental_context（如果模型传了 mental_context）
         import json as _j_reuse
         try:
@@ -2510,6 +2541,21 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
             f"→ 换个时间 → rest(until='')"
         )
 
+    # until 路径的 confirm 默认 False（预览优先）；显式传 confirm=True 才真睡
+    confirm_b = True if confirm_explicit is True else False
+    if not confirm_b:
+        # 预览：返回提示卡但不进 BLOCKED，不设闹钟
+        return _j({
+            "preview": True,
+            "will_set_until": target_iso,
+            "pre_rest_card": _build_pre_rest_card() or None,
+            "message": (
+                f"⏸️ 预览：将在 {target_iso} 休息（新建 timer 闹钟）。"
+                "看完提示卡决定要不要补 todo/project 的事，处理完再调 "
+                f"rest(until='{target_iso}', confirm=true) 真正入眠。"
+            ),
+        })
+
     # 不重叠 → 设新闹钟
     payload = {
         "reason": reason,
@@ -2575,22 +2621,38 @@ registry.register(
     schema={
         "name": "rest",
         "description": (
-            "进入休息 — 设闹钟 + 结束 session。**until 或 reuse 必填一个。**\n"
+            "进入休息 — 设闹钟 + 结束 session。**两步式语义**：\n"
             "\n"
-            "用法 1：rest(until='2026-06-15T15:00:00+08:00', mental_context='15:00 收盘扫描') "
-            "→ 设新闹钟，到点唤醒\n"
-            "用法 2：rest(reuse=42, mental_context='补充...') "
-            "→ 复用现有 timer 闹钟 #42（不新建，但要继续等它）\n"
+            "## 第一次调用（confirm=false，默认）：返回睡前提示卡，**不真的睡**\n"
+            "  rest(until='2026-06-15T15:00:00+08:00', mental_context='给未来自己的留言')\n"
+            "  → 系统返回一份『睡前提示卡』：待办盘点 / 项目交付物 / 今日灵感碎片 "
+            "/ 闹钟清单。**仔细看一眼**，决定要不要在睡前补一刀：\n"
+            "    - 有过期/挂住的 in_progress 待办 → todo(id, action='done'/'paused')\n"
+            "    - 有新想法该固化 → todo(action='create', ...)\n"
+            "    - 项目有未收尾的事 → 更新 deliverable 或 todo\n"
+            "  若这几类都已处理干净 / 没事可做 → 直接进入第二次调用。\n"
             "\n"
-            "重复检测：until 和现有 timer 闹钟 ±10min 内重叠时 → 报错提示 \"和 #X 重叠\" + "
-            "X 的 id，这一刻请调 rest(reuse=X) 复用，或换 until 时间。\n"
+            "## 第二次调用（confirm=true）：真的睡\n"
+            "  rest(until='2026-06-15T15:00:00+08:00', confirm=true)\n"
+            "  → 设新闹钟、进 BLOCKED、结束 session。下一次醒来在 until。\n"
             "\n"
-            "mental_context 是给未来自己的留言——你做到了啥，下一步做啥，有什么卡点。"
-            "reuse 复用时如果传 mental_context，会追加到原备注后面。\n"
+            "## 复用语义（还有第三种）：rest(reuse=<id>)\n"
+            "  rest(reuse=42, confirm=true) → 复用现有 timer 闹钟 #42（不新建）。\n"
+            "  reuse 默认 confirm=true —— 复用意味着你已经知道有闹钟在那里，没有"
+            "重复设闹钟的歧义，直接睡就好。\n"
             "\n"
-            "你醒来不只靠闹钟：你的精力恢复之后，系统会自动叫醒你，不必非等到 until 那一刻。"
-            "所以不要默认「下次醒来 = 晚上 复盘 / 早上某点」——闹钟只是兜底，精力先回来就先醒。"
-            "until 请设你真正想被叫醒的最近时间，不要设得过早。"
+            "## until 重叠检测\n"
+            "  until=X 但 ±10min 内已有 timer → 返回错误 \"和 #X 重叠\" + X 的 id。"
+            "这一刻请调 rest(reuse=X, confirm=true) 复用，或换 until 时间。\n"
+            "\n"
+            "## mental_context\n"
+            "  给未来自己的留言——你做到哪、下一步做啥、有什么卡点。reuse 复用时如果"
+            "传，会追加到原备注后面。\n"
+            "\n"
+            "## 醒来不只靠闹钟\n"
+            "  精力恢复之后，系统会自动叫醒你，不必非等到 until 那一刻。所以不要默认"
+            "「下次醒来 = 晚上 复盘 / 早上某点」——闹钟只是兜底，精力先回来就先醒。"
+            "until 请设你真正想被叫醒的最近时间。"
             "精力状态不参与判断。累了或没事做都可以休息。"
         ),
         "parameters": {
@@ -2607,6 +2669,15 @@ registry.register(
                 "hours": {"type": "number", "description": "（兼容）睡多少小时，until 优先"},
                 "mental_context": {"type": "string", "description": "给未来自己的留言"},
                 "reason": {"type": "string", "description": "为何休息（简短说明，内部记录）"},
+                "confirm": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "是否真的进入休息。default=false：仅返回睡前提示卡，**不真的睡**——"
+                        "你应看完提示卡决定要不要补刀（更新过期待办、新建固化想法、收尾项目），"
+                        "处理完再调 confirm=true。reuse 场景下默认 true（你已知有闹钟在那里）。"
+                    ),
+                },
             },
         },
     },

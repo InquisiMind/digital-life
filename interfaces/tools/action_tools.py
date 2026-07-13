@@ -2304,6 +2304,46 @@ def _build_pre_rest_card() -> str:
     return "## 🌙 睡前提示卡（rest 前 30 秒扫一眼，决定要不要补一刀）\n\n" + "\n".join(parts)
 
 
+# 每个 session 至多展示一次提示卡——第一次调 rest 弹卡让模型先看，
+# 第二次调（任意参数）视为已确认，直接进 sleep，不再二次打扰。
+# key = session_id；session 结束后由 GC 清理失效 key（见 _gc_session_rest_state）
+_rest_card_shown_sessions: set[str] = set()
+
+
+def _get_request_session_id(**kwargs) -> str:
+    """从 dispatch kwargs 取 session_id；为空则用空串作为 fallback key。"""
+    return str(kwargs.get("session_id") or "")
+
+
+def _should_show_pre_rest_card(args: Dict[str, Any], **kwargs) -> bool:
+    """判断本次 rest 调用要不要展示提示卡（True=展示预览，False=直接睡）。
+
+    逻辑：
+      - 显式 confirm=true → 直接睡（不展示）
+      - 本次 session 已展示过提示卡 → 直接睡（避免重复打扰）
+      - 其它 → 展示（首次调用）
+    """
+    if bool(args.get("confirm")):
+        return False
+    sid = _get_request_session_id(**kwargs)
+    if sid and sid in _rest_card_shown_sessions:
+        return False
+    return True
+
+
+def _mark_pre_rest_card_shown(**kwargs) -> None:
+    sid = _get_request_session_id(**kwargs)
+    if sid:
+        _rest_card_shown_sessions.add(sid)
+
+
+def _gc_session_rest_state(active_session_ids: set[str]) -> None:
+    """session 结束后由 scheduler 调一次清理，避免 set 无限增长。"""
+    _rest_card_shown_sessions.difference_update(
+        {sid for sid in list(_rest_card_shown_sessions) if sid not in active_session_ids}
+    )
+
+
 def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
     """rest — 设闹钟 + 结束 session。
 
@@ -2337,13 +2377,11 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
     reuse_raw = args.get("reuse")
     reason = (args.get("reason") or "").strip() or "休息"
     mental = (args.get("mental_context") or "").strip()
-    # confirm 语义：默认 False（reuse 路径下默认 True）。
-    #   - False：本次调用是"预览"，返回睡前提示卡但不真睡——模型应看完提示卡
-    #     决定要不要补刀（更新过期待办、固化新想法），处理完再调 confirm=true。
-    #   - True：真的进 BLOCKED + 结束 session。
-    _SENTINEL_UNSET = object()
-    confirm_raw = args.get("confirm", _SENTINEL_UNSET)
-    confirm_explicit = confirm_raw if confirm_raw is not _SENTINEL_UNSET else None
+    # 提示卡展示逻辑：每个 session 多至多展示一次。
+    # 第一次调 rest（不管 until / reuse / 都重叠场景）→ 返回提示卡 + mark shown
+    # 第二次调（任意参数 / 甚至不带 confirm）→ 直接真睡
+    # 显式 confirm=true 视为"模型已确认"→ 直接睡，跳过预览
+    show_card = _should_show_pre_rest_card(args, **kwargs)
     # 处理 reuse（可能是 int 或 str）
     reuse_id: int = 0
     if reuse_raw not in (None, "", 0):
@@ -2368,9 +2406,6 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
 
     # ─── 路径 A：reuse=<alarm_id>，复用现有 timer ───
     if reuse_id > 0:
-        # reuse 场景：confirm 默认 True（你已知有闹钟在那里，没有歧义）。
-        # 除非显式 confirm=False，否则直接睡觉。
-        confirm_a = True if confirm_explicit is None else confirm_explicit
         # 找对应的 timer 闹钟
         target_alarm = None
         for a in list_pending_alarms("timer"):
@@ -2384,8 +2419,9 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
             )
 
         target_fire_at = target_alarm.get("fire_at") or ""
-        if not confirm_a:
-            # 预览模式：不进 BLOCKED，不合并 mental，直接返回提示卡
+        if show_card:
+            # 首次调用：预览模式，返回提示卡 + mark shown
+            _mark_pre_rest_card_shown(**kwargs)
             existing_payload_preview = {}
             try:
                 import json as _j_preview
@@ -2401,8 +2437,7 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
                 "pre_rest_card": _build_pre_rest_card() or None,
                 "message": (
                     f"⏸️ 预览：将复用 timer 闹钟 #{reuse_id}（{target_fire_at}）休息。"
-                    "看完提示卡决定要不要补 todo/project 的事，处理完再调 "
-                    f"rest(reuse={reuse_id}, confirm=true) 真正入眠。"
+                    "看完提示卡决定要不要补 todo/project 的事，处理完再调 rest 任意参数进入休息。"
                 ),
             })
         # 合并 mental_context（如果模型传了 mental_context）
@@ -2530,9 +2565,10 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
         except Exception:
             continue
 
-    # 重叠 → 报错让模型去复用
+    # 重叠 → 返回提示信息。若本 session 还没展示过提示卡，附带 pre_rest_card
+    # 让模型先扫一眼要不要补 todo/project，处理完再 reuse 或换时间。
     if overlap_alarm_id:
-        return registry.tool_error(
+        overlap_msg = (
             f"until={target_iso} 和现有 timer 闹钟 #{overlap_alarm_id}"
             f"（{overlap_alarm_fire_at}"
             + (f"，reason={overlap_alarm_reason}" if overlap_alarm_reason else "")
@@ -2540,11 +2576,27 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
             f"→ 复用现有 → rest(reuse={overlap_alarm_id}, mental_context='给未来的留言')\n"
             f"→ 换个时间 → rest(until='')"
         )
+        if show_card:
+            _mark_pre_rest_card_shown(**kwargs)
+            return _j({
+                "preview": True,
+                "overlap": True,
+                "overlap_alarm_id": overlap_alarm_id,
+                "pre_rest_card": _build_pre_rest_card() or None,
+                "error_hint": overlap_msg,
+                "message": (
+                    f"⏸️ 预览：你设的 until={target_iso} 与现有 timer #{overlap_alarm_id}"
+                    f"（{overlap_alarm_fire_at}）重叠。下面是你的睡前提示卡，看完决定："
+                    f"补完待办后再 rest(reuse={overlap_alarm_id}) 真睡，"
+                    f"或 rest(until='换的时间')。"
+                ),
+            })
+        # 已展示过提示卡 → 直接返 overlap error（让模型选 reuse 或换时间，重复调不会卡）
+        return registry.tool_error(overlap_msg)
 
-    # until 路径的 confirm 默认 False（预览优先）；显式传 confirm=True 才真睡
-    confirm_b = True if confirm_explicit is True else False
-    if not confirm_b:
-        # 预览：返回提示卡但不进 BLOCKED，不设闹钟
+    # until 路径：首次调（未展示提示卡）→ 预览；显式 confirm=true / 已展示 → 真睡
+    if show_card:
+        _mark_pre_rest_card_shown(**kwargs)
         return _j({
             "preview": True,
             "will_set_until": target_iso,
@@ -2552,7 +2604,7 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
             "message": (
                 f"⏸️ 预览：将在 {target_iso} 休息（新建 timer 闹钟）。"
                 "看完提示卡决定要不要补 todo/project 的事，处理完再调 "
-                f"rest(until='{target_iso}', confirm=true) 真正入眠。"
+                f"rest(until='{target_iso}') 真睡——同一个 session 第二次调直接进入休息。"
             ),
         })
 
@@ -2623,27 +2675,27 @@ registry.register(
         "description": (
             "进入休息 — 设闹钟 + 结束 session。**两步式语义**：\n"
             "\n"
-            "## 第一次调用（confirm=false，默认）：返回睡前提示卡，**不真的睡**\n"
-            "  rest(until='2026-06-15T15:00:00+08:00', mental_context='给未来自己的留言')\n"
-            "  → 系统返回一份『睡前提示卡』：待办盘点 / 项目交付物 / 今日灵感碎片 "
-            "/ 闹钟清单。**仔细看一眼**，决定要不要在睡前补一刀：\n"
-            "    - 有过期/挂住的 in_progress 待办 → todo(id, action='done'/'paused')\n"
-            "    - 有新想法该固化 → todo(action='create', ...)\n"
+            "## 第一次调用（默认）：返回睡前提示卡，**不真的睡**\n"
+            "  rest(until='2026-06-15T15:00:00+08:00')\n"
+            "  → 系统返回『睡前提示卡』：待办盘点（过期 in_progress）/ 项目交付物 / "
+            "今日灵感碎片 / 闹钟清单。**仔细看一眼**——这是你睡觉前**唯一一次**有机会"
+            "收尾的事（下次醒来精力恢或闹钟到了你才回来）：\n"
+            "    - 过期/挂住的 in_progress 待办 → todo(id, action='done'/'paused')\n"
+            "    - 新想法该固化 → todo(action='create', ...)\n"
             "    - 项目有未收尾的事 → 更新 deliverable 或 todo\n"
-            "  若这几类都已处理干净 / 没事可做 → 直接进入第二次调用。\n"
             "\n"
-            "## 第二次调用（confirm=true）：真的睡\n"
-            "  rest(until='2026-06-15T15:00:00+08:00', confirm=true)\n"
-            "  → 设新闹钟、进 BLOCKED、结束 session。下一次醒来在 until。\n"
+            "## 第二次调用：真的睡\n"
+            "  处理完（或确认没事）再调 rest() **任意参数** 直接进入休息——同一个 session "
+            "第二次调 rest 不再弹提示卡，直接 set_alarm + 进 BLOCKED。\n"
+            "  可选 confirm=true 显式跳过提示卡（极少用）；首次调用默认走预览。\n"
             "\n"
-            "## 复用语义（还有第三种）：rest(reuse=<id>)\n"
-            "  rest(reuse=42, confirm=true) → 复用现有 timer 闹钟 #42（不新建）。\n"
-            "  reuse 默认 confirm=true —— 复用意味着你已经知道有闹钟在那里，没有"
-            "重复设闹钟的歧义，直接睡就好。\n"
+            "## reuse=<id>\n"
+            "  rest(reuse=42) → 复用现有 timer #42（不新建）。第一次同样先展示提示卡、"
+            "再次调用 reuse 才真睡。这覆盖了 overlap 触发后的自然转身。\n"
             "\n"
             "## until 重叠检测\n"
-            "  until=X 但 ±10min 内已有 timer → 返回错误 \"和 #X 重叠\" + X 的 id。"
-            "这一刻请调 rest(reuse=X, confirm=true) 复用，或换 until 时间。\n"
+            "  until=X 但 ±10min 内已有 timer → 第一次返『提示卡 + 重叠提示』让你先看一眼、"
+            "处理完调 rest(reuse=X) 真睡，或换 until 时间。\n"
             "\n"
             "## mental_context\n"
             "  给未来自己的留言——你做到哪、下一步做啥、有什么卡点。reuse 复用时如果"
@@ -2673,9 +2725,9 @@ registry.register(
                     "type": "boolean",
                     "default": False,
                     "description": (
-                        "是否真的进入休息。default=false：仅返回睡前提示卡，**不真的睡**——"
-                        "你应看完提示卡决定要不要补刀（更新过期待办、新建固化想法、收尾项目），"
-                        "处理完再调 confirm=true。reuse 场景下默认 true（你已知有闹钟在那里）。"
+                        "显式跳过提示卡、直接真睡。default=false。一般不用传——"
+                        "第二次调 rest（任意参数）也会自动真睡（系统记忆同 session 已展示过）。"
+                        "仅在极少数场景（已处理完毕、希望一次调用直接睡）传 confirm=true。"
                     ),
                 },
             },

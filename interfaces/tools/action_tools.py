@@ -2157,6 +2157,153 @@ registry.register(
 
 # ──────────────────────────────── rest ────────────────────────────────
 
+def _build_pre_rest_card() -> str:
+    """睡前的简短提示卡：让模型在 rest 前扫一眼"是否还有该改/该记的事"。
+
+    设计原则：
+      - **轻量、提示为主**——只显示统计 + 突出的几条详情，不强制 rest 前必做某事。
+        模型看到后自己决定要不要在 sleep 前补一刀。
+      - **只在"有事"时给详情**——大量行枯燥统计反而被当作噪音忽略。
+      - **覆盖三类容易睡一觉就忘的事**：
+        1. todo：长期挂在 in_progress、过期的、可能做完没改状态的
+        2. 项目交付物：过期/长期未推进的（按用户选定的"项目相关"项）
+        3. 记忆碎片：今天新增的 idea/doubt/warning（"要不要固化为 todo"避免丢失）
+        4. 闹钟：8 小时内会触发的，让模型心里有数（不要起冲突）
+
+    失败时返回空串（绝不让 rest 流程因为提示卡出错而崩）。
+    """
+    try:
+        from infrastructure.config import get_app_instance_id
+        iid = get_app_instance_id() or ""
+    except Exception:
+        iid = ""
+
+    parts: list[str] = []
+
+    # ── 1. 待办（todo）盘点 ──
+    try:
+        from domain.todos.crud import list_tasks
+        from domain.lifecycle.clock import beijing_now_dt
+        from datetime import timedelta
+        now = beijing_now_dt()
+        in_progress = list_tasks(status_filter="in_progress", assignee_instance=iid, include_unassigned=False) if iid else list_tasks(status_filter="in_progress")
+        planned = list_tasks(status_filter="planned", assignee_instance=iid, include_unassigned=False) if iid else list_tasks(status_filter="planned")
+
+        # 过期识别：deadline < now 的 in_progress
+        overdue_in_progress: list[dict] = []
+        from datetime import datetime
+        for t in in_progress:
+            dl = t.get("deadline") or ""
+            if dl:
+                try:
+                    ddt = datetime.fromisoformat(dl.replace("Z", "+00:00")) if "T" in dl else None
+                    if ddt and ddt < now:
+                        overdue_in_progress.append(t)
+                except Exception:
+                    pass
+
+        open_total = len(in_progress) + len(planned)
+        if open_total == 0 and not overdue_in_progress:
+            # 没有任意开口的待办 → 该段不输出，避免每次 rest 都污染返回
+            pass
+        else:
+            parts.append(
+                f"📋 待办：{len(in_progress)} in_progress · {len(planned)} planned"
+                + (f" · ⚠️ 其中 {len(overdue_in_progress)} 个 in_progress 已过期未关" if overdue_in_progress else "")
+            )
+            for t in overdue_in_progress[:3]:  # 最多列 3 条
+                tid = t.get("id", "?")
+                title = (t.get("title") or t.get("description") or "")[:40]
+                parts.append(f"  - #{tid} 过期：{title}（决定 done / paused / 继续？）")
+    except Exception as exc:
+        logger.debug("pre_rest_card todos gather failed: %s", exc)
+
+    # ── 2. 项目交付物（仅 active 项目的过期 deliverable） ──
+    try:
+        from domain.project.loader import load_all_projects
+        from domain.project.crud import list_deliverables
+        from domain.project._infra import get_db as _get_proj_db
+        proj_db = _get_proj_db()
+        active_projects = {pid: cfg for pid, cfg in (load_all_projects() or {}).items()
+                           if cfg.manager == iid or any(p.assignees and iid in p.assignees for p in (cfg.positions or []))}
+        overdue_dl_count = 0
+        for pid, cfg in active_projects.items():
+            delivs = list_deliverables(proj_db, project_id=pid)
+            for d in delivs:
+                status = str(d.get("status") or "").lower()
+                if status in ("done", "cancelled"):
+                    continue
+                due = d.get("due_date") or ""
+                if due:
+                    try:
+                        from datetime import datetime
+                        from domain.lifecycle.clock import beijing_now_dt
+                        due_dt = datetime.fromisoformat(due.replace("Z", "+00:00"))
+                        if due_dt < beijing_now_dt():
+                            overdue_dl_count += 1
+                    except Exception:
+                        pass
+        if active_projects:
+            parts.append(f"📁 项目：参与 {len(active_projects)} 个 active 项目" +
+                         (f" · ⚠️ {overdue_dl_count} 个交付物过期" if overdue_dl_count else ""))
+    except Exception as exc:
+        logger.debug("pre_rest_card project gather failed: %s", exc)
+
+    # ── 3. 记忆碎片（INSIGHTS.md）──
+    try:
+        from domain.memory.memory.consciousness.runtime import read_insights
+        todays_insights = read_insights(days_back=1)
+        todays_count = len([l for l in todays_insights.splitlines() if l.startswith("- [")]) if todays_insights else 0
+        if todays_count > 0:
+            # 按 kind 分一下
+            kinds_count: dict[str, int] = {}
+            for line in todays_insights.splitlines():
+                m_k = line.split("]", 1)[0].lstrip("- [").strip()
+                if m_k:
+                    kinds_count[m_k] = kinds_count.get(m_k, 0) + 1
+            kind_str = " / ".join(f"{k}={v}" for k, v in sorted(kinds_count.items()))
+            parts.append(
+                f"💡 今日灵感碎片：{todays_count} 条（{kind_str}）"
+                f"—— 若有该固化成 todo 的（idea 转任务、doubt 待验证、warning 待避坑），"
+                f"建议在 sleep 前用 todo create 或 task_note 记下，避免睡一觉就忘"
+            )
+    except Exception as exc:
+        logger.debug("pre_rest_card insights gather failed: %s", exc)
+
+    # ── 4. 闹钟（未来 8 小时会触发的） ──
+    try:
+        from domain.lifecycle.alarms import list_pending_alarms
+        from domain.lifecycle.clock import beijing_now_dt
+        from datetime import datetime, timedelta
+        horizon = beijing_now_dt() + timedelta(hours=8)
+        upcoming: list[dict] = []
+        # timer + routine 都看
+        for kind in ("timer", "routine"):
+            for a in list_pending_alarms(kind):
+                fa = a.get("fire_at") or ""
+                try:
+                    fa_dt = datetime.fromisoformat(fa.replace("Z", "+00:00"))
+                    if fa_dt <= horizon:
+                        upcoming.append({"id": a.get("id"), "kind": kind, "fire_at": fa,
+                                         "reason": (a.get("payload_json") or "")[:60]})
+                except Exception:
+                    continue
+        upcoming.sort(key=lambda x: x["fire_at"])
+        if upcoming:
+            preview = "、".join(
+                f"#{u['id']}({u['fire_at'][11:16] if len(u['fire_at']) > 16 else u['fire_at']})"
+                for u in upcoming[:4]
+            )
+            parts.append(f"⏰ 未来 8h 内 {len(upcoming)} 个闹钟会触发：{preview}（避免起冲突）")
+    except Exception as exc:
+        logger.debug("pre_rest_card alarms gather failed: %s", exc)
+
+    if not parts:
+        return ""
+
+    return "## 🌙 睡前提示卡（rest 前 30 秒扫一眼，决定要不要补一刀）\n\n" + "\n".join(parts)
+
+
 def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
     """rest — 设闹钟 + 结束 session。
 
@@ -2271,6 +2418,7 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
             "previous_mental_context": previous_mental,
             "merged_mental_context": new_mental if mental else None,
             "message": f"复用 timer 闹钟 #{reuse_id}（{target_fire_at}），已结束 session",
+            "pre_rest_card": _build_pre_rest_card() or None,
         })
 
     # ─── 路径 B：解析 until/hours 设新闹钟 ───
@@ -2385,6 +2533,7 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
             "wake_at": target_iso,
             "mental_context": mental,
             "message": f"进入休息，预计 {target_iso} 醒来。闹钟已设置。当你的精力恢复之后，系统会自然而然地叫醒你（不必等到闹钟）。",
+            "pre_rest_card": _build_pre_rest_card() or None,
         })
 
     intent = WaitIntent(
@@ -2416,6 +2565,7 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
         "wake_at": target_iso,
         "mental_context": mental,
         "message": f"进入休息，预计 {target_iso} 醒来。闹钟已设置。当你的精力恢复之后，系统会自然而然地叫醒你（不必等到闹钟）。",
+        "pre_rest_card": _build_pre_rest_card() or None,
     })
 
 

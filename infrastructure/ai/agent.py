@@ -1463,18 +1463,14 @@ def _render_signal_message(ev: dict[str, Any]) -> str:
             + f"\n{body_inner}"
         )
 
-    # 3. 信号头 + 自动已读 + 显式提示把 chat_id 传给 express_to_human
-    chat_id_hint = payload.get("chat_id", "")
-    chat_hint_line = (
-        f"回复时调用 express_to_human(chat_id=\"{chat_id_hint}\") "
-        f"把 chat_id 显式传过去，避免误发到其它对话/群。"
-        if chat_id_hint
-        else "回复时确认 chat_id（私聊还是群）再发，避免误发到其它对话/群。"
-    )
+    # 3. 信号头 + 自动已读提示。chat_id 已经在 yaml 模板渲染的正文里
+    # （私聊：「对话：{chat_id}」，群：「群：{chat_name}（{chat_id}）」），
+    # 不再额外硬塞「必须 express_to_human(chat_id=xxx)」之类的具体调用方式——
+    # 模型看到 chat_id 就知道回哪里，参数细节交给模型按工具 schema 自己决定。
     return (
         f"[#{eid} · 新消息到达 - 会话中途注入]\n"
         f"{rendered_body}\n"
-        f"> 注意：消息已自动标记为已读，稍后回复即可。{chat_hint_line}"
+        f"> 注意：消息已自动标记为已读，稍后回复即可。"
     )
 
     def _notify_manual_events(self, events: list[dict], messages: list[dict[str, Any]]) -> None:

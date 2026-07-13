@@ -14,7 +14,11 @@ from __future__ import annotations
 
 
 def test_render_private_message_contains_chat_id_and_sender():
-    """私聊（kind=message）渲染：含 `对话：{chat_id}` + sender + text + chat_id 提示。"""
+    """私聊（kind=message）渲染：含 `对话：{chat_id}` + sender + text。
+
+    契约：chat_id 必须出现在文末，模型自己看就知道回哪里——
+    不需要硬塞『必须调用 express_to_human(chat_id=xxx)』这种具体调用教条。
+    """
     from infrastructure.ai.agent import _render_signal_message
 
     ev = {
@@ -34,14 +38,16 @@ def test_render_private_message_contains_chat_id_and_sender():
 
     # 契约 1：含信号头（让模型在 mid-session noise 里识别这是新消息）
     assert "#9999 · 新消息到达" in out
-    # 契约 2：含 chat_id（私聊模板的 `对话：{chat_id}` + 回复提示）
+    # 契约 2：含 chat_id（私聊模板的 `对话：{chat_id}`）
     assert "oc_private_chat_abc123" in out, "私聊 chat_id 必须出现"
     assert "对话" in out, "私聊模板必须含『对话』字段标识"
     # 契约 3：sender 和 text
     assert "张浩普" in out
     assert "你能听见我吗？" in out
-    # 契约 4：回复提示显式附带 chat_id
-    assert 'express_to_human(chat_id="oc_private_chat_abc123")' in out
+    # 契约 4：不硬塞具体调用方式——chat_id 给到就行，调用细节交给模型
+    assert 'express_to_human(chat_id=' not in out, (
+        "不应硬塞具体调用语法；给到 chat_id 即可"
+    )
 
 
 def test_render_group_message_contains_chat_name_and_id():
@@ -122,11 +128,13 @@ def test_render_fallback_when_yaml_template_missing():
     assert "oc_fallback_xyz" in out, "fallback 模板也必须含 chat_id"
     assert "tester" in out
     assert "fallback test" in out
-    assert "express_to_human" in out, "fallback 必须同样提示如何回复"
 
 
-def test_render_without_chat_id_still_has_hint():
-    """无 chat_id 时（飞书侧异常）也有提示让模型确认 chat_id 再回复。"""
+def test_render_without_chat_id_still_works():
+    """无 chat_id 时（飞书侧异常）仍能渲染、不崩。
+
+    模型自己会读懂这条没指定对话/群的消息——不需要额外提示。
+    """
     from infrastructure.ai.agent import _render_signal_message
 
     ev = {
@@ -135,6 +143,6 @@ def test_render_without_chat_id_still_has_hint():
         "payload": {"text": "test", "sender_name": "x"},  # 没 chat_id
     }
     out = _render_signal_message(ev)
-    # fallback 路径或 yaml 路径 chat_id 缺失时，应仍含让模型"确认 chat_id 再发"的提示
-    assert "chat_id" in out, "无 chat_id 时仍应有提示让模型自己确认"
-    assert "避免误发" in out
+    # 不崩、有 sender 和 text 即可
+    assert "test" in out
+    assert "#5" in out

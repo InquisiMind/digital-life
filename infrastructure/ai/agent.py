@@ -1383,30 +1383,25 @@ class AIAgent:
             self._notify_manual_events(manual_events, messages)
 
     def _consume_human_events(self, events: list[dict], messages: list[dict[str, Any]]) -> None:
-        """Show message/group_message content as tool result and auto-consume."""
+        """Show message/group_message content as tool result and auto-consume.
+
+        渲染策略：调用 ``_render_signal_message`` 走 event_types.yaml 的
+        ``wake_prompt`` 模板，**和 wake 启动同源**。
+
+        历史 bug:这里曾 hardcode 模板 ``[飞书消息 #{eid}] (sender) text``，丢了
+        chat_id / "对话"/"群" 标识 / chat_name 等关键上下文——模型在 mid-session
+        接到消息时既不知道是私聊还是群、更不知道回哪个 chat。结果：用户私聊机器人，
+        机器人却把回复发到了最近活跃的群里（7/13 wake #1927 call 23 现象）。
+
+        修复：复用 event_registry 的 wake_prompt，私聊模板含 ``对话：{chat_id}``、
+        群模板含 ``群：{chat_name}（{chat_id}）``——模型既能判断回复路径、也能
+        正确附带发送上下文。
+        """
         # Auto-consume: mark in DB + clear from in-memory queue
         self._do_consume_events(events)
 
         for ev in events:
-            eid = ev.get("event_id", "?")
-            payload = ev.get("payload", {})
-            text = payload.get("text", "")
-            sender = payload.get("sender_name", "")
-            display = str(ev.get("display_name") or ev.get("kind", ""))
-
-            # 平台标签依据 payload.source（形如 "gateway:wechat"/"gateway:feishu"）推导。
-            # 历史 bug:这里曾硬编码为「飞书消息」,导致微信/其它平台消息在 wake_signal
-            # 注入时也被标成飞书（见 wake-13 日志里微信消息被打成「[飞书消息 #38]」）。
-            # 无 source 时回退为中性「消息」,不再默认飞书。
-            _src = str(payload.get("source") or "")
-            if _src.startswith("gateway:"):
-                _src = _src.removeprefix("gateway:")
-            pf_label = {"wechat": "微信", "feishu": "飞书", "lark": "飞书"}.get(_src, "消息")
-
-            if text:
-                content = f"[{pf_label}消息 #{eid}] {'(' + sender + ') ' if sender else ''}{text}\n> 注意：消息已自动标记为已读，稍后回复即可。"
-            else:
-                content = f"[{pf_label}消息 #{eid}] {display}\n> 注意：消息已自动标记为已读，稍后回复即可。"
+            content = _render_signal_message(ev)
 
             assistant_msg, tool_msg = self._sys_tool_call("wake_signal", content)
             messages.append(assistant_msg)
@@ -1419,6 +1414,7 @@ class AIAgent:
             # sense_conversation 才在 messages.db 里翻到——导致 14 分钟黑箱。
             # 修法:_append_message 写到 sessions 表(下一轮 _chat 重启 messages
             # 时它还在)。chat_id 从 ev payload 取(让前端 Transcript 也按 chat 聚合)。
+            payload = ev.get("payload", {}) if isinstance(ev.get("payload"), dict) else {}
             if self.session_id:
                 self._append_message(
                     self.session_id, "tool", content,
@@ -1430,6 +1426,56 @@ class AIAgent:
                     self.audit_ctx.recall("wake_signal", content)
                 except Exception:
                     logger.debug("Failed to dual-write wake_signal", exc_info=True)
+
+
+def _render_signal_message(ev: dict[str, Any]) -> str:
+    """渲染 mid-session 注入的消息事件为 wake_signal 提示文本（模块级 helper，便于测试）。
+
+    与 ``domain.lifecycle.heartbeat._resolve_event_prompt`` 同源——message /
+    group_message 走 yaml 的 ``wake_prompt`` 模板，含 chat_id / chat_name /
+    sender_position 等完整上下文。回复时模型能看出是私聊还是群、回哪个 chat。
+
+    退化兜底（无 yaml / 非 message 类 / 异常）保留精简模板但显式含 chat_id。
+    """
+    eid = ev.get("event_id", "?")
+    kind = ev.get("kind", "") or ""
+    payload = ev.get("payload", {}) if isinstance(ev.get("payload"), dict) else {}
+    display = str(ev.get("display_name") or kind or "")
+
+    # 1. 走 yaml 模板（同源 wake_prompt）
+    rendered_body = ""
+    if kind in ("message", "group_message"):
+        try:
+            from domain.lifecycle.heartbeat import _resolve_event_prompt
+            rendered_body = _resolve_event_prompt(kind, [ev]).strip()
+        except Exception:
+            rendered_body = ""
+
+    # 2. 退化兜底：无 yaml / 异常时保留精简模板，但加 chat_id
+    if not rendered_body:
+        text = payload.get("text", "")
+        sender = payload.get("sender_name", "")
+        chat_id = payload.get("chat_id", "")
+        body_inner = (f"({sender}) {text}" if sender else text) if text else display
+        rendered_body = (
+            "💬 新消息。"
+            + (f"\n对话/群：{chat_id}" if chat_id else "")
+            + f"\n{body_inner}"
+        )
+
+    # 3. 信号头 + 自动已读 + 显式提示把 chat_id 传给 express_to_human
+    chat_id_hint = payload.get("chat_id", "")
+    chat_hint_line = (
+        f"回复时调用 express_to_human(chat_id=\"{chat_id_hint}\") "
+        f"把 chat_id 显式传过去，避免误发到其它对话/群。"
+        if chat_id_hint
+        else "回复时确认 chat_id（私聊还是群）再发，避免误发到其它对话/群。"
+    )
+    return (
+        f"[#{eid} · 新消息到达 - 会话中途注入]\n"
+        f"{rendered_body}\n"
+        f"> 注意：消息已自动标记为已读，稍后回复即可。{chat_hint_line}"
+    )
 
     def _notify_manual_events(self, events: list[dict], messages: list[dict[str, Any]]) -> None:
         """Notify about non-message events as tool result (no auto-consume)."""

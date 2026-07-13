@@ -589,7 +589,7 @@ def _handle_express_to_human(args: Dict[str, Any], **context) -> str:
         import httpx
         import os
 
-        # 优先从 apps/{instance_id}/config/app.yaml 读 messenger 凭证
+        # 优先从 apps/{instance_id}/config/app.yaml 读飞书凭证（channels.feishu.*）
         # 多实例共享进程时 env 是 Zero 启动时填的，Alpha 不能复用
         app_id = ""
         app_secret = ""
@@ -602,7 +602,9 @@ def _handle_express_to_human(args: Dict[str, Any], **context) -> str:
                 cfg_path = get_project_root() / "apps" / iid / "config" / "app.yaml"
                 if cfg_path.exists():
                     cfg = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-                    app_id = ((cfg.get("messenger") or {}).get("app_id") or "").strip()
+                    channels = cfg.get("channels") or {}
+                    feishu = channels.get("feishu") or {} if isinstance(channels, dict) else {}
+                    app_id = (feishu.get("app_id") or "").strip() if isinstance(feishu, dict) else ""
                     # app_secret 优先从实例 config/secrets.env 读取（已 load_runtime_dotenv 加载到 env）
                     app_secret = os.getenv("FEISHU_APP_SECRET") or ""
         except Exception:

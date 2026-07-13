@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 def _instance_app_id(instance_id: str) -> str:
-    """Read messenger.app_id from apps/{id}/config/app.yaml."""
+    """Read channels.feishu.app_id from apps/{id}/config/app.yaml."""
     from infrastructure.config import get_project_root
     import yaml
     config_file = get_project_root() / "apps" / instance_id / "config" / "app.yaml"
@@ -19,7 +19,9 @@ def _instance_app_id(instance_id: str) -> str:
         return ""
     try:
         cfg = yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
-        app_id = ((cfg.get("messenger") or {}).get("app_id") or "").strip()
+        channels = cfg.get("channels") or {}
+        feishu = channels.get("feishu") or {} if isinstance(channels, dict) else {}
+        app_id = (feishu.get("app_id") or "").strip() if isinstance(feishu, dict) else ""
         return app_id
     except Exception:
         return ""
@@ -66,7 +68,9 @@ def resolve_instance(msg: NormalizedMessage) -> str:
                     continue
                 try:
                     cfg = yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
-                    chat_ids = (cfg.get("messenger") or {}).get("chat_ids") or []
+                    channels = cfg.get("channels") or {}
+                    feishu = channels.get("feishu") or {} if isinstance(channels, dict) else {}
+                    chat_ids = (feishu.get("chat_ids") or []) if isinstance(feishu, dict) else []
                     if msg.chat_id and msg.chat_id in chat_ids:
                         return instance_id
                 except Exception:
@@ -79,7 +83,9 @@ def resolve_instance(msg: NormalizedMessage) -> str:
                     continue
                 try:
                     cfg = yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
-                    cfg_app_id = ((cfg.get("messenger") or {}).get("app_id") or "").strip()
+                    channels = cfg.get("channels") or {}
+                    feishu = channels.get("feishu") or {} if isinstance(channels, dict) else {}
+                    cfg_app_id = (feishu.get("app_id") or "").strip() if isinstance(feishu, dict) else ""
                     if bot_app_id and cfg_app_id == bot_app_id:
                         return instance_id
                 except Exception:

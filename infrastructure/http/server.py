@@ -17,7 +17,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from aiohttp import web
 
@@ -25,9 +25,9 @@ logger = logging.getLogger("gateway")
 
 
 def _instance_feishu_credentials(instance_id: str) -> tuple[str, str]:
-    """从 apps/<id>/config/app.yaml + apps/<id>/config/secrets.env 读 messenger 凭证。
+    """从 apps/<id>/config/app.yaml + apps/<id>/config/secrets.env 读飞书凭证。
 
-    app_id 从 app.yaml 的 messenger.app_id 读（非敏感）。
+    app_id 从 app.yaml 的 channels.feishu.app_id 读（非敏感）。
     app_secret 从实例 secrets.env 读（敏感）——这里直接读文件，
     不依赖 load_runtime_dotenv（那个函数需要 ContextVar 已设置）。
     """
@@ -36,7 +36,9 @@ def _instance_feishu_credentials(instance_id: str) -> tuple[str, str]:
     root = get_project_root()
     cfg_path = root / "apps" / instance_id / "config" / "app.yaml"
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-    app_id = ((cfg.get("messenger") or {}).get("app_id") or "").strip()
+    channels = cfg.get("channels") or {}
+    feishu = channels.get("feishu") or {} if isinstance(channels, dict) else {}
+    app_id = (feishu.get("app_id") or "").strip() if isinstance(feishu, dict) else ""
     app_secret = ""
     secrets_path = root / "apps" / instance_id / "config" / "secrets.env"
     if secrets_path.exists():
@@ -235,47 +237,102 @@ async def run_instance_gateway(instance_id: str) -> None:
             getattr(adapter, "app_identity", "?"),
         )
 
-    # 热加载通道：每 30s 检查一次 secrets.env 是否有新凭证（用户在控制台改了
-    # 飞书 secret / 微信扫码登录后不需要重启网关，自动发现新通道）
+    # 热加载通道：每 30s 检查一次配置/secrets 是否有变化（用户在控制台改了
+    # 飞书 App ID / App Secret / 域名、微信扫码登录后，不需要重启网关即可生效）。
+    # 两个维度都覆盖：1) 新平台出现  2) 同平台凭据/域名变化。
     import yaml as _yaml_reload
-    from interfaces.ingress.registry import create_adapters_from_config as _caf
+    from interfaces.ingress.registry import (
+        channel_signatures as _channel_signatures,
+        create_adapters_from_config as _caf,
+    )
+
+    def _load_reload_files() -> tuple[dict[str, Any], dict[str, str]]:
+        cfg_path_r = get_project_root() / "apps" / instance_id / "config" / "app.yaml"
+        secrets_path_r = get_project_root() / "apps" / instance_id / "config" / "secrets.env"
+        if not cfg_path_r.exists():
+            return {}, {}
+        new_cfg = _yaml_reload.safe_load(cfg_path_r.read_text(encoding="utf-8")) or {}
+        new_secrets: dict[str, str] = {}
+        if secrets_path_r.exists():
+            for line in secrets_path_r.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    new_secrets[k.strip()] = v.strip().strip('"').strip("'")
+        return new_cfg, new_secrets
+
+    # 初始签名快照（基于启动时磁盘文件）
+    last_signatures = _channel_signatures(*_load_reload_files())
 
     async def _hot_reload_channels():
         from application.ingress.handler import handle_message as _hm
+        from application.ingress.reaction_state import register_adapter
         reload_interval = 30
         while not stop_event.is_set():
             await asyncio.sleep(reload_interval)
             try:
-                cfg_path_r = get_project_root() / "apps" / instance_id / "config" / "app.yaml"
-                secrets_path_r = get_project_root() / "apps" / instance_id / "config" / "secrets.env"
-                if not cfg_path_r.exists():
-                    continue
-                new_cfg = _yaml_reload.safe_load(cfg_path_r.read_text(encoding="utf-8")) or {}
-                new_secrets: dict[str, str] = {}
-                if secrets_path_r.exists():
-                    for line in secrets_path_r.read_text(encoding="utf-8").splitlines():
-                        line = line.strip()
-                        if line and not line.startswith("#") and "=" in line:
-                            k, v = line.split("=", 1)
-                            new_secrets[k.strip()] = v.strip().strip('"').strip("'")
+                new_cfg, new_secrets = _load_reload_files()
+                new_signatures = _channel_signatures(new_cfg, new_secrets)
 
-                new_adapters = [a for a in _caf(new_cfg, new_secrets) if a is not None]
-                # 找出新启动的（started_adapters 里没有的）
-                existing_platforms = {getattr(a, "platform", "") for a in started_adapters}
-                for new_ad in new_adapters:
-                    if getattr(new_ad, "platform", "") not in existing_platforms:
+                # ── 1) 找出需要重建的平台：签名变化。新平台出现也属于"签名新增"。
+                platforms_to_rebuild: set[str] = set()
+                for platform, sig in new_signatures.items():
+                    if last_signatures.get(platform) != sig:
+                        platforms_to_rebuild.add(platform)
+                # ── 2) 凭据被清空/通道被移除：停止旧 adapter
+                removed_platforms = {p for p in last_signatures if p not in new_signatures}
+                for platform in removed_platforms:
+                    platforms_to_rebuild.discard(platform)  # 单独处理：只 stop 不 start
+
+                # 停掉被移除或凭据变化的旧 adapter
+                if platforms_to_rebuild or removed_platforms:
+                    stopped: list[Any] = []
+                    for ad in list(started_adapters):
+                        platform = getattr(ad, "platform", "")
+                        if platform in platforms_to_rebuild or platform in removed_platforms:
+                            try:
+                                await ad.stop()
+                            except Exception as exc:
+                                logger.warning(
+                                    "Instance %s hot-reload stop adapter %s failed: %s",
+                                    instance_id[:8], platform, exc,
+                                )
+                            started_adapters.remove(ad)
+                            stopped.append(ad)
+                    if stopped:
+                        logger.info(
+                            "Instance %s hot-reload stopped %d adapter(s): %s",
+                            instance_id[:8], len(stopped),
+                            [getattr(a, "platform", "?") for a in stopped],
+                        )
+
+                # 起新 adapter（同一 platform 凭据变了或全新平台）
+                # reaction_state.register_adapter 用单例覆盖；新 adapter 注册后将覆盖旧。
+                if platforms_to_rebuild:
+                    new_adapters = [a for a in _caf(new_cfg, new_secrets) if a is not None]
+                    for new_ad in new_adapters:
+                        platform = getattr(new_ad, "platform", "")
+                        if platform not in platforms_to_rebuild:
+                            continue
                         new_ad.on_message(
                             lambda msg, a=new_ad: _hm(adapter=a, msg=msg)
                         )
                         await new_ad.start()
                         started_adapters.append(new_ad)
-                        existing_platforms.add(getattr(new_ad, "platform", ""))
+                        if hasattr(new_ad, "add_reaction"):
+                            try:
+                                register_adapter(new_ad)
+                            except Exception:
+                                pass
                         logger.info(
-                            "Instance %s HOT-LOADED new adapter: platform=%s identity=%s",
+                            "Instance %s HOT-RELOADED adapter: platform=%s identity=%s",
                             instance_id[:8],
-                            getattr(new_ad, "platform", "?"),
+                            platform,
                             getattr(new_ad, "app_identity", "?"),
                         )
+
+                last_signatures.clear()
+                last_signatures.update(new_signatures)
             except Exception as exc:
                 logger.debug("hot reload check failed: %s", exc)
 
@@ -841,8 +898,9 @@ def _discover_feishu_bots() -> list[dict]:
             continue
         try:
             cfg = yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
-            messenger = cfg.get("messenger") or {}
-            app_id = (messenger.get("app_id") or "").strip()
+            channels = cfg.get("channels") or {}
+            feishu = channels.get("feishu") or {} if isinstance(channels, dict) else {}
+            app_id = (feishu.get("app_id") or "").strip() if isinstance(feishu, dict) else ""
             app_secret = ""
             secrets_path = get_project_root() / "apps" / instance_id / "config" / "secrets.env"
             if secrets_path.exists():

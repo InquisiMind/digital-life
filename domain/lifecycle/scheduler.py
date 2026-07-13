@@ -194,6 +194,22 @@ def _segment_gap_end_timestamp(messages: list[dict]) -> float:
     return 0.0
 
 
+def _segment_gap_start_timestamp(messages: list[dict]) -> float:
+    """段内最早的消息时间戳，用于段间排序。
+
+    读取侧防御：即便写盘侧 segment_index 出错（曾经有过"读后写整体落到 -1 段"的
+    bug），段间排序也按真实时间正确，而不是按 segment_index 数字序。0 表示无时间戳。
+    """
+    for m in messages:
+        ts = m.get("timestamp")
+        if ts is not None:
+            try:
+                return float(ts)
+            except (TypeError, ValueError):
+                continue
+    return 0.0
+
+
 def _summarize_segment(segment: list[dict], session_db, session_id: str, seg_idx: int) -> list[dict]:
     """把一个段的原文折叠成一条摘要消息（三级降级，保证不丢信息也不抛异常）。
 
@@ -312,7 +328,15 @@ def _load_prior_messages_with_compression(session_db, session_id: str, now_ts: f
             # 只有一段（首次接续），无需折叠
             return _load_prior_messages(session_db, session_id)
 
-        seg_indices = sorted(segments_map.keys())
+        # 段间按"每段最早消息时间戳"排序——而不是按 segment_index 数字序。
+        # 这是读取侧防御：即便写盘将来再出 bug 让 segment_index 错乱，
+        # 段之间依然按真实时间因果序排列。（旧代码 sorted(seg_indices)
+        # 99% 情况下正确，但因为段号乱给出的 -1 段被排到 0 段之前的 case
+        # 直接破坏了因果序。）
+        seg_indices = sorted(
+            segments_map.keys(),
+            key=lambda idx: _segment_gap_start_timestamp(segments_map[idx]),
+        )
 
         out: list[dict] = []
         folded = 0

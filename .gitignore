@@ -64,9 +64,8 @@ docs/design/*
 !docs/blog/role-user-end-of-era.md
 !docs/philosophy/
 !docs/philosophy/fourth-quadrant-entity.md
-# scripts/ 与 tests/ 不入版本控制（运行前/测试均为本地工作目录）
-scripts/
-tests/
+# scripts/ 与 tests/ 现已纳入版本控制（运维脚本 + 单测都有保留价值）
+# __pycache__ 已全局 ignore，不影响 scripts/tests 子目录
 config/local.yaml
 config/secrets.env
 configs/local.yaml
@@ -152,3 +151,6 @@ Thumbs.db
 
 # AI agent 跑活时的临时 todo / 实验数据, 不入 git
 todos/
+
+# ZCode 客户端本地产物（含 plan、缓存等），不入 git
+.zcode/

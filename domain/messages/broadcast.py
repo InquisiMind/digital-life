@@ -197,15 +197,16 @@ def _peer_endpoint_for(instance_id: str) -> str:
 
 
 def _read_instance_chat_ids(instance_id: str) -> set[str]:
-    """读实例 app.yaml 的 messenger.chat_ids。"""
+    """读实例 app.yaml 的 channels.feishu.chat_ids。"""
     from infrastructure.config import get_instance_dir
     cfg = get_instance_dir(instance_id) / "config" / "app.yaml"
     if not cfg.is_file():
         return set()
     try:
         data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-        messenger = data.get("messenger") or {}
-        ids = messenger.get("chat_ids") or []
+        channels = data.get("channels") or {}
+        feishu = channels.get("feishu") or {} if isinstance(channels, dict) else {}
+        ids = feishu.get("chat_ids") or [] if isinstance(feishu, dict) else []
         return {str(c).strip() for c in ids if c}
     except Exception:
         return set()

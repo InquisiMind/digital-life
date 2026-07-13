@@ -63,13 +63,8 @@ def _sender_is_sibling_bot(sender_id: str, platform: str) -> str:
                 data = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
             except Exception:
                 continue
-            # 旧/新格式都支持：messenger.app_id 或 channels.feishu.app_id
+            # 通道字段统一收敛到 channels.<type>；旧 messenger 段需先跑迁移脚本
             identities = []
-            messenger = data.get("messenger") or {}
-            if isinstance(messenger, dict):
-                aid = (messenger.get("app_id") or "").strip()
-                if aid:
-                    identities.append(aid)
             channels = data.get("channels")
             if isinstance(channels, dict):
                 for ch_cfg in channels.values():

@@ -70,37 +70,29 @@ _ADAPTER_BUILDERS = {
 def parse_channels(app_yaml_cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """从实例的 app.yaml 解析 channels 配置。
 
-    支持两种格式：
-    1. 新格式（多通道）：
+    只读 ``channels`` 段。飞书/微信等通道字段统一存放在
+    ``channels.<type>.<field>``（与 ConfigField.path、init_instance 模板、
+    adapter 读取侧一致），不存在 ``messenger`` 旧段兜底。
+
+    格式：
         channels:
           feishu:
             type: feishu
             app_id: cli_xxx
           wechat:
             type: wechat_clawbot
+            domain: https://...
 
-    2. 旧格式（单通道，向后兼容）：
-        messenger:
-          type: feishu
-          app_id: cli_xxx
-
-    旧格式自动包装成 { feishu: { type: feishu, app_id: cli_xxx } }。
+    旧实例的 ``messenger`` 段需先跑 ``scripts/migrate_messenger_to_channels.py``
+    搬到 ``channels.feishu``，否则飞书通道不会生效。
     """
     if not app_yaml_cfg:
         return {}
 
-    channels = {}
-    # 1. 新格式 channels 段
     raw_channels = app_yaml_cfg.get("channels")
-    if isinstance(raw_channels, dict):
-        channels.update(raw_channels)
-    # 2. 旧格式 messenger 段 → 补充为 feishu channel（不覆盖已有的 channels.feishu）
-    messenger = app_yaml_cfg.get("messenger")
-    if isinstance(messenger, dict) and messenger:
-        msgr_type = str(messenger.get("type") or "feishu")
-        if msgr_type not in channels:
-            channels[msgr_type] = messenger
-    return channels
+    if not isinstance(raw_channels, dict):
+        return {}
+    return {name: cfg for name, cfg in raw_channels.items() if isinstance(cfg, dict)}
 
 
 def create_adapters_from_config(
@@ -158,8 +150,43 @@ def get_supported_types() -> list[str]:
     return list(_ADAPTER_BUILDERS.keys())
 
 
+def channel_signatures(
+    app_yaml_cfg: dict[str, Any],
+    secrets_env: dict[str, str],
+) -> dict[str, str]:
+    """计算 ``platform -> signature``，用于热重载 diff。
+
+    signature 由该通道参与构造 adapter 的全部字段拼接而成（app_id / domain /
+    bot_id + 对应 secrets.env 凭据）。任何字段改动都会让 signature 变化，
+    触发 ``_hot_reload_channels`` 停旧 adapter、起旧 adapter。
+
+    与 ``_build_*`` 工厂读取的字段保持一致即可——凭据缺失的通道不会被 factory
+    返回 adapter，这里同样跳过（不写入 signatures dict）。
+    """
+    channels = parse_channels(app_yaml_cfg)
+    out: dict[str, str] = {}
+    for ch_name, ch_cfg in channels.items():
+        adapter_type = str(ch_cfg.get("type") or ch_name)
+        if adapter_type == "feishu":
+            app_id = str(ch_cfg.get("app_id") or "").strip()
+            secret = (secrets_env.get("FEISHU_APP_SECRET") or os.getenv("FEISHU_APP_SECRET") or "").strip()
+            if not app_id or not secret:
+                continue
+            domain = str(ch_cfg.get("feishu_domain") or "").strip()
+            out["feishu"] = f"feishu|{app_id}|{secret}|{domain}"
+        elif adapter_type == "wechat_clawbot":
+            token = (secrets_env.get("WECHAT_BOT_TOKEN") or os.getenv("WECHAT_BOT_TOKEN") or "").strip()
+            if not token:
+                continue
+            domain = str(ch_cfg.get("domain") or "").strip()
+            bot_id = str(ch_cfg.get("bot_id") or "").strip()
+            out["wechat"] = f"wechat|{token}|{domain}|{bot_id}"
+    return out
+
+
 __all__ = [
     "parse_channels",
     "create_adapters_from_config",
     "get_supported_types",
+    "channel_signatures",
 ]

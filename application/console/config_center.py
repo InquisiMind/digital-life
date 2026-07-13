@@ -75,8 +75,11 @@ FIELDS: tuple[ConfigField, ...] = (
     ),
 
     # ════════════ 飞书通道（固定展示，不依赖动态检测）════════════
+    # ConfigField.key 是前端逻辑标识符（保持稳定便于 baseline 比对），
+    # field.path 才是 yaml 落盘的真实路径。所有通道字段统一收敛到
+    # channels.<type>.<field>，与 registry/adapter 读取侧一致。
     ConfigField(
-        "messenger.app_id", "飞书 App ID", "feishu", "yaml", path="messenger.app_id",
+        "messenger.app_id", "飞书 App ID", "feishu", "yaml", path="channels.feishu.app_id",
         description="飞书自建应用 App ID（cli_xxx）。",
     ),
     ConfigField(
@@ -84,14 +87,14 @@ FIELDS: tuple[ConfigField, ...] = (
         description="飞书 App Secret（敏感）。留空保存 = 保留当前值。",
     ),
     ConfigField(
-        "messenger.feishu_domain", "飞书域名", "feishu", "yaml", path="messenger.feishu_domain",
+        "messenger.feishu_domain", "飞书域名", "feishu", "yaml", path="channels.feishu.feishu_domain",
         default="https://open.feishu.cn",
         description="国内 open.feishu.cn / 国际 open.larksuite.com。",
     ),
 
     # ════════════ 微信通道（固定展示）════════════
     ConfigField(
-        "messenger.wechat_domain", "微信 API 域名", "wechat", "yaml", path="messenger.wechat_domain",
+        "messenger.wechat_domain", "微信 API 域名", "wechat", "yaml", path="channels.wechat.domain",
         default="https://ilinkai.weixin.qq.com",
         description="ClawBot iLink API 域名。",
     ),

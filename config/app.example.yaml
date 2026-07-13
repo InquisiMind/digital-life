@@ -14,12 +14,18 @@ model:
   base_url: https://open.bigmodel.cn/api/paas/v4   # API 地址
   # api_key 从实例 secrets.env 的 LLM_API_KEY 读取（旧名 GLM_API_KEY 也兼容）
 
-# ── 消息通道 ──
-messenger:
-  type: feishu                              # 消息平台（目前仅支持 feishu）
-  feishu_domain: https://open.feishu.cn     # 飞书 API 域名（国内默认，国际版改 https://open.larksuite.com）
-  app_id: "cli_xxxxxxxxxxxxx"               # 飞书机器人 App ID
-  # app_secret 从实例 secrets.env 的 FEISHU_APP_SECRET 读取
+# ── 消息通道（多通道并列）──
+# 所有通道字段统一在 channels.<type> 下（与 adapter/registry 读取侧一致）。
+channels:
+  feishu:
+    type: feishu                              # 通道类型（registry 据此选 adapter 工厂）
+    feishu_domain: https://open.feishu.cn     # 国内默认，国际版改 https://open.larksuite.com
+    app_id: "cli_xxxxxxxxxxxxx"               # 飞书机器人 App ID
+    # app_secret 从实例 secrets.env 的 FEISHU_APP_SECRET 读取
+  wechat:
+    type: wechat_clawbot
+    domain: https://ilinkai.weixin.qq.com     # ClawBot iLink API 域名
+    # bot_token 从 secrets.env 的 WECHAT_BOT_TOKEN 读取（控制台扫码登录自动写入）
 
 # ── 群聊行为 ──
 group_chat:

@@ -131,21 +131,17 @@ model:
 # ── 消息通道（多通道并列）──
 # 飞书：填 app_id + 在 secrets.env 填 FEISHU_APP_SECRET
 # 微信：在控制台 /instance/<id>/config 点「微信扫码登录」获取 WECHAT_BOT_TOKEN
+# 所有通道字段统一在 channels.<type> 下，无 messenger 旧段。
 channels:
   feishu:
     type: feishu
     feishu_domain: https://open.feishu.cn     # 国内默认，国际版改 https://open.larksuite.com
-    app_id: {feishu_app_id or '"cli_xxxxxxxxx"'}
+    app_id: {feishu_app_id or '"cli_xxxxxxxxx"'}  # 控制台「飞书通道」填写
     # app_secret 从 config/secrets.env 的 FEISHU_APP_SECRET 读取
   wechat:
     type: wechat_clawbot
     domain: https://ilinkai.weixin.qq.com
     # bot_token 从 config/secrets.env 的 WECHAT_BOT_TOKEN 读取（扫码登录自动写入）
-
-# 向后兼容（messenger 段保留，registry 自动映射到 channels.feishu）
-messenger:
-  type: feishu
-  app_id: {feishu_app_id or '"cli_xxxxxxxxx"'}
 
 # ── 群聊行为 ──
 group_chat:

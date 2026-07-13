@@ -46,6 +46,7 @@ def add_system_routes(app: web.Application) -> None:
     app.router.add_get(f"{SYSTEM_API_PREFIX}/instances", _handle_instances)
     app.router.add_post(f"{SYSTEM_API_PREFIX}/instances", _handle_create_instance)
     app.router.add_patch(f"{SYSTEM_API_PREFIX}/instances/{{iid}}", _handle_update_instance)
+    app.router.add_delete(f"{SYSTEM_API_PREFIX}/instances/{{iid}}", _handle_delete_instance)
     app.router.add_post(
         f"{SYSTEM_API_PREFIX}/instances/{{iid}}/wechat-login/qrcode",
         _handle_wechat_qrcode,
@@ -489,13 +490,12 @@ def _read_channel_status(iid: str) -> list[dict[str, str]]:
                 k, v = line.split("=", 1)
                 secrets[k.strip()] = v.strip().strip('"').strip("'")
 
+    # 通道字段统一收敛到 channels.<type>
     channels = []
 
-    # 飞书：messenger.app_id 或 channels.feishu.app_id
-    feishu_app_id = ""
-    messenger = cfg.get("messenger") or {}
+    # 飞书：channels.feishu.app_id
     ch_feishu = (cfg.get("channels") or {}).get("feishu") or {}
-    feishu_app_id = str(messenger.get("app_id") or ch_feishu.get("app_id") or "").strip()
+    feishu_app_id = str(ch_feishu.get("app_id") or "").strip()
     feishu_secret = secrets.get("FEISHU_APP_SECRET", "").strip()
     channels.append({
         "platform": "feishu",
@@ -1439,6 +1439,88 @@ async def _handle_delete_project(request: web.Request) -> web.Response:
             if cancelled_count
             else "项目已删除。无关联待办。"
         ),
+    })
+
+
+async def _handle_delete_instance(request: web.Request) -> web.Response:
+    """DELETE /api/system/instances/{iid} —— 彻底删除实例（不可恢复）。
+
+    步骤：
+      1. 校验 iid 在 registry 中存在
+      2. 停子进程（graceful SIGTERM → SIGKILL 兜底，最多 10s）
+      3. 从 var/run/last_active.json 移除条目
+      4. 物理删除 apps/{id}/ 目录（含 state.db / runtime_log / memories /
+         secrets.env / persona / config —— 全部不可恢复）
+
+    不支持归档；如需保留请手动备份 apps/{id}/ 后再调本接口。
+    """
+    iid = request.match_info["iid"]
+    if iid not in (_load_registry() or {}):
+        return web.json_response({"error": f"unknown instance: {iid}"}, status=404)
+
+    from infrastructure.config import get_instance_dir
+    instance_dir = get_instance_dir(iid)
+    # 二次检查：目录确实在 apps/ 下，防止 iid 是相对路径或绝对路径包含 ..
+    try:
+        apps_root = (get_project_root() / "apps").resolve()
+        resolved = instance_dir.resolve()
+        resolved.relative_to(apps_root)  # 抛 ValueError 表示越界
+    except (ValueError, OSError):
+        return web.json_response({"error": "invalid instance_id"}, status=400)
+    if not instance_dir.exists():
+        return web.json_response({"error": f"directory not found: {instance_dir}"}, status=404)
+
+    stop_note = ""
+    # 1. 停子进程
+    sup = request.app.get("supervisor")
+    if sup and hasattr(sup, "stop_instance"):
+        try:
+            stopped = await sup.stop_instance(iid)
+            stop_note = "已停止" if stopped else "未运行"
+        except Exception as exc:
+            logger.warning("stop_instance %s failed during delete: %s", iid[:8], exc)
+            stop_note = f"停止失败（{exc}），目录仍删除"
+
+    # 2. 从 last_active.json 移除条目
+    try:
+        import json as _json
+        from gateway.instance_supervisor import write_last_active
+        path = get_project_root() / "var" / "run" / "last_active.json"
+        existing: list[str] = []
+        if path.exists():
+            try:
+                existing = list(_json.loads(path.read_text(encoding="utf-8")).get("instances") or [])
+            except Exception:
+                existing = []
+        if iid in existing:
+            existing.remove(iid)
+            write_last_active(existing)
+    except Exception as exc:
+        logger.warning("last_active sync failed during delete: %s", exc)
+
+    # 3. 物理删除 apps/{id}/ — 先统计大小用于反馈，再 rmtree
+    size_note = ""
+    try:
+        import shutil
+        total = 0
+        for p in instance_dir.rglob("*"):
+            if p.is_file():
+                try:
+                    total += p.stat().st_size
+                except OSError:
+                    pass
+        shutil.rmtree(instance_dir)
+        size_note = f"已清理 {total / 1024 / 1024:.1f} MB"
+    except Exception as exc:
+        logger.exception("instance delete failed")
+        return web.json_response({"error": str(exc)}, status=500)
+
+    return web.json_response({
+        "ok": True,
+        "instance_id": iid,
+        "process": stop_note,
+        "disk": size_note,
+        "hint": "实例已彻底删除：进程已停止、apps/{id}/ 目录已物理移除。",
     })
 
 

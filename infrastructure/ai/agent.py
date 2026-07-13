@@ -90,6 +90,17 @@ class AIAgent:
         task_id: str | None = None,
     ) -> dict[str, Any]:
         session_id = self.session_id or task_id or "adhoc"
+        # 每个 wake 推进一次段号。设计语义：segment_index = wake 序号，单调递增。
+        # 同一 wake 内的所有消息（system/user/assistant/tool/sys_tool 注入）共享同一段号。
+        # 这是新段启始的唯一入口；append_message 自身不自增。
+        # 第一次 wake：create_session 设 0 → advance 到 1 → 写消息段号 1。
+        # 续接 wake：get_messages/_restore_segment_index 恢复到 MAX(seg) → create_session
+        # 看见 session 已存在不重置 → advance 到 MAX+1 → 写消息段号 MAX+1。
+        if self.session_db and (self.session_id or task_id):
+            try:
+                self.session_db.advance_segment(session_id)
+            except Exception:
+                logger.debug("advance_segment failed", exc_info=True)
         messages: list[dict[str, Any]] = []
         if system_message:
             messages.append({"role": "system", "content": system_message})

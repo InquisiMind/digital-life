@@ -24,12 +24,10 @@ from interfaces.ingress.base import IngressAdapter, MessageHandler, NormalizedMe
 
 logger = logging.getLogger(__name__)
 
-# 飞书域名：优先从实例 app.yaml 的 channels.feishu.feishu_domain 读（init_instance 写这），
-# fallback messenger.feishu_domain（ConfigTab 写这，旧实例兼容），
-# 再 fallback env FEISHU_DOMAIN，最终默认国内地址。
-# ⚠️ 两个路径都要试：init_instance 默认模板写 channels.feishu.feishu_domain（line 123），
-#    但 messenger 段不含 feishu_domain（line 132-134），只读 messenger 会让新实例的国际版
-#    配置不生效。旧实例由 ConfigTab 写在 messenger.feishu_domain 上，保留兼容。
+# 飞书域名：优先从实例 app.yaml 的 channels.feishu.feishu_domain 读（init_instance
+# 和 ConfigCenter 都写这），再 fallback env FEISHU_DOMAIN，最终默认国内地址。
+# ⚠️ 通道字段统一收敛到 channels.<type>，无 messenger 旧段兜底；老实例需先跑
+#    scripts/migrate_messenger_to_channels.py 迁移。
 def _read_feishu_domain() -> str:
     try:
         from infrastructure.config import get_app_instance_id, get_project_root
@@ -39,12 +37,8 @@ def _read_feishu_domain() -> str:
             cfg_path = get_project_root() / "apps" / iid / "config" / "app.yaml"
             if cfg_path.exists():
                 cfg = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-                # 1. channels.feishu.feishu_domain（新格式，init_instance 默认写这）
+                # channels.feishu.feishu_domain（标准路径）
                 d = (((cfg.get("channels") or {}).get("feishu") or {}).get("feishu_domain") or "").strip()
-                if d:
-                    return d
-                # 2. messenger.feishu_domain（旧格式，ConfigTab 仍写这）
-                d = ((cfg.get("messenger") or {}).get("feishu_domain") or "").strip()
                 if d:
                     return d
     except Exception:
@@ -597,7 +591,8 @@ class FeishuAdapter(IngressAdapter):
                         cfg = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
                     except Exception:
                         continue
-                    if ((cfg.get("messenger") or {}).get("app_id") or "").strip() != self._app_id:
+                    ch = (cfg.get("channels") or {}).get("feishu") or {}
+                    if (ch.get("app_id") or "").strip() != self._app_id:
                         continue
                     legacy = (meta.get("legacy_name") or "").lower()
                     display = (meta.get("display_name") or "").lower()

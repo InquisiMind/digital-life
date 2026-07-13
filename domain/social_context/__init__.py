@@ -2,7 +2,7 @@
 
 包含：
 - 我认识的 contacts（人 / bot / system）— 来自 domain.contacts
-- 我参与的群 — 来自 app.yaml.messenger.chat_ids + project.yaml.group_chat_id + chat_stream 历史里见过的 chat_id
+- 我参与的群 — 来自 app.yaml channels.feishu.chat_ids + project.yaml.group_chat_id + chat_stream 历史里见过的 chat_id
 
 每次 wake 注入到 prompt 里（_sys_tool=social_context），让模型决定
 「这条话应该发给谁，发哪个 chat」。
@@ -138,26 +138,13 @@ def _collect_known_chats(instance_id: str) -> dict[str, str]:
        会被误判为群、污染 social_context。
     """
     out: dict[str, str] = {}
-    # 1. app.yaml: messenger.chat_ids + channels.*.chat_ids
+    # 1. app.yaml: channels.<type>.chat_ids（统一收敛到 channels 段）
     try:
         import yaml
         from infrastructure.config import get_project_root
         app_yaml = get_project_root() / "apps" / instance_id / "config" / "app.yaml"
         if app_yaml.exists():
             cfg = yaml.safe_load(app_yaml.read_text(encoding="utf-8")) or {}
-            # 旧格式
-            messenger = cfg.get("messenger") or {}
-            for c in (messenger.get("chat_ids") or []):
-                if isinstance(c, dict):
-                    cid = str(c.get("chat_id") or c.get("id") or "").strip()
-                    name = str(c.get("name") or c.get("display_name") or "").strip()
-                    if cid and _is_group_id(cid) and cid not in out:
-                        out[cid] = name
-                elif isinstance(c, str):
-                    cid = c.strip()
-                    if cid and _is_group_id(cid) and cid not in out:
-                        out[cid] = ""
-            # 新格式 channels
             channels = cfg.get("channels") or {}
             if isinstance(channels, dict):
                 for ch_cfg in channels.values():

@@ -1,0 +1,43 @@
+{
+  "account": {
+    "cash": 101449.57,
+    "holdings": [],
+    "total_value": 101449.57,
+    "profit_pct": 1.45
+  },
+  "trades": [
+    {
+      "date": "2026-05-27",
+      "action": "buy",
+      "symbol": "600863",
+      "name": "\u534e\u80fd\u8499\u7535",
+      "price": 6.28,
+      "shares": 1000,
+      "reason": "\u7a81\u7834\u5f62\u6001\uff0c\u677f\u5757\u8d70\u5f3a"
+    },
+    {
+      "date": "2026-06-02",
+      "action": "sell",
+      "symbol": "600863",
+      "name": "\u534e\u80fd\u8499\u7535",
+      "price": 7.49,
+      "shares": 1000,
+      "profit": 1210.0,
+      "profit_pct": 19.27,
+      "reason": "\u6b62\u76c8\u5356\u51fa"
+    }
+  ],
+  "daily_log": {
+    "date": "2026-06-08",
+    "time": "14:07:42",
+    "type": "daily_update",
+    "market_status": "\u4e0b\u8dcc\u8d8b\u52bf",
+    "monitoring": [
+      "513100",
+      "159941"
+    ],
+    "positions": [],
+    "cash": 101449.57,
+    "notes": "\u7eb3\u6307ETF\u8dcc\u7834\u652f\u64912.2\uff0c\u7ee7\u7eed\u89c2\u671b\uff0c\u4e0d\u63a5\u98de\u5200"
+  }
+}

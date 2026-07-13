@@ -110,16 +110,31 @@ class SessionDB:
         parent_session_id: str | None = None,
     ) -> str:
         with self._lock:
-            self._conn.execute(
+            cursor = self._conn.execute(
                 """INSERT OR IGNORE INTO sessions
                 (id, source, user_id, model, model_config, system_prompt, parent_session_id, started_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (session_id, source, user_id, model, json.dumps(model_config) if model_config else None, system_prompt, parent_session_id, time.time()),
             )
             self._conn.commit()
-        # 新 session 从 segment 0 开始
-        self._current_segment[session_id] = 0
+            is_new = cursor.rowcount > 0
+        if is_new:
+            # 新建 session：从段号 0 开始（写第一条 action_prompt 前 advance_segment
+            # 推进到 1）。INSERT OR IGNORE 续接时不动 _current_segment——保留上轮状态，
+            # 由 _load_prior_messages_with_compression 调 get_messages 时
+            # _restore_segment_index 已经把它恢复到 MAX(seg)。
+            self._current_segment[session_id] = 0
         return session_id
+
+    def advance_segment(self, session_id: str) -> int:
+        """推进段号到下一段，返回新段号。每个 wake 开始时调用一次。
+
+        设计语义：段号 = wake 序号，单调递增、永不回退。同一 wake 内所有消息
+        （user action_prompt / assistant / tool / sys_tool 慢变量注入）共享同一段号。
+        这是新段启始的**唯一**入口——append_message 自身不自增。
+        """
+        self._current_segment[session_id] = self._current_segment.get(session_id, 0) + 1
+        return self._current_segment[session_id]
 
     def end_session(
         self,
@@ -279,12 +294,13 @@ class SessionDB:
         codex_reasoning_items: Any = None,
         chat_id: str = "",
     ) -> int:
-        # user message（action_prompt）是段起始 marker
-        # 新 user 消息 = 新段开始，segment_index 为当前值
-        # 当前段内继续追加时，segment_index 不变
-        if role == "user":
-            self._current_segment[session_id] = self._current_segment.get(session_id, 0) + 1
-        segment_index = self._current_segment.get(session_id, 0) - 1  # 减1：第一个 user 是 segment 0
+        # segment_index：直接读取当前段号。同一 wake 内的所有 role（user/assistant/
+        # tool/system）共享同一段号；新 wake 由 advance_segment() 推进。这里**不自增、
+        # 不偏移**——避免历史上"读后写产生 -1 段 + 段位混乱"的 bug。
+        # 历史 bug 复盘：曾经 user 触发自增并 -1、其它 role 直接读 -1，叠加 get_messages
+        # 中途被 _restore_segment_index reset 到 MAX(seg) 的副作用，让"读后写"的 row 都进
+        # 了段 -1，破坏了用户/助手交错。
+        segment_index = self._current_segment.get(session_id, 0)
 
         tool_calls_json = json.dumps(tool_calls, ensure_ascii=False, default=str) if tool_calls else None
         with self._lock:

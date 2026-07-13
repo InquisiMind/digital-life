@@ -218,10 +218,18 @@ def process_tool(
 def _get_task_workspace_for_tool() -> tuple[str | None, str | None]:
     """获取当前 active todo 的 workspace（如果有）。
 
-    没有 active todo 时 fallback 到 repo 根目录，不阻断工具调用。
-    理由见 code_execution_tool.py：terminal/execute_code 是"双手"，不应该
-    被强制绑到 todo 才能用（用户 2026-06-14 反馈 wake 841 bug）。
+    没有 active todo 时 fallback 到 **实例的 workspace 目录**
+    ``apps/<instance_id>/workspace/``，而不是项目根。
+
+    理由：terminal 是模型的"双手"，不应该被强制绑到 todo 才能用
+    （2026-06-14 wake 841 bug 反馈）；但默认 cwd 也不能是项目根——否则
+    模型 ad-hoc 写盘会落到根顶层（如 7/5 贝塔把文章写到根 articles/ 越界）。
+    实例 workspace 是天然的 sandbox：本实例的产出物应在这里，跨实例不冲突。
+
+    若 instance_id 解析失败（如外部直调未设 ContextVar），再降级回项目根，
+    不阻断工具调用。
     """
+    # 1. 优先：active todo 的 workspace
     try:
         from domain.todos._infra import get_active_task_workspace
         task_id, ws = get_active_task_workspace()
@@ -229,8 +237,19 @@ def _get_task_workspace_for_tool() -> tuple[str | None, str | None]:
             return task_id, str(ws)
     except Exception:
         pass
+    # 2. 默认：当前实例的 workspace 目录 apps/<iid>/workspace/
+    try:
+        from infrastructure.config import get_instance_dir, get_app_instance_id
+        iid = get_app_instance_id()
+        if iid:
+            ws = get_instance_dir(iid) / "workspace"
+            ws.mkdir(parents=True, exist_ok=True)
+            return None, str(ws)
+    except Exception:
+        pass
+    # 3. 最后降级：项目根（ContextVar 未设或异常时）
     from pathlib import Path
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[2]
     return None, str(repo_root)
 
 

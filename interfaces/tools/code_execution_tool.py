@@ -168,12 +168,18 @@ def execute_code(code: str, timeout: int | None = None, cwd: str | None = None) 
 def _get_task_workspace_for_tool() -> tuple[str | None, str | None]:
     """获取当前 active todo 的 workspace（如果有）。
 
-    如果没有 active todo，返回 (None, repo_tmp)，让 execute_code 不再被
-    "必须先 task start" 阻断。重要理由（用户 2026-06-14 指出，wake 841 实例）：
-    terminal / execute_code 是模型的"双手"，应该在任意时候都能用，不应该被
-    强制绑到一个 todo 上才能跑（这违背了"待办是独立 entity"原则 + 实战时
-    模型经常需要跑无关的 ad-hoc 代码，比如查 stock data、写一次性脚本）。
+    优先级：active todo workspace → **实例 workspace** ``apps/<iid>/workspace/``
+    → 项目根（异常降级）。
+
+    重要理由：
+    - terminal / execute_code 是模型的"双手"，应该在任意时候都能用，不应该
+      被强制绑到一个 todo 上才能跑（2026-06-14 wake 841 实例反馈：违背
+      "待办是独立 entity"原则 + 实战时模型经常需要跑无关的 ad-hoc 代码，
+      比如查 stock data、写一次性脚本）。
+    - 但默认 cwd 不能是项目根——否则模型写盘会落到根顶层（如 7/5 贝塔把
+      文章写到根 articles/ 越界 agent sandbox）。实例 workspace 是天然 sandbox。
     """
+    # 1. 优先：active todo 的 workspace
     try:
         from domain.todos._infra import get_active_task_workspace
         task_id, ws = get_active_task_workspace()
@@ -181,9 +187,19 @@ def _get_task_workspace_for_tool() -> tuple[str | None, str | None]:
             return task_id, str(ws)
     except Exception:
         pass
-    # Fallback：用 repo 根的 tmp/ 目录做"无 toast 上下文"的工作目录
+    # 2. 默认：当前实例的 workspace 目录 apps/<iid>/workspace/
+    try:
+        from infrastructure.config import get_instance_dir, get_app_instance_id
+        iid = get_app_instance_id()
+        if iid:
+            ws = get_instance_dir(iid) / "workspace"
+            ws.mkdir(parents=True, exist_ok=True)
+            return None, str(ws)
+    except Exception:
+        pass
+    # 3. 最后降级：项目根 tmp/（ContextVar 未设或异常时）
     from pathlib import Path
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[2]
     tmp_ws = repo_root / "tmp"
     tmp_ws.mkdir(parents=True, exist_ok=True)
     return None, str(tmp_ws)

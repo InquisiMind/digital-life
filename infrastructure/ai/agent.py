@@ -1428,51 +1428,6 @@ class AIAgent:
                     logger.debug("Failed to dual-write wake_signal", exc_info=True)
 
 
-def _render_signal_message(ev: dict[str, Any]) -> str:
-    """渲染 mid-session 注入的消息事件为 wake_signal 提示文本（模块级 helper，便于测试）。
-
-    与 ``domain.lifecycle.heartbeat._resolve_event_prompt`` 同源——message /
-    group_message 走 yaml 的 ``wake_prompt`` 模板，含 chat_id / chat_name /
-    sender_position 等完整上下文。回复时模型能看出是私聊还是群、回哪个 chat。
-
-    退化兜底（无 yaml / 非 message 类 / 异常）保留精简模板但显式含 chat_id。
-    """
-    eid = ev.get("event_id", "?")
-    kind = ev.get("kind", "") or ""
-    payload = ev.get("payload", {}) if isinstance(ev.get("payload"), dict) else {}
-    display = str(ev.get("display_name") or kind or "")
-
-    # 1. 走 yaml 模板（同源 wake_prompt）
-    rendered_body = ""
-    if kind in ("message", "group_message"):
-        try:
-            from domain.lifecycle.heartbeat import _resolve_event_prompt
-            rendered_body = _resolve_event_prompt(kind, [ev]).strip()
-        except Exception:
-            rendered_body = ""
-
-    # 2. 退化兜底：无 yaml / 异常时保留精简模板，但加 chat_id
-    if not rendered_body:
-        text = payload.get("text", "")
-        sender = payload.get("sender_name", "")
-        chat_id = payload.get("chat_id", "")
-        body_inner = (f"({sender}) {text}" if sender else text) if text else display
-        rendered_body = (
-            "💬 新消息。"
-            + (f"\n对话/群：{chat_id}" if chat_id else "")
-            + f"\n{body_inner}"
-        )
-
-    # 3. 信号头 + 自动已读提示。chat_id 已经在 yaml 模板渲染的正文里
-    # （私聊：「对话：{chat_id}」，群：「群：{chat_name}（{chat_id}）」），
-    # 不再额外硬塞「必须 express_to_human(chat_id=xxx)」之类的具体调用方式——
-    # 模型看到 chat_id 就知道回哪里，参数细节交给模型按工具 schema 自己决定。
-    return (
-        f"[#{eid} · 新消息到达 - 会话中途注入]\n"
-        f"{rendered_body}\n"
-        f"> 注意：消息已自动标记为已读，稍后回复即可。"
-    )
-
     def _notify_manual_events(self, events: list[dict], messages: list[dict[str, Any]]) -> None:
         """Notify about non-message events as tool result (no auto-consume)."""
         lines: list[str] = ["[新事件 — 会话中途到达]"]
@@ -1637,4 +1592,50 @@ def _render_signal_message(ev: dict[str, Any]) -> str:
         Prevents mid-session re-injection of memories already shown at wake time.
         """
         self._injected_memory_ids.update(memory_ids)
+
+
+def _render_signal_message(ev: dict[str, Any]) -> str:
+    """渲染 mid-session 注入的消息事件为 wake_signal 提示文本（模块级 helper，便于测试）。
+
+    与 ``domain.lifecycle.heartbeat._resolve_event_prompt`` 同源——message /
+    group_message 走 yaml 的 ``wake_prompt`` 模板，含 chat_id / chat_name /
+    sender_position 等完整上下文。回复时模型能看出是私聊还是群、回哪个 chat。
+
+    退化兜底（无 yaml / 非 message 类 / 异常）保留精简模板但显式含 chat_id。
+    """
+    eid = ev.get("event_id", "?")
+    kind = ev.get("kind", "") or ""
+    payload = ev.get("payload", {}) if isinstance(ev.get("payload"), dict) else {}
+    display = str(ev.get("display_name") or kind or "")
+
+    # 1. 走 yaml 模板（同源 wake_prompt）
+    rendered_body = ""
+    if kind in ("message", "group_message"):
+        try:
+            from domain.lifecycle.heartbeat import _resolve_event_prompt
+            rendered_body = _resolve_event_prompt(kind, [ev]).strip()
+        except Exception:
+            rendered_body = ""
+
+    # 2. 退化兜底：无 yaml / 异常时保留精简模板，但加 chat_id
+    if not rendered_body:
+        text = payload.get("text", "")
+        sender = payload.get("sender_name", "")
+        chat_id = payload.get("chat_id", "")
+        body_inner = (f"({sender}) {text}" if sender else text) if text else display
+        rendered_body = (
+            "💬 新消息。"
+            + (f"\n对话/群：{chat_id}" if chat_id else "")
+            + f"\n{body_inner}"
+        )
+
+    # 3. 信号头 + 自动已读提示。chat_id 已经在 yaml 模板渲染的正文里
+    # （私聊：「对话：{chat_id}」，群：「群：{chat_name}（{chat_id}）」），
+    # 不再额外硬塞「必须 express_to_human(chat_id=xxx)」之类的具体调用方式——
+    # 模型看到 chat_id 就知道回哪里，参数细节交给模型按工具 schema 自己决定。
+    return (
+        f"[#{eid} · 新消息到达 - 会话中途注入]\n"
+        f"{rendered_body}\n"
+        f"> 注意：消息已自动标记为已读，稍后回复即可。"
+    )
 

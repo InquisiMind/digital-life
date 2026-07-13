@@ -164,7 +164,7 @@ The body generates events to wake the instance: alarms set during planning, high
 | | Traditional Agent | Digital Life |
 |---|---|---|
 | Message arrival | Must wait for multi-round thinking to finish (turn-based, slow) | Message auto-injects in current round, model can reply then continue |
-| Want to interject | ESC = destructive interrupt (discard and restart) | Smooth injection (no interruption to current reasoning) |
+| Want to interject | ESC destructive interrupt (discard and restart), or queue until all current rounds finish | Smooth injection (no interruption, your message auto-surfaces next round) |
 
 Core mechanism: **sending messages via tool calls**. A message isn't the model's "terminal output" — it's a tool call (`express_to_human`). After sending, the reasoning loop doesn't end — it continues to the next thing. Messages transform from "dialogue turns" into "actions during work." When you want to interject, it works the same way — the message auto-surfaces in the next round, and the model can reply at round 3 then keep going.
 
@@ -204,11 +204,16 @@ One digital life is one continuous memory. Feishu group chat and DM share memory
 
 #### 7. Multi-Agent Collaboration (Designed)
 
-| | Traditional Multi-Agent | Digital Life |
-|---|---|---|
-| | Engineering orchestration (A finishes, calls B) | Decentralized broadcast + role personas + responsibility-driven |
+| | Traditional Multi-Agent | SubAgent (mainstream Loop) | Digital Life |
+|---|---|---|---|
+| Essence | Engineering orchestration (A→B→C) | Main instance owns the whole picture, spawns a model ad-hoc for sub-problems | Decentralized broadcast + role personas + responsibility-driven |
+| Collaboration assumption | "Pseudo-collaboration" produced by pipeline scheduling | **Doesn't assume collaboration at all — it's fundamentally one instance doing everything, SubAgent is just its stateless hand** | Real collaboration: role division, handoff of deliverables, mutual gap-filling |
 
-Four systems working together: multi-instance mechanism (independent persona/memory), todo mechanism (task assignment), project mechanism (role division), Feishu message broadcast (group chat communication). No central orchestrator — collaboration is responsibility- and task-driven. Core value: **more focused vision, mutual gap-filling** — the strategist sees the big picture, the executor focuses on doing, different perspectives complement each other. One instance with the same resources can't achieve this — context too noisy, attention too scattered.
+SubAgent's three root problems: **context** (teamwork is repeated back-and-forth that relies on continuous memory to accumulate consensus, but SubAgent starts blank every time), **vision** (one instance must handle both the big picture and every detail, losing on both ends — whereas role division gives specialized focus: UI only thinks UI, dev only thinks dev, each role's context and thought stream stay uncontaminated), **efficiency** (consensus rebuilt every round + spawn is serial and blocking; more fundamentally, SubAgent frames the whole thing as "one person's business," yet in reality roles think **simultaneously** — non-resident sub-agents that can't talk to each other can't sustain even the plain parallel case of "PM finishes, UI/frontend/backend develop in parallel"). It's essentially "summon a model to deal with a problem," not "hand the task to a more specialized colleague."
+
+**Role division is the more elegant pattern**: in the real world, roles advance work by **handing off deliverables** (PM produces a PRD → drives UI/algorithm → questions come back for confirmation); collaboration happens between deliverables, not in API orchestration. And humans are just another role, standing in the same group, using the same message channel — **role division supports human-machine collaboration natively**, no separate interaction mechanism needed for "the human."
+
+Four systems working together: multi-instance mechanism (independent persona/memory), todo mechanism (task assignment), project mechanism (role division), Feishu group mechanism (a continuously-monitored group chat — no @mention needed, the instance decides whether to reply; WeChat doesn't support it, Feishu only). No central orchestrator, collaboration is responsibility- and task-driven. Core value: **more focused vision, mutual gap-filling** — one instance with the same resources can't, context too noisy, attention too scattered.
 
 #### 8. Low-to-Medium Consumption (Designed + Emergent)
 

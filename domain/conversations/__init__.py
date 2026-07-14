@@ -30,6 +30,7 @@ def record_inbound_message(
     text: str,
     msg_id: str = "",
     sender_kind: str = "human",
+    attachments: list[str] | None = None,
 ) -> Optional[int]:
     """入站消息(实例自己收到平台消息时调一次)。
 
@@ -47,6 +48,7 @@ def record_inbound_message(
     return record_inbound(
         chat_id=chat_id, sender_id=sender_id, sender_name=sender_name,
         text=text, msg_id=msg_id, source=_source, sender_kind=sender_kind,
+        attachments=attachments,
     )
 
 

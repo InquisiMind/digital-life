@@ -1613,10 +1613,18 @@ class AIAgent:
             return
 
         # Separate: assistant thinking (primary) vs other messages (secondary)
+        # reasoning_content 是 GLM 推理过程，经常比 content（"打完话后的输出"）长得多，
+        # 包含模型的关注点——是 entity 匹配最强信号。现在 reasoning_content 直接在
+        # assistant msg 里（_strip_old_reasoning 保留最近 N 轮），只要它还没被 strip
+        # 就纳入扫描。
         thinking_texts: list[str] = []
         other_texts: list[str] = []
         for m in new_messages:
-            content = m.get("content", "")
+            if m.get("role") == "assistant":
+                # 优先 reasoning_content（模型真实的推理过程），fallback 到 content
+                content = (m.get("reasoning_content") or m.get("content") or "")
+            else:
+                content = m.get("content", "")
             if isinstance(content, str) and len(content.strip()) >= 30:
                 if m.get("role") == "assistant":
                     thinking_texts.append(content)

@@ -209,6 +209,9 @@ async def handle_message(*, adapter: IngressAdapter, msg: NormalizedMessage) -> 
                 ctx_token=getattr(msg, "context_token", "") or "",
                 merged_texts=getattr(msg, "merged_texts", None) or None,
                 adapter=adapter,
+                # 多模态附件：从 NormalizedMessage 透传
+                attachment_summaries=attachment_summaries,
+                attachment_ids=attachment_ids,
             )
         finally:
             reset_current_instance_id(config_token)
@@ -248,6 +251,8 @@ def _route_to_life(
     ctx_token: str = "",
     merged_texts: list = None,
     adapter=None,
+    attachment_summaries: list = None,
+    attachment_ids: list = None,
 ) -> None:
     """消息路由核心——发出事件并根据 affair 状态决定唤醒策略。
 
@@ -316,6 +321,8 @@ def _route_to_life(
         platform=platform,
         merged_texts=merged_texts,
         adapter=adapter,
+        attachment_summaries=attachment_summaries or [],
+        attachment_ids=attachment_ids or [],
     )
     logger.info(
         "EMIT_HUMAN_RESULT event_id=%d is_group=%s chat_id=%r "
@@ -501,6 +508,8 @@ def _emit_l4_human_event(
     platform: str = "feishu",
     merged_texts: list = None,
     adapter=None,
+    attachment_summaries: list = None,
+    attachment_ids: list = None,
 ) -> int:
     """发出人类消息事件——消息入口的最后一步。
     流程：

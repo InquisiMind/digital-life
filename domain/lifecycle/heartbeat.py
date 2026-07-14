@@ -286,6 +286,7 @@ def _resolve_event_prompt(reason: str, pending_events: list | None = None) -> st
                         # 特殊处理 _merged_texts_block:从 accumulate 合并的 batch
                         # 渲染成" sender:text "可读块,让模型在一次 batched wake 里
                         # 看到这 30s 窗口内的多条消息
+                        payload = dict(payload)  # copy 避免污染原 payload
                         mc = payload.get("_merged_count", 1)
                         mt = payload.get("_merged_texts", [])
                         if isinstance(mc, int) and mc > 1 and isinstance(mt, list) and mt:
@@ -297,8 +298,26 @@ def _resolve_event_prompt(reason: str, pending_events: list | None = None) -> st
                                     lines.append(f"    {item.get('sender','?')}：{item.get('text','')[:200]}")
                                 elif isinstance(item, str):
                                     lines.append(f"    {item[:200]}")
-                            payload = dict(payload)  # copy 避免污染原 payload
                             payload["_merged_texts_block"] = "\n".join(lines)
+                        # 多模态附件：attachments list 转成"附件清单"段提示模型用 sense_image
+                        #    形如 [图片 feishu:img_v3_xxx (image/png)] / [文件 feishu:file_v3_yyy]
+                        atts = payload.get("attachments") or []
+                        if isinstance(atts, list) and atts:
+                            kind_emoji = {"image": "🖼️", "file": "📄", "audio": "🎙️", "video": "🎬"}
+                            att_lines = [
+                                "  附件（调 sense_image(attachment_id) 或按需处理）:"
+                            ]
+                            for a in atts:
+                                if not isinstance(a, dict):
+                                    continue
+                                aid = a.get("attachment_id", "?")
+                                kind = a.get("kind", "file")
+                                mime = a.get("mime", "")
+                                emoji = kind_emoji.get(kind, "📎")
+                                att_lines.append(f"    {emoji} [{kind} {aid} ({mime})]")
+                            payload["attachments_block"] = "\n".join(att_lines)
+                        else:
+                            payload["attachments_block"] = ""
                         # 用 SafeFormatter：缺失字段返回空字符串而不是抛 KeyError
                         fmt = string.Formatter()
                         out_parts = []

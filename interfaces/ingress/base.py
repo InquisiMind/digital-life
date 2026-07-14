@@ -52,6 +52,11 @@ class NormalizedMessage:
     # 把窗口里多条群消息以 [{sender, text}, ...] 形式挂这里。单条消息此字段为空 list。
     # 见 interfaces/ingress/group_buffer.py。handler 透传到事件 payload 供模型看到 batch 上下文。
     merged_texts: list = field(default_factory=list)
+    # 多模态附件（source 无关）。adapter 入站时把图片/文件下载落盘 + register_attachment，
+    # 这里挂轻量摘要——content 字段只是文本占位（"[图片 feishu:img_xxx]"），真实附件靠这里。
+    # 元素形如 {"attachment_id": "feishu:img_v3_xxx", "source": "feishu", "source_key": "img_v3_xxx",
+    #          "mime": "image/png", "kind": "image"}
+    attachments: list = field(default_factory=list)
     raw: Any = None
 
 

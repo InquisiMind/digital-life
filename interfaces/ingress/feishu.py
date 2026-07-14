@@ -345,6 +345,42 @@ class FeishuAdapter(IngressAdapter):
             logger.debug("add_reaction error: %s", exc)
             return ""
 
+    def _download_feishu_resource(
+        self, message_id: str, file_key: str, resource_type: str,
+    ) -> tuple[bytes, str]:
+        """下载飞书消息资源（图片 / 文件 / 音频），同步返回 (bytes, mime)。
+
+        Endpoint: GET /open-apis/im/v1/messages/{message_id}/resources/{file_key}?type=image|file
+        这是 CowAgent 等开源飞书机器人通用方案——支持图片 + 文件 + 音频 + 视频。
+
+        Args:
+            message_id: 飞书消息 ID（om_xxxxxxx），从 event.message.message_id 拿
+            file_key: 资源 ID（image 类型为 image_key，file/audio 为 file_key）
+            resource_type: "image" 或 "file"（飞书 docs 原话）
+
+        Returns:
+            (bytes_content, mime_type) —— mime 从 response Content-Type header 读，
+            未给时按 resource_type 猜（image→image/png, file→application/octet-stream）。
+
+        Raises:
+            Exception on network/HTTP error. 调用方 catch 并 fallback 处理。
+        """
+        import httpx
+        token = self._get_token()
+        if not token:
+            raise RuntimeError("no tenant_access_token")
+        url = (
+            f"{self._domain}/open-apis/im/v1/messages/{message_id}"
+            f"/resources/{file_key}?type={resource_type}"
+        )
+        with httpx.Client(timeout=30.0) as c:  # 图片下载给 30s，远比 LLM 调用短
+            r = c.get(url, headers={"Authorization": f"Bearer {token}"})
+            r.raise_for_status()
+            mime = (r.headers.get("Content-Type") or "").split(";")[0].strip()
+            if not mime:
+                mime = "image/png" if resource_type == "image" else "application/octet-stream"
+            return (r.content, mime)
+
     async def remove_reaction(self, msg_id: str, reaction_id: str) -> bool:
         """删除一个 reaction(基于 reaction_id)。"""
         if not msg_id or not reaction_id:
@@ -486,21 +522,162 @@ class FeishuAdapter(IngressAdapter):
         )
 
     def _normalize(self, event: Any) -> NormalizedMessage:
-        """Convert a Lark P2ImMessageReceiveV1 event to NormalizedMessage."""
+        """Convert a Lark P2ImMessageReceiveV1 event to NormalizedMessage.
+
+        **多模态支持**：image/post(file) file/audio 各按 msg_type 分支处理——
+        下载资源字节到本地 attachments/，register 进 attachment registry，
+        把 attachment_id 摘要挂到 NormalizedMessage.attachments。
+        text content 字段给出可读占位（" [图片 xxx]" / "[文件 xxx]"）让模型看到。
+        """
         msg = event.event.message
         sender = event.event.sender
 
         chat_id = getattr(msg, "chat_id", "") or ""
         chat_type = getattr(msg, "chat_type", "p2p") or "p2p"
         message_id = getattr(msg, "message_id", "") or f"in_{uuid4().hex}"
-
+        msg_type = (getattr(msg, "message_type", "text") or "text").strip().lower()
         raw_content = getattr(msg, "content", "") or ""
-        text = raw_content
-        if raw_content.startswith("{"):
+
+        # ── 按 msg_type 解析 text + attachments ────────────────────────────────
+        # image: content={"image_key":"img_v3_xxx"}
+        # file:  content={"file_key":"file_v3_xxx","file_name":"..."}
+        # audio: content={"file_key":"file_v3_xxx","duration_ms":...}
+        # post: 富文本，content={"title":"...","content":[[{tag:"text",text},{tag:"img",image_key}]]}
+        # text: content={"text":"hello"}（不加 @/at 未提及）
+        text_parts: list[str] = []
+        attachments: list[dict] = []  # 元素轻量摘要 {attachment_id, source, source_key, mime, kind}
+
+        def _ingest_resource(source_key: str, resource_type: str, kind: str,
+                             fallback_mime: str = "") -> str | None:
+            """把一个飞书资源（image_key/file_key）拉下来 + register attachment。
+
+            返回 attachment_id 或 None（失败时不抛，返回 None 让调用方决定占位文案）。
+            """
+            if not source_key or not message_id or message_id.startswith("in_"):
+                return None
             try:
-                text = json.loads(raw_content).get("text", raw_content)
+                data, mime = self._download_feishu_resource(
+                    message_id, source_key, resource_type,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "FeishuAdapter: download %s=%s failed (msg=%s): %s",
+                    resource_type, source_key, message_id, exc,
+                )
+                return None
+            if not data:
+                return None
+            try:
+                from infrastructure.config import get_app_instance_id
+                from infrastructure.persistence.instance.attachments import (
+                    save_bytes_as_attachment,
+                )
+                iid = get_app_instance_id() or ""
+                if not iid:
+                    return None
+                att = save_bytes_as_attachment(
+                    instance_id=iid, source="feishu", source_key=source_key,
+                    data=data, mime=mime or fallback_mime or "application/octet-stream",
+                )
+                attachments.append({
+                    "attachment_id": att.attachment_id,
+                    "source": "feishu",
+                    "source_key": source_key,
+                    "mime": att.mime,
+                    "kind": att.kind,
+                })
+                return att.attachment_id
+            except Exception as exc:
+                logger.warning("FeishuAdapter: register attachment failed: %s", exc)
+                return None
+
+        if msg_type == "text":
+            text_parts.append(raw_content)
+            if raw_content.startswith("{"):
+                try:
+                    text_parts = [json.loads(raw_content).get("text", raw_content)]
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        elif msg_type == "image":
+            image_key = ""
+            if raw_content.startswith("{"):
+                try:
+                    image_key = (json.loads(raw_content).get("image_key") or "").strip()
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            att_id = _ingest_resource(image_key, "image", "image", fallback_mime="image/png")
+            text_parts.append(f"[图片 {att_id or image_key}]" if att_id else f"[图片 {image_key}]")
+        elif msg_type == "post":
+            # post 富文本：title + content list of list（每元素 {tag, text, image_key, ...}）
+            try:
+                post_data = json.loads(raw_content) if raw_content.startswith("{") else {}
+            except (json.JSONDecodeError, TypeError):
+                post_data = {}
+            # zh / en_us 任一即可
+            locale_obj = post_data.get("zh") or post_data.get("en_us") or post_data.get("content") or {}
+            title = (locale_obj.get("title") or "").strip() if isinstance(locale_obj, dict) else ""
+            if title:
+                text_parts.append(title)
+            content_lines = locale_obj.get("content") or [] if isinstance(locale_obj, dict) else []
+            for line in content_lines:
+                if not isinstance(line, list):
+                    continue
+                line_parts: list[str] = []
+                for el in line:
+                    if not isinstance(el, dict):
+                        continue
+                    tag = el.get("tag") or el.get("type") or ""
+                    if tag == "text":
+                        t = (el.get("text") or "").strip()
+                        if t:
+                            line_parts.append(t)
+                    elif tag in ("img", "image"):
+                        img_key = (el.get("image_key") or "").strip()
+                        att_id = _ingest_resource(img_key, "image", "image", fallback_mime="image/png")
+                        placeholder = f"[图片 {att_id or img_key}]" if att_id else f"[图片 {img_key}]"
+                        # 图片占位单独一行——便于模型识别"这里需要调 sense_image"
+                        line_parts.append(placeholder)
+                    elif tag in ("at",):
+                        # post 里的 @：保留占位（mention 解析靠 event.mentions 字段，下面统一处理）
+                        pass
+                    # 其它 tag（a / media 等）暂不处理
+                if line_parts:
+                    text_parts.append("".join(line_parts))
+            # 如果 post 完全没解出内容，fallback 到 raw_content 显示给模型看
+            if not text_parts:
+                text_parts.append(raw_content if raw_content else "[空富文本]")
+        elif msg_type == "file":
+            file_key = ""
+            file_name = ""
+            try:
+                fv = json.loads(raw_content) if raw_content.startswith("{") else {}
+                file_key = (fv.get("file_key") or "").strip()
+                file_name = (fv.get("file_name") or "").strip()
             except (json.JSONDecodeError, TypeError):
                 pass
+            att_id = _ingest_resource(file_key, "file", "file")
+            text_parts.append(f"[文件 {file_name or att_id or file_key}]")
+        elif msg_type == "audio":
+            file_key = ""
+            duration_ms = 0
+            try:
+                av = json.loads(raw_content) if raw_content.startswith("{") else {}
+                file_key = (av.get("file_key") or "").strip()
+                duration_ms = int(av.get("duration_ms") or 0)
+            except (json.JSONDecodeError, TypeError):
+                pass
+            att_id = _ingest_resource(file_key, "file", "audio", fallback_mime="audio/opus")
+            sec = round(duration_ms / 1000, 1) if duration_ms else 0
+            text_parts.append(f"[语音 {sec}s]" if sec else "[语音]")
+        else:
+            # 其它/未知（如 sticker, share_chat, interactive 等）：fallback 占位
+            text_parts.append(f"[不支持的消息类型 {msg_type}]")
+
+        # text 兜底：从未解出内容时退回 raw_content
+        text = "".join(text_parts).strip() if text_parts else (raw_content or "")
+        # 空白文本兜底——避免空消息被 handler 静默丢弃（如纯表情图，没 attachment 时）
+        if not text and attachments:
+            text = "[附件消息]"
 
         sender_open_id = ""
         sender_obj = getattr(sender, "sender_id", None)
@@ -640,5 +817,6 @@ class FeishuAdapter(IngressAdapter):
             mention_names=mentioned_names,
             mention_map=mention_map,
             sender_is_bot=sender_is_bot,
+            attachments=attachments,
             raw=event,
         )

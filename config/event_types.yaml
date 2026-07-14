@@ -31,6 +31,7 @@ event_types:
       sender_name: string?
       nurture_kinds: string[]?
       deltas: object?
+      attachments: object[]?
     description: 用户通过飞书发送消息时触发
     debounce_window_s: 0
     merge_policy: latest
@@ -40,17 +41,21 @@ event_types:
       对话：{chat_id}
 
       {sender_name}：{text}
+      {attachments_block}
 
       {sender_notes_block}
 
       如需回应，必须用 `express_to_human` 工具发送（直接 text 输出对方收不到）。
       默认 chat_id 留空 = 回复当前对话。
+      如果上文中出现 `[图片 xxx]` / `[文件 xxx]`，可调 `sense_image(attachment_id)` 看图。
     allowed_tools:
       - express_to_human
       - sense_conversation
       - update_scratchpad
       - record_thought
       - todo
+      - sense_image
+      - register_attachment
       - rest
     context_policy:
       include_history: true
@@ -79,6 +84,7 @@ event_types:
       mentions_bot: boolean?
       mention_names: string?
       mention_map: string?
+      attachments: object[]?
     description: 群聊中有新消息时触发
     # debounce 关闭:消息合并已在 ingress adapter 内完成（见 interfaces/ingress/group_buffer.py）
     # —— adapter 一次 flush 一条 NormalizedMessage(带 merged_texts 列表),事件层不再合并。
@@ -91,14 +97,18 @@ event_types:
       群：{chat_name}（{chat_id}）
       {sender_name}{sender_position}：{text}
       {_merged_texts_block}
+      {attachments_block}
       {sender_notes_block}
 
       如需回应，必须用 `express_to_human` 工具发送（直接 text 输出对方收不到）。
       默认 chat_id 留空 = 回复当前群。当多条消息被合并（_merged_count > 1）时，
       可读后决定是否一并发声，沉默也合理。
+      如果上文中出现 `[图片 xxx]` / `[文件 xxx]`，可调 `sense_image(attachment_id)` 看图。
     allowed_tools:
       - express_to_human
       - sense_users
+      - sense_image
+      - register_attachment
       - rest
     context_policy:
       include_history: false

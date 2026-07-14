@@ -177,6 +177,17 @@ def init_all_schemas() -> None:
         failed.append(f"budget: {exc}")
         logger.warning("schema init budget failed: %s", exc)
 
+    # 10) attachments（多模态附件 registry，state.db 同库附加）
+    try:
+        from infrastructure.persistence.instance.attachments import ensure_schema as _att_ensure
+        from infrastructure.config import get_app_instance_id
+        iid = get_app_instance_id() or ""
+        if iid:
+            _att_ensure(iid)
+    except Exception as exc:
+        failed.append(f"attachments: {exc}")
+        logger.warning("schema init attachments failed: %s", exc)
+
     if failed:
         logger.warning("init_all_schemas: %d failures: %s", len(failed), "; ".join(failed))
     else:

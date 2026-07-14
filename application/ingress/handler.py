@@ -122,6 +122,11 @@ async def handle_message(*, adapter: IngressAdapter, msg: NormalizedMessage) -> 
             pass
 
     text = msg.content
+    # 多模态附件：从 NormalizedMessage 提取 attachment 摘要（不含 local_path，避免 prompt 泄漏）
+    # 每元素形如 {"attachment_id", "source", "source_key", "mime", "kind"}
+    # handler 只读 attachment_id 列表（用于 record_inbound）+ 整体 attachments 摘要（用于 events payload）
+    attachment_summaries: list[dict] = list(getattr(msg, "attachments", []) or [])
+    attachment_ids: list[str] = [a.get("attachment_id", "") for a in attachment_summaries if a.get("attachment_id")]
 
     # ── Ignore Feishu's WS echo of sibling-bot messages ──
     # Two digital-life instances in the same Feishu group have POSIX
@@ -575,6 +580,8 @@ def _emit_l4_human_event(
                     # batch 历史（adapter 30s + offset buffer 合并出来的,可能空）
                     "_merged_texts": _mt,
                     "_merged_texts_block": _mt_block,
+                    # 多模态附件摘要（轻量，不含 local_path）——让模型在 wake prompt 看到"有图"
+                    "attachments": attachment_summaries,
                 },
                 channel=f"gateway:{pf}:group",
             )
@@ -603,6 +610,7 @@ def _emit_l4_human_event(
                     text=text,
                     msg_id=msg_id,
                     sender_kind="human",
+                    attachments=attachment_ids if attachment_ids else None,
                 )
             except Exception as exc:
                 # 之前是 except: pass + 引用了未定义的 msg 变量，导致聚合库 5 天 0 条 human 消息。
@@ -624,6 +632,8 @@ def _emit_l4_human_event(
                 "deltas": deltas,
                 "at": now_iso(),
                 "gateway_handled": True,
+                # 多模态附件摘要（与 group_message 一致）
+                "attachments": attachment_summaries,
             },
             channel=f"gateway:{pf}:user",
         )

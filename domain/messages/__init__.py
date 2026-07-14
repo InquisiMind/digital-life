@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import sqlite3
 import threading
@@ -117,6 +118,14 @@ def _ensure_schema(instance_id: str | None = None) -> None:
                 CREATE INDEX IF NOT EXISTS idx_messages_chat_id_ts
                     ON messages(chat_id, id DESC);
             """)
+            # 多模态附件：多模态消息进来时存 attachment_id 列表（JSON array）
+            # migration：老库表已存在时补列。ALTER TABLE ADD COLUMN 没有 IF NOT EXISTS
+            # 原生支持，需要先 PRAGMA table_info 判断
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()}
+            if "attachments_json" not in cols:
+                conn.execute(
+                    "ALTER TABLE messages ADD COLUMN attachments_json TEXT NOT NULL DEFAULT ''"
+                )
             conn.commit()
         finally:
             conn.close()
@@ -137,6 +146,7 @@ def record_message(
     platform_sender: str = "",
     sender_role: str = "",
     instance_id: str | None = None,
+    attachments: list[str] | None = None,
 ) -> Optional[int]:
     """通用 INSERT,带 (source, msg_ref) 去重。
 
@@ -152,6 +162,7 @@ def record_message(
     msg_ref: 平台原生 msg_id 或广播来源自带,配 source 做去重
     instance_id: 显式指定写入目标实例库。master 进程接收广播中转时必传,
                  绕过 ContextVar 默认值(否则会错写到 master 默认实例)。
+    attachments: 可选的 attachment_id 列表（多模态附件）。JSON 序列化存 attachments_json 列。
     """
     if not chat_id or text is None or not str(text).strip():
         return None
@@ -160,16 +171,17 @@ def record_message(
     if not msg_ref:
         msg_ref = f"local_{direction}_{int(time.time() * 1000)}_{(platform_sender or sender_name or 'x')[:8]}_{_uuid.uuid4().hex[:6]}"
     now = _now_iso()
+    attachments_json = json.dumps(attachments, ensure_ascii=False) if attachments else ""
 
     conn = sqlite3.connect(str(p))
     try:
         cursor = conn.execute(
             "INSERT OR IGNORE INTO messages "
             "(ts, direction, source, chat_id, platform_sender, sender_name, "
-            " sender_role, text, msg_ref) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " sender_role, text, msg_ref, attachments_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (now, direction, source, chat_id, platform_sender, sender_name,
-             sender_role, text, msg_ref),
+             sender_role, text, msg_ref, attachments_json),
         )
         conn.commit()
         if cursor.rowcount > 0:
@@ -197,11 +209,13 @@ def record_inbound(
     msg_id: str = "",
     source: str = "feishu",
     sender_kind: str = "human",
+    attachments: list[str] | None = None,
 ) -> Optional[int]:
     """入站消息:实例自己收到平台消息时调一次。
 
     sender_id = 平台视角的 sender open_id(per-app,存进 platform_sender)。
     sender_kind: 'human' / 'bot'(决定 sender_role)。
+    attachments: 可选的 attachment_id 列表（多模态入站——图片/文件）。
     """
     role = "human" if sender_kind == "human" else "other"
     return record_message(
@@ -213,6 +227,7 @@ def record_inbound(
         msg_ref=msg_id,
         platform_sender=sender_id,
         sender_role=role,
+        attachments=attachments,
     )
 
 
@@ -291,7 +306,7 @@ def list_messages(chat_id: str, limit: int = 30) -> list[dict]:
     try:
         rows = conn.execute(
             "SELECT id, ts, direction, source, chat_id, platform_sender, "
-            "       sender_name, sender_role, text, msg_ref "
+            "       sender_name, sender_role, text, msg_ref, attachments_json "
             "FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
             (chat_id, limit),
         ).fetchall()
@@ -304,6 +319,12 @@ def list_messages(chat_id: str, limit: int = 30) -> list[dict]:
             d["sender_id"] = d["platform_sender"]
             d["sender_kind"] = d["sender_role"]
             d["created_at"] = d["ts"]
+            # 多模态附件 ID 列表（JSON 字符串解析，空 = []）
+            att_json = d.pop("attachments_json", "") or ""
+            try:
+                d["attachments"] = json.loads(att_json) if att_json else []
+            except (ValueError, TypeError):
+                d["attachments"] = []
             out.append(d)
         out.reverse()  # 时间正序
         return out
@@ -335,7 +356,14 @@ def list_plain_text(chat_id: str, limit: int = 30) -> str:
         # 出站消息(sender_role='self')用前缀米以便区分,但仍然显示 display_name
         # 让人/模型理解"这是 zero/alpha 说的"
         prefix = "" if role != "self" else ""  # 暂不加 prefix,保持自然对话流
-        lines.append(f"{prefix}{name}：{text}")
+        line = f"{prefix}{name}：{text}"
+        # 多模态附件：每条若有 attachments 列表，行末附 [附件 xxx] 提示——
+        # 让 chat_stream 段给模型看到"这里有图，需要用 sense_image 查看"
+        atts = m.get("attachments") or []
+        if atts:
+            att_hint = ", ".join(f"[附件 {a}]" for a in atts)
+            line += f" {att_hint}"
+        lines.append(line)
     return "\n".join(lines)
 
 

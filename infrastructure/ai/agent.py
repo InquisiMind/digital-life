@@ -648,6 +648,7 @@ class AIAgent:
             "interfaces.tools.action_tools",
             "interfaces.tools.skills_tool",
             "interfaces.tools.capability_tools",
+            "interfaces.tools.vision_tool",
             "domain.todos.tools",
             "domain.project.tools",
             "interfaces.tools.terminal_tool",

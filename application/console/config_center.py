@@ -70,6 +70,12 @@ FIELDS: tuple[ConfigField, ...] = (
         description="LLM API endpoint。",
     ),
     ConfigField(
+        "model.vision", "Vision 模型", "model", "yaml", path="model.vision",
+        default="glm-4.6v",
+        description="sense_image 工具使用的视觉模型（智谱 glm-4.6v / glm-5v-turbo / glm-4.5v）。"
+                    "用在收到图片消息时的图片描述，默认 glm-4.6v。",
+    ),
+    ConfigField(
         "LLM_API_KEY", "API Key", "model", "env", secret=True,
         description="LLM API Key（敏感）。留空保存 = 保留当前值。",
     ),

@@ -79,7 +79,9 @@ class AIAgent:
         self._audit_assistant_had_calls: bool = False
         # 最近若干轮 reasoning 历史（同 wake 多 LLM call 间跨轮延续思路）。最多保留 12 条
         # （capacity 比注入的默认 10 轮大一点，给 segment narr 叙事等额外用途留余量）。
-        self._reasoning_history: list[str] = []
+        # ← 已废弃：reasoning_content 现在直接在 assistant msg dict 里保留，
+        #   _strip_old_reasoning 按轮次摘除超出 max_rounds 的。不再需要这个 list。
+        # self._reasoning_history: list[str] = []
 
     def run_conversation(
         self,
@@ -153,16 +155,13 @@ class AIAgent:
         sense_only_streak = 0
 
         for _ in range(max(1, int(self.max_iterations or 1))):
-            # Layer 2（拼）：进新一轮 _chat 前，把最近 N 轮 reasoning 就地拼回到
-            # 它们各自原属 assistant message 的 content 前（用 <think></think> 块）。
-            # 关键纠正：之前做法是把 think 剥成末尾 fake user 消息——位置和结论对不上。
-            # 正确形式 think 应跟 tool_calls 同在一条 assistant message，位置一一对应。
-            # provider.inject_into_messages 返回新 list（不动 messages 入参），临时发不下不落库。
-            # max_rounds 不传——由 provider 自己声明 reuse_max_rounds（GLM=5, StepFun=3），
-            # 避免轻量模型把自己的历史推理当 todo 累积执行（wake-499 案例）。
-            _messages_for_call = self._provider.inject_into_messages(
-                messages, self._reasoning_history,
-            ) if self._reasoning_history else messages
+            # Layer 2（拼）：进新一轮 _chat 前，控制历史 assistant 消息的
+            # reasoning_content 可见范围——只保留最近 N 轮的推理，更早的摘掉。
+            # 这取代了旧的 _reasoning_history 平面 list + inject 拼接方案——
+            # 后者用 zip 配对 assistant msg 会错位，已被实证导致重复发消息 bug。
+            # 现在每条 assistant msg 自带 reasoning_content（append 时直接放进 dict），
+            # 只需要"摘掉超出 max_rounds 的旧 msg 的 reasoning_content"即可。
+            _messages_for_call = self._strip_old_reasoning(messages)
 
             # ── 字面 dump：每次 LLM 调用前保存 _messages_for_call 的字面副本 ──
             # 包括 system / history / 注入的 reasoning / compact 后的 segment。
@@ -177,7 +176,15 @@ class AIAgent:
             content = assistant.get("content") or ""
             tool_calls = assistant.get("tool_calls") or []
             reasoning = assistant.get("reasoning") or ""
-            messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls or None})
+            # assistant message 自带 reasoning_content（GLM 原生返回），直接放进去——
+            # 下一轮 LLM 从 messages 列表读就能看到自己上轮的推理，天然有序、无需拼接。
+            # 这取代了原来 _reasoning_history + inject_into_messages 的拷回逻辑——
+            # 后者用扁平 list zip 配对 assistant msg 会错位、误把别的 reasoning 挂到不相干
+            # 的 message 上，已被实证导致重复发消息 bug（wake-1973）。
+            msg_dict: dict[str, Any] = {"role": "assistant", "content": content, "tool_calls": tool_calls or None}
+            if reasoning:
+                msg_dict["reasoning_content"] = reasoning
+            messages.append(msg_dict)
             # Layer 1 落库：reasoning 透传到 messages 表的 reasoning 列（schema 已经有，之前没填）
             self._append_message(
                 session_id, "assistant", content,
@@ -185,8 +192,8 @@ class AIAgent:
                 reasoning=reasoning or None,
             )
             # 维护最近 N 轮 reasoning 历史给下一轮注入用
-            if reasoning:
-                self._reasoning_history = (self._reasoning_history + [reasoning])[-12:]
+            # ← 已废弃：reasoning_content 现在直接写进 messages 列表的 assistant msg 里，
+            #   _strip_old_reasoning 按轮次截断。不再需要 _reasoning_history 平面 list。
             self._write_log(messages)
             if not tool_calls:
                 # 中途信号触发"延续 turn"——模型自然结束本轮但事件队列里有新到的
@@ -304,6 +311,51 @@ class AIAgent:
         messages.append({"role": "assistant", "content": final})
         self._write_log(messages)
         return {"final_response": final, "tool_calls": tool_calls_seen, "status": "blocked"}
+
+    def _strip_old_reasoning(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """摘掉超出 max_rounds 的旧 assistant 消息的 reasoning_content。
+
+        设计：每条 assistant msg 自带 reasoning_content（append 时由 GLM 原生返回直接写入），
+        顺序天然有序。这里只做一件事——保留最后 N 条（N = provider.reuse_max_rounds）的
+        reasoning_content，更早的 strip 掉 key——相当于"模型已经忘了 N 轮前的具体推理，
+        只记得自己做过什么（tool_calls / content 留着）"。
+
+        这取代了旧的 _reasoning_history + inject_into_messages 方案。
+        后者用扁平 list zip 配对 assistant msg 会错位——把别的轮的推理挂到不相干的
+        message 上，导致模型以为"上轮说了要做 X 但没做" → 补行动 → 重复发消息（wake-1973）。
+
+        幂等：不修改入参 messages，返回新 list（与旧 inject 返回新 list 行为一致）。
+        """
+        max_rounds = getattr(self._provider, "reuse_max_rounds", 5)
+        if max_rounds <= 0:
+            # drop 模式或 reuse_max_rounds=0 → 全部摘掉
+            return [
+                {k: v for k, v in m.items() if k != "reasoning_content"}
+                if m.get("role") == "assistant"
+                else m
+                for m in messages
+            ]
+
+        # 从后往前找含 reasoning_content 的 assistant msg，保留最后 max_rounds 条
+        reasoning_indices: list[int] = []
+        for i in range(len(messages) - 1, -1, -1):
+            m = messages[i]
+            if m.get("role") == "assistant" and m.get("reasoning_content"):
+                reasoning_indices.append(i)
+            if len(reasoning_indices) >= max_rounds:
+                break
+        keep_set = set(reasoning_indices)
+
+        # 构建新 list：不在 keep_set 的 assistant msg 摘掉 reasoning_content
+        new_messages: list[dict[str, Any]] = []
+        for i, m in enumerate(messages):
+            if m.get("role") == "assistant" and "reasoning_content" in m and i not in keep_set:
+                nm = dict(m)
+                nm.pop("reasoning_content", None)
+                new_messages.append(nm)
+            else:
+                new_messages.append(m)
+        return new_messages
 
     def _chat(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         self._inject_signalled_events(messages)

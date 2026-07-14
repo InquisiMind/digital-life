@@ -25,6 +25,7 @@ from domain.contacts.store import (
     create_contact,
     update_contact,
     del_contact,
+    merge_contacts,
     set_blocked,
     get_or_create_stub,
     lookup_name,

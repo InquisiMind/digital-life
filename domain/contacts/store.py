@@ -384,6 +384,69 @@ def del_contact(contact_id: str) -> bool:
         return False
 
 
+def merge_contacts(source_id: str, target_id: str) -> bool:
+    """把 source contact 合并到 target——source 的所有 platform_ids 迁移到 target，
+    然后删除 source。
+
+    用于"同一个人在系统里被注册成两条 contact"的人工合并场景。
+
+    合并规则：
+      - source 的 platform_ids 逐条 INSERT OR IGNORE 到 target
+      - target 的 name/notes/kind 保留不变（用户可以在合并后编辑）
+      - 如果 source 有 notes 且 target notes 为空，把 source notes 复制过去
+      - 删除 source contact + source 的 contact_ids
+    """
+    if not source_id or not target_id or source_id == target_id:
+        return False
+    if not _state_db_path().exists():
+        return False
+    ensure_schema()
+    try:
+        conn = sqlite3.connect(str(_state_db_path()))
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            # 1. 把 source 的 platform_ids 迁移到 target
+            source_pids = conn.execute(
+                "SELECT platform, platform_id FROM contact_ids WHERE contact_id = ?",
+                (source_id,),
+            ).fetchall()
+            for p, pid in source_pids:
+                conn.execute(
+                    "INSERT OR IGNORE INTO contact_ids (contact_id, platform, platform_id) "
+                    "VALUES (?, ?, ?)",
+                    (target_id, p, pid),
+                )
+            # 2. 如果 target notes 为空，把 source 的 notes 补过来
+            src = conn.execute(
+                "SELECT notes FROM contacts WHERE id = ?", (source_id,)
+            ).fetchone()
+            tgt = conn.execute(
+                "SELECT notes FROM contacts WHERE id = ?", (target_id,)
+            ).fetchone()
+            if src and tgt and not (tgt[0] or "").strip() and (src[0] or "").strip():
+                conn.execute(
+                    "UPDATE contacts SET notes = ?, updated_at = ? WHERE id = ?",
+                    (src[0], _now_iso(), target_id),
+                )
+            # 3. 删除 source
+            conn.execute("DELETE FROM contact_ids WHERE contact_id = ?", (source_id,))
+            conn.execute("DELETE FROM contacts WHERE id = ?", (source_id,))
+            conn.commit()
+            logger.info(
+                "merge_contacts: source %s → target %s (%d platform_ids moved)",
+                source_id[:8], target_id[:8], len(source_pids),
+            )
+            return True
+        except sqlite3.Error:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        logger.warning("merge_contacts failed: %s", exc)
+        return False
+
+
 def set_blocked(contact_id: str, blocked: bool, reason: str = "") -> bool:
     """设置黑名单状态。返回是否真改了一行。"""
     if not contact_id or not _state_db_path().exists():

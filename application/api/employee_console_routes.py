@@ -600,6 +600,23 @@ class EmployeeConsoleAPIService:
         removed = del_contact(contact_id)
         return web.json_response({"ok": removed, "id": contact_id})
 
+    async def _handle_console_merge_contacts(self, request: web.Request) -> web.Response:
+        """POST /api/employee/{iid}/contacts/merge — 合并两个联系人。
+
+        body: {"source_id": "xxx", "target_id": "yyy"}
+        source 的 platform_ids 迁移到 target，source 被删除。
+        """
+        data = await self._input(request)
+        body = data.body or {}
+        source_id = (body.get("source_id") or "").strip()
+        target_id = (body.get("target_id") or "").strip()
+        if not source_id or not target_id:
+            return web.json_response({"ok": False, "reason": "source_id 和 target_id 必填"}, status=400)
+        from domain.contacts import merge_contacts, ensure_schema
+        ensure_schema()
+        ok = merge_contacts(source_id, target_id)
+        return web.json_response({"ok": ok, "source_id": source_id, "target_id": target_id})
+
     # Chat members 已随去中心化消息总线移除：每个实例自管 subscriptions.yaml，
     # 跨实例广播走 HTTP 广播端点（见 docs/architecture/decentralized-message-bus.md）。
 
@@ -1195,6 +1212,7 @@ def _add_console_api_routes(app: web.Application, api_prefix: str, service: Empl
     app.router.add_patch(f"{api_prefix}/contacts/{{id}}", service._handle_console_update_contact)
     app.router.add_post(f"{api_prefix}/contacts/{{id}}/block", service._handle_console_toggle_block_contact)
     app.router.add_delete(f"{api_prefix}/contacts/{{id}}", service._handle_console_delete_contact)
+    app.router.add_post(f"{api_prefix}/contacts/merge", service._handle_console_merge_contacts)
 
     # todos (v5)
     app.router.add_get(f"{api_prefix}/todos", service._handle_console_todos)

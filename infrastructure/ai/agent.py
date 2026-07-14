@@ -334,6 +334,17 @@ class AIAgent:
         )
         if not payload["tools"]:
             payload.pop("tools")
+        # ── 在 HTTP POST 之前 dump payload —— 这是"模型实际收到的"原始 input ──
+        # 关键修正：旧 _dump_llm_input 在 agent.py L170 调用（_chat 之前），
+        # 漏掉了 _chat 内部的两步——
+        #   1) _inject_signalled_events（mid-session wake_signal 注入）
+        #   2) _inject_entity_recall（实体记忆召回注入）
+        # 也漏掉了 _maybe_compress_messages / _compact_old_tool_messages 压缩结果，
+        # 以及 _provider.customize_payload 加的 reasoning_effort 等模型特定字段。
+        # 这些都对模型决策有实质影响——dump 必须在 POST 之前、payload 完整成型后做。
+        # 这一份是 ground truth：任何"模型为什么这样做"的问题都能从这里溯因。
+        self._dump_llm_payload(payload)
+
         # timeout 拆分 — 历史 BUG: scalar timeout=300 在所有生命周期(connect/read/pool)
         # 都给 5 分钟,导致一次 GLM 推理卡死会阻塞整个 wake 几十分钟。现拆细:
         # - connect/pool: 5s(GLM TLS 握手本身 50ms,5s 足够发现网络断裂)
@@ -717,6 +728,68 @@ class AIAgent:
                 ctx.next_call()
                 self._audit_assistant_had_calls = False
 
+    def _dump_llm_payload(self, payload: dict[str, Any]) -> None:
+        """真实发给 LLM 的字面 payload，在 HTTP POST 之前写一份完整 JSON。
+
+        区别于 _dump_llm_input（调用在 _chat 之前、缺 signalled_events/entity_recall
+        注入、缺 provider custom payload）—— 这一份是 **HTTP 字节流的 JSON 包装**。
+        任何关于"模型为什么这样做"的问题都能从这份 dump 完整溯因——无需考古重建。
+
+        保留策略：12 小时（半天），覆盖"出问题后再回看"的常态窗口。
+        半天 = ~10-15 wake × 每个 wake 数十 LLM call = 数千 dump 文件，单文件 ~200KB，
+        总量估算每实例 50-200MB（按 messages 长度浮动）。3 实例 ~ 600MB max，可接受。
+
+        文件位置：apps/<id>/data/llm_payload_dumps/<session_id>__call_<n>__<unix_ms>.json
+        """
+        try:
+            import datetime as _dt
+            import time as _t
+            call_seq = self._call_seq - 1  # 注意：_call_seq 在 _dump_llm_input 已自增过；这里复用同一序号
+            wake_id = getattr(self, "wake_id", None)
+            dump = {
+                "session_id": self.session_id or "(adhoc)",
+                "wake_id": wake_id,
+                "call_seq": call_seq,
+                "ts_unix_ms": int(_t.time() * 1000),
+                "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="milliseconds"),
+                "url": self._chat_url(),
+                "model": payload.get("model"),
+                "payload": payload,  # 含 messages / tools / reasoning_config 等模型真实看的所有字段
+            }
+            # 多套一个子目录避免和老的 sessions_dumps/ 混在一起
+            dump_dir = self._dumps_dir.parent / "llm_payload_dumps"
+            dump_dir.mkdir(parents=True, exist_ok=True)
+            file_path = dump_dir / (
+                f"{self.session_id or 'adhoc'}__call_{call_seq}__{dump['ts_unix_ms']}.json"
+            )
+            file_path.write_text(
+                json.dumps(dump, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8",
+            )
+            # 顺手扫过期
+            self._purge_old_payload_dumps(dump_dir, max_hours=12)
+        except Exception:
+            logger.debug("Failed to dump LLM payload", exc_info=True)
+
+    def _purge_old_payload_dumps(self, dump_dir: "Path", max_hours: int = 12) -> None:
+        """清理 llm_payload_dumps/ 超过 max_hours 小时的 JSON 文件。
+
+        按文件 mtime 清理；保留 12 小时窗口（覆盖常见 debug/调试反馈时间）。
+        """
+        import time as _t
+        from pathlib import Path as _P
+        try:
+            threshold = _t.time() - max_hours * 3600
+            for p in _P(dump_dir).glob("*.json"):
+                try:
+                    if p.stat().st_mtime < threshold:
+                        p.unlink()
+                except OSError:
+                    continue
+        except Exception:
+            # GC 失败绝不影响 LLM call（这是诊断工具，不是核心路径）
+            pass
+
     def _dump_llm_input(self, messages: list[dict[str, Any]]) -> None:
         """每次 LLM 调用前保存字面 messages + 调用元数据到 JSON。
 
@@ -756,7 +829,7 @@ class AIAgent:
                 encoding="utf-8",
             )
             # 顺手扫过期：清理 2 天前的 dump 文件
-            self._purge_old_dumps(max_days=2)
+            self._purge_old_dumps(max_days=1)  # 保留 1 天；旧的"前注入"快照，作为对比备份
         except Exception:
             logger.debug("Failed to dump LLM input", exc_info=True)
 

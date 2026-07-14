@@ -346,16 +346,17 @@ class AIAgent:
                 break
         keep_set = set(reasoning_indices)
 
-        # 构建新 list：不在 keep_set 的 assistant msg 摘掉 reasoning_content
-        new_messages: list[dict[str, Any]] = []
+        # 构建新 list：不在 keep_set 的 assistant msg 摘掉 reasoning_content。
+        # **直接修改 messages in-place**——不返回新 list。
+        # 原因：_chat 在 _messages_for_call 上做 _inject_signalled_events /
+        # _inject_entity_recall（都是 messages.append），这些 append 必须影响到
+        # 下一轮的主循环 messages。否则注入的内容（sense_insights / entity_recall
+        # 结果）在下一轮 _strip_old_reasoning 时全丢了——模型"读取不见"上一轮注入，
+        # 导致重复调、重复发消息。
         for i, m in enumerate(messages):
             if m.get("role") == "assistant" and "reasoning_content" in m and i not in keep_set:
-                nm = dict(m)
-                nm.pop("reasoning_content", None)
-                new_messages.append(nm)
-            else:
-                new_messages.append(m)
-        return new_messages
+                m.pop("reasoning_content", None)
+        return messages
 
     def _chat(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         self._inject_signalled_events(messages)

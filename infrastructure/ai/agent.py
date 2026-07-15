@@ -812,7 +812,7 @@ class AIAgent:
             dump_dir = self._dumps_dir.parent / "llm_payload_dumps"
             dump_dir.mkdir(parents=True, exist_ok=True)
             file_path = dump_dir / (
-                f"{self.session_id or 'adhoc'}__call_{call_seq}__{dump['ts_unix_ms']}.json"
+                f"{self.session_id or 'adhoc'}__wake_{wake_id}__call_{call_seq}__{dump['ts_unix_ms']}.json"
             )
             file_path.write_text(
                 json.dumps(dump, ensure_ascii=False, indent=2, default=str),
@@ -875,7 +875,7 @@ class AIAgent:
                 "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
                 "messages": messages,
             }
-            file_path = self._dumps_dir / f"{self.session_id or 'adhoc'}__call_{call_seq}.json"
+            file_path = self._dumps_dir / f"{self.session_id or 'adhoc'}__wake_{wake_id}__call_{call_seq}.json"
             file_path.write_text(
                 json.dumps(dump, ensure_ascii=False, indent=2, default=str),
                 encoding="utf-8",

@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -25,8 +26,22 @@ LOG_FILE = LOG_DIR / "digital-life.log"
 LOCAL_CONFIG = CONFIG_DIR / "local.yaml"
 DEFAULT_CONFIG = CONFIG_DIR / "default.yaml"
 
+IS_WINDOWS = os.name == "nt"
+
 
 def _is_running(pid: int) -> bool:
+    """检查进程是否存活。Windows 和 Unix 路径不同。"""
+    if IS_WINDOWS:
+        # Windows: os.kill(pid, 0) 不支持。
+        # 用 ctypes OpenProcess 检查进程是否还在。
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if handle:
+            kernel32.CloseHandle(handle)
+            return True
+        return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -207,13 +222,22 @@ def _start(args: argparse.Namespace) -> int:
         f"at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n"
     )
     log_handle.flush()
+    popen_kwargs: dict[str, Any] = {
+        "cwd": str(ROOT),
+        "env": _base_env(api_port, ROOT),
+        "stdout": log_handle,
+        "stderr": subprocess.STDOUT,
+    }
+    if IS_WINDOWS:
+        # Windows: CREATE_NEW_PROCESS_GROUP 让 master 能收到 Ctrl-Break 信号
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+    else:
+        # Unix: 新 session（detached），master 死了子进程也活
+        popen_kwargs["start_new_session"] = True
+
     process = subprocess.Popen(
         _runtime_command(),
-        cwd=str(ROOT),
-        env=_base_env(api_port, ROOT),
-        stdout=log_handle,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
+        **popen_kwargs,
     )
     PID_FILE.write_text(str(process.pid))
     META_FILE.write_text(
@@ -261,14 +285,25 @@ def _stop(args: argparse.Namespace) -> int:
         return 0
 
     print(f"stopping digital-life: pid={pid}")
-    try:
-        os.killpg(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        _cleanup_pid_files()
-        _cleanup_instance_pid_files()
-        return 0
-    except PermissionError:
-        os.kill(pid, signal.SIGTERM)
+    if IS_WINDOWS:
+        # Windows: 没有 killpg / SIGTERM / SIGKILL
+        # 用 taskkill /T /PID 杀进程树（master + 所有子进程）
+        try:
+            subprocess.run(
+                ["taskkill", "/T", "/PID", str(pid)],
+                capture_output=True, timeout=10,
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            _cleanup_pid_files()
+            _cleanup_instance_pid_files()
+            return 0
+        except PermissionError:
+            os.kill(pid, signal.SIGTERM)
 
     # master 收到 SIGTERM 后会通过 InstanceSupervisor 优雅 stop 所有子进程，
     # 这可能需要 5-15 秒（每个实例 FeishuAdapter.stop + cron join）
@@ -282,12 +317,21 @@ def _stop(args: argparse.Namespace) -> int:
         time.sleep(0.25)
 
     if args.kill:
-        try:
-            os.killpg(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        except PermissionError:
-            os.kill(pid, signal.SIGKILL)
+        if IS_WINDOWS:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    capture_output=True, timeout=10,
+                )
+            except Exception:
+                pass
+        else:
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                os.kill(pid, signal.SIGKILL)
         _cleanup_pid_files()
         print("digital-life killed after timeout")
         return 0

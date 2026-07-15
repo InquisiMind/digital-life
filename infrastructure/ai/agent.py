@@ -987,14 +987,17 @@ class AIAgent:
         """检查 token 数，超阈值则用叙事替换历史段。
 
         当前段永远不压缩，只对历史段做叙事替换。
+
+        **system message 保护**：messages[0]（role=system）含人设 + 工具约定 +
+        行为准则，任何压缩/截断都不能丢。函数入口拆出 system messages，全程保护。
         """
+        # ── 保护 system message —— 永不压缩/截断 ──
+        system_msgs = [m for m in messages if m.get("role") == "system"]
+        non_system = [m for m in messages if m.get("role") != "system"]
+
         # Token 估算：中文为主时 ~1.5-1.6 chars/token，英文 ~4 chars/token。
-        # 旧的 total_chars/3 严重高估所需 token 数（中文被当成英文算），
-        # 导致实际已经超 context 但 estimated_tokens 仍低于阈值 → 压缩不触发。
         # 改用 /1.8：中文混合场景下偏保守，确保该压缩时能真正触发。
-        total_chars = sum(len(str(m.get("content") or "")) for m in messages)
-        if system_prompt:
-            total_chars += len(system_prompt)
+        total_chars = sum(len(str(m.get("content") or "")) for m in non_system)
         if ref_context:
             total_chars += len(ref_context)
 
@@ -1003,39 +1006,49 @@ class AIAgent:
         # 从配置读取阈值（默认 60% 的 128K context = 76K）
         threshold = self._get_compression_threshold()
         if estimated_tokens < threshold:
-            return self._compact_messages(messages)
+            return self._compact_messages(system_msgs + non_system)
 
         # 分割段（user 消息是段起始 marker）
-        segments = self._split_by_user_message(messages)
+        segments = self._split_by_user_message(non_system)
         if len(segments) <= 1:
-            return self._compact_messages(messages)
+            return self._compact_messages(system_msgs + non_system)
 
         # 当前段不压缩，只压缩历史段
         historical_segments = segments[:-1]
         current_segment = segments[-1]
 
         compressed: list[dict[str, Any]] = []
-        current_tokens = sum(len(str(m.get("content") or "")) for m in messages) - sum(
+        current_tokens = sum(len(str(m.get("content") or "")) for m in non_system) - sum(
             len(str(m.get("content") or "")) for m in current_segment
         )
 
         # 从最旧的段开始逐个替换
         for i, seg in enumerate(historical_segments):
+            # 保护 sys_tool 注入（wake 上下文）——叙事化只替换真实模型 turns
+            seg_sys = [m for m in seg if self._is_sys_tool_msg(m)]
+            seg_real = [m for m in seg if not self._is_sys_tool_msg(m)]
+            if not seg_real:
+                # 整段都是 sys_tool → 不需要叙事化，直接保留
+                compressed.extend(seg)
+                continue
+
             seg_tokens = sum(len(str(m.get("content") or "")) for m in seg)
 
-            # 尝试加载叙事
-            narrative = self._load_narrative_for_segment(seg)
+            # 尝试加载叙事（只跑在真实模型 turns 上）
+            narrative = self._load_narrative_for_segment(seg_real)
             if narrative:
                 narrative_tokens = int(len(narrative) / 1.8)
                 if current_tokens - seg_tokens + narrative_tokens < threshold:
-                    # 替换后满足阈值，追加叙事 + 剩余段
-                    self._append_narrative_to_messages(compressed, narrative, seg, segment_index=i)
+                    # 替换后满足阈值，追加叙事 + sys_tool 保留 + 剩余段
+                    self._append_narrative_to_messages(compressed, narrative, seg_real, segment_index=i)
+                    compressed.extend(seg_sys)
                     current_tokens = current_tokens - seg_tokens + narrative_tokens
                     compressed.extend(current_segment)
-                    return self._compact_messages(compressed)
+                    return self._compact_messages(system_msgs + compressed)
                 else:
                     # 替换后仍超阈值，继续替换更早的段
-                    self._append_narrative_to_messages(compressed, narrative, seg, segment_index=i)
+                    self._append_narrative_to_messages(compressed, narrative, seg_real, segment_index=i)
+                    compressed.extend(seg_sys)
                     current_tokens = current_tokens - seg_tokens + narrative_tokens
             else:
                 # 无叙事，降级处理：只保留段首尾消息
@@ -1045,8 +1058,8 @@ class AIAgent:
         # 所有旧段都处理过了，追加当前段
         compressed.extend(current_segment)
 
-        # 仍超阈值 → 强制保留最近 1 段（当前段）
-        return self._compact_messages(compressed[-50:])
+        # 仍超阈值 → 强制保留最近 50 条（不含 system）+ system 拼回
+        return self._compact_messages(system_msgs + compressed[-50:])
 
     def _get_compression_threshold(self) -> int:
         """从配置读取压缩阈值，默认 76K tokens。"""
@@ -1076,6 +1089,19 @@ class AIAgent:
         re.compile(r"^call_"),
         re.compile(r"^chatcmpl-"),
     )
+
+    def _is_sys_tool_msg(self, m: dict[str, Any]) -> bool:
+        """判断是否为 sys_tool 注入（assistant 占位 或 tool result）。
+
+        用于段折叠叙事化时保护 wake 上下文注入（slow_ctx / entity_recall 等）——
+        这些 sys_tool pair 含待办面板、闹钟、社交关系等环境信息，不能被叙事化替换掉。
+        """
+        tid = str(m.get("tool_call_id") or "")
+        if tid.startswith("sys_"):
+            return True
+        if m.get("role") == "assistant" and "tool_calls" in m:
+            return any(tc.get("id", "").startswith("sys_") for tc in m["tool_calls"])
+        return False
 
     def _is_real_tool_call(self, m: dict[str, Any]) -> bool:
         """判定一行 tool message 是否为真实 LLM 工具调用。
@@ -1604,6 +1630,10 @@ class AIAgent:
 
         Entity-level dedup: same entity only injected once per session.
         Memory-level dedup: same memory_id only injected once per session.
+
+        **旧 entity_recall 清理**：每次注入新的 entity_recall 前，先从 messages
+        list 里删掉上一次的 entity_recall pair（旧 sys_tool 占位 + tool result）。
+        设计上只保留最新一轮的召回——旧召回上下文已过时、且会无谓消耗 token。
         """
         new_messages = messages[self._last_scanned_msg_count:]
         self._last_scanned_msg_count = len(messages)
@@ -1675,7 +1705,23 @@ class AIAgent:
         # 不必再调 recall_entity('名字') 二次拉 (那一步本来基本不发生)。
         # 每个 memory 用 200 字 snippet (足以看到关键结论,不至于过长占 token)
         if new_entities:
-            self._prune_recall_injections(messages)
+            # 删旧的 entity_recall pair——按 name + sys_ 前缀过滤，
+            # 不靠 position index（_strip_old_reasoning / _compact 修改 messages 后
+            # position 会偏移失效导致堆积或删错位置）
+            messages[:] = [
+                m for m in messages
+                if not (
+                    (m.get("tool_call_id", "").startswith("sys_") and m.get("name") == "entity_recall")
+                    or (
+                        m.get("role") == "assistant"
+                        and any(
+                            tc.get("id", "").startswith("sys_")
+                            and tc.get("function", {}).get("name") == "entity_recall"
+                            for tc in m.get("tool_calls", [])
+                        )
+                    )
+                )
+            ]
             lines = ["[联想命中 — 你正在思考的上下文里提到了你有相关记忆的实体]"]
             for mem in memories:
                 mtype = str(mem.get("memory_type", "")).upper()

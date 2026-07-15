@@ -227,8 +227,12 @@ def _write_entities(entities: list[str], *, memory_type: str,
     if _update_entity_index is None:
         return
     try:
+        # linked_entities = 同一批 entities（它们在同一上下文被提及，互相关联）
+        # 这修复了打分公式中 context_overlap 项（25% 权重）长期为 0 的问题——
+        # 之前所有调用点都不传 linked_entities，导致联想退化为纯时间链。
         _update_entity_index(entities, memory_type=memory_type,
                              memory_id=memory_id, snippet=snippet, tag=tag,
+                             linked_entities=entities,
                              replace_existing=replace_state)
     except Exception:
         pass

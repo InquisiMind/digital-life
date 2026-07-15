@@ -904,11 +904,32 @@ def _generate_day_digest(
     date_str: str,
 ) -> Optional[str]:
     """合并当天所有 session digest 成日摘要。"""
-    rows = db.execute(
-        "SELECT * FROM memory_layers WHERE layer='session' "
-        "AND period LIKE ? ORDER BY start_time",
-        (f"%{date_str}%",),
-    ).fetchall()
+    # session_id 格式如 tx_initiative_0715_1914_xxx，含 MMDD 而非 YYYY-MM-DD。
+    # 用 start_time 时间戳（UTC > UTC 当天的 start/end）精确过滤，
+    # 而非依赖 period 字符串 LIKE。
+    day_start_ts = 0
+    day_end_ts = 0
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        day_dt = _dt.strptime(date_str, "%Y-%m-%d").replace(tzinfo=_tz.utc)
+        day_start_ts = day_dt.timestamp()
+        day_end_ts = day_start_ts + 86400
+    except Exception:
+        pass
+
+    if day_start_ts > 0:
+        rows = db.execute(
+            "SELECT * FROM memory_layers WHERE layer='session' "
+            "AND start_time >= ? AND start_time < ? ORDER BY start_time",
+            (day_start_ts, day_end_ts),
+        ).fetchall()
+    else:
+        # fallback: 旧逻辑
+        rows = db.execute(
+            "SELECT * FROM memory_layers WHERE layer='session' "
+            "AND period LIKE ? ORDER BY start_time",
+            (f"%{date_str[5:]}%",),  # 取 MM-DD 部分
+        ).fetchall()
 
     if not rows:
         return None
@@ -1514,13 +1535,13 @@ def index_conversations(session_db: Any = None, max_age_hours: float = 1.0) -> i
         try:
             cutoff = time.time() - max_age_hours * 3600
 
-            # 查询所有飞书 session 中最近的消息
+            # 查询所有 session 中最近的消息（不限定 source='feishu'——session source 实际
+            # 值是 'l4_wake' 不是 'feishu'，之前的过滤导致永远查不到行）
             rows = state_db.execute(
                 "SELECT m.session_id, m.role, m.content, m.timestamp "
                 "FROM messages m "
                 "JOIN sessions s ON m.session_id = s.id "
-                "WHERE s.source = 'feishu' "
-                "AND m.role IN ('user', 'assistant') "
+                "WHERE m.role IN ('user', 'assistant') "
                 "AND m.content IS NOT NULL "
                 "AND m.timestamp > ? "
                 "ORDER BY m.timestamp ASC",

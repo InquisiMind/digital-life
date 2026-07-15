@@ -153,8 +153,30 @@ class AIAgent:
         }
         MAX_SENSE_ONLY_ROUNDS = 10
         sense_only_streak = 0
+        max_iters = max(1, int(self.max_iterations or 1))
+        _rest_warned = False
 
-        for _ in range(max(1, int(self.max_iterations or 1))):
+        for iteration_idx in range(max_iters):
+            # ── 快到上限时提醒模型收尾 ──
+            remaining = max_iters - iteration_idx
+            if remaining <= 3 and not _rest_warned:
+                # 还剩 3 轮——给模型一个信号让它考虑 rest
+                warn = (
+                    f"⚠️ 你还剩 {remaining} 轮执行预算。"
+                    "如果手里的工作告一段落了，现在应该调 rest() 休息。"
+                    "不要拖到最后被系统强制截断。"
+                )
+                messages.append({"role": "user", "content": warn})
+                self._append_message(session_id, "user", warn)
+                _rest_warned = True
+            elif remaining <= 1 and not session_blocked:
+                # 最后一轮了还没 rest——强制注入 rest 要求
+                force = (
+                    "🔴 这是最后一轮执行预算。**立即调 rest() 休息**——不管你手里还有什么没做完的。"
+                    "未完成的事会在下次醒来时继续。"
+                )
+                messages.append({"role": "user", "content": force})
+                self._append_message(session_id, "user", force)
             # Layer 2（拼）：进新一轮 _chat 前，控制历史 assistant 消息的
             # reasoning_content 可见范围——只保留最近 N 轮的推理，更早的摘掉。
             # 这取代了旧的 _reasoning_history 平面 list + inject 拼接方案——
@@ -306,7 +328,37 @@ class AIAgent:
                         continue
                 final = content or "已进入休息。"
                 return {"final_response": final, "tool_calls": tool_calls_seen, "status": "blocked"}
-        final = "达到最大迭代次数，已停止本轮执行。"
+        final = "达到最大迭代次数。自动休息——未完成的事会在下次醒来时继续。"
+        # 强制标记 blocked——模型跑完预算后不该继续
+        from domain.lifecycle.runtime_context import get_current_affair
+        from domain.lifecycle.affairs.runtime import (
+            update_affair, clear_wait_intent, get_affair,
+        )
+        from domain.lifecycle.state_machine import AffairStatus, WaitType
+        from domain.lifecycle.alarms import set_alarm
+        from domain.lifecycle import clock as _clock
+        aid = get_current_affair()
+        if aid:
+            existing = get_affair(aid)
+            if existing:
+                update_affair(aid, status=AffairStatus.BLOCKED)
+            try:
+                from datetime import timedelta
+                wake_dt = _clock.beijing_now_dt() + timedelta(minutes=30)
+                wake_iso = _clock.to_storage_iso(wake_dt)
+                set_alarm("timer", wake_iso, payload={
+                    "reason": "max_iterations auto-rest",
+                    "mental_context": "达到最大迭代次数自动休息",
+                })
+                intent = WaitIntent(
+                    wait_type=WaitType.UNTIL, resume_when=wake_iso,
+                    reason="max_iterations", resume_action="",
+                )
+                clear_wait_intent(aid)
+            except Exception:
+                pass
+        # 注释掉：scheduler 会根据 affair status 做后续处理
+        logger.info("Wake ended at max_iterations (%d), auto-rest 30min", max_iters)
         self._append_message(session_id, "assistant", final)
         messages.append({"role": "assistant", "content": final})
         self._write_log(messages)

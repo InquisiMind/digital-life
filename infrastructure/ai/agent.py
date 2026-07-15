@@ -1099,8 +1099,8 @@ class AIAgent:
         tid = str(m.get("tool_call_id") or "")
         if tid.startswith("sys_"):
             return True
-        if m.get("role") == "assistant" and "tool_calls" in m:
-            return any(tc.get("id", "").startswith("sys_") for tc in m["tool_calls"])
+        if m.get("role") == "assistant" and isinstance(m.get("tool_calls"), list):
+            return any(str(tc.get("id") or "").startswith("sys_") for tc in m["tool_calls"] if isinstance(tc, dict))
         return False
 
     def _is_real_tool_call(self, m: dict[str, Any]) -> bool:
@@ -1711,13 +1711,14 @@ class AIAgent:
             messages[:] = [
                 m for m in messages
                 if not (
-                    (m.get("tool_call_id", "").startswith("sys_") and m.get("name") == "entity_recall")
+                    (str(m.get("tool_call_id") or "").startswith("sys_") and m.get("name") == "entity_recall")
                     or (
                         m.get("role") == "assistant"
                         and any(
-                            tc.get("id", "").startswith("sys_")
+                            str(tc.get("id") or "").startswith("sys_")
                             and tc.get("function", {}).get("name") == "entity_recall"
                             for tc in m.get("tool_calls", [])
+                            if isinstance(tc, dict)
                         )
                     )
                 )

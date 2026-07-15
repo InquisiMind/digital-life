@@ -578,3 +578,32 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: true
       include_vector_recall: false
+
+  budget_soft_warning:
+    display_name: 轮次预算提醒
+    trigger_type: system
+    trigger_description: 模型在同一事件上下文中跑了太多轮，系统提醒考虑拆任务或休息
+    priority: 1
+    payload_schema:
+      energy: number
+    description: 轮次预算耗尽时系统自动注入，提醒模型考虑拆任务、下次苏醒再做
+    debounce_window_s: 0
+    merge_policy: latest
+    consumption_policy: on_trigger
+    wake_prompt: |
+      💡 系统提示：你围绕当前事件已经做了很多轮工作了。考虑一下：
+      - 当前任务是否可以拆分成更小的步骤？有些部分下次苏醒后再做？
+      - 用 record_thought 或 update_scratchpad 记下进度，然后 rest() 休息。
+      精力有限，合理分配比一次干完更重要。当前精力：{energy}。
+    allowed_tools: []
+    context_policy:
+      include_history: false
+      include_rules: false
+      include_daily: false
+      include_consciousness: false
+      include_session_digests: false
+      include_entity_recall: false
+      include_self_review: false
+      include_proactive_policy: false
+      include_recent_sent: false
+      include_vector_recall: false

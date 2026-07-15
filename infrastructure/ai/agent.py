@@ -24,7 +24,7 @@ class AIAgent:
     base_url: str | None = None
     provider: str | None = None
     api_mode: str = "chat_completions"
-    max_iterations: int = 20
+    max_iterations: int = 90
     reasoning_config: Mapping[str, Any] | None = None
     quiet_mode: bool = True
     platform: str = "l4"
@@ -153,30 +153,17 @@ class AIAgent:
         }
         MAX_SENSE_ONLY_ROUNDS = 10
         sense_only_streak = 0
-        max_iters = max(1, int(self.max_iterations or 1))
-        _rest_warned = False
+        max_iters = max(1, int(self.max_iterations or 90))
+        HARD_LIMIT_AFTER_SOFT = 20  # 软提示后还能再跑 20 轮
 
-        for iteration_idx in range(max_iters):
-            # ── 快到上限时提醒模型收尾 ──
-            remaining = max_iters - iteration_idx
-            if remaining <= 3 and not _rest_warned:
-                # 还剩 3 轮——给模型一个信号让它考虑 rest
-                warn = (
-                    f"⚠️ 你还剩 {remaining} 轮执行预算。"
-                    "如果手里的工作告一段落了，现在应该调 rest() 休息。"
-                    "不要拖到最后被系统强制截断。"
-                )
-                messages.append({"role": "user", "content": warn})
-                self._append_message(session_id, "user", warn)
-                _rest_warned = True
-            elif remaining <= 1 and not session_blocked:
-                # 最后一轮了还没 rest——强制注入 rest 要求
-                force = (
-                    "🔴 这是最后一轮执行预算。**立即调 rest() 休息**——不管你手里还有什么没做完的。"
-                    "未完成的事会在下次醒来时继续。"
-                )
-                messages.append({"role": "user", "content": force})
-                self._append_message(session_id, "user", force)
+        # ── 事件驱动动态预算 ──
+        # 每消费一个正常事件（message/group_message/timer/...）→ 重置为 max_iters
+        # budget_soft_warning 是系统事件，不重置预算
+        _event_budget = max_iters
+        _soft_warned = False
+        _hard_budget = 0
+
+        for iteration_idx in range(max_iters + HARD_LIMIT_AFTER_SOFT + 10):
             # Layer 2（拼）：进新一轮 _chat 前，控制历史 assistant 消息的
             # reasoning_content 可见范围——只保留最近 N 轮的推理，更早的摘掉。
             # 这取代了旧的 _reasoning_history 平面 list + inject 拼接方案——
@@ -217,6 +204,61 @@ class AIAgent:
             # ← 已废弃：reasoning_content 现在直接写进 messages 列表的 assistant msg 里，
             #   _strip_old_reasoning 按轮次截断。不再需要 _reasoning_history 平面 list。
             self._write_log(messages)
+
+            # ── 事件驱动预算：检测正常事件消费 → 重置预算 ──
+            consumed_normal = response.get("_consumed_normal", False)
+            if consumed_normal:
+                _event_budget = max_iters
+                _soft_warned = False
+                _hard_budget = 0
+
+            # ── 软提示：预算耗尽时 emit budget_soft_warning ──
+            if not _soft_warned:
+                _event_budget -= 1
+                if _event_budget <= 0:
+                    try:
+                        from domain.lifecycle.events import emit_event
+                        _energy_val = getattr(self, '_last_energy', None) or 50
+                        emit_event(
+                            "budget_soft_warning",
+                            {"energy": _energy_val},
+                            channel="internal:budget",
+                        )
+                    except Exception:
+                        logger.debug("budget_soft_warning emit failed", exc_info=True)
+                    _soft_warned = True
+                    _hard_budget = HARD_LIMIT_AFTER_SOFT
+
+            # ── 硬截断：软提示后硬预算耗尽 ──
+            if _soft_warned:
+                _hard_budget -= 1
+                if _hard_budget <= 0:
+                    final = "本轮因达到最大执行轮次被系统自动截断。未完成的工作会在下次醒来时继续。"
+                    self._append_message(session_id, "assistant", final)
+                    messages.append({"role": "assistant", "content": final})
+                    self._write_log(messages)
+                    logger.info("Hard cutoff: budget exhausted after soft warning (max_iters=%d, hard=%d)", max_iters, HARD_LIMIT_AFTER_SOFT)
+                    try:
+                        from domain.lifecycle.runtime_context import get_current_affair
+                        from domain.lifecycle.affairs.runtime import update_affair, clear_wait_intent
+                        from domain.lifecycle.state_machine import AffairStatus, WaitType
+                        from domain.lifecycle.alarms import set_alarm
+                        from domain.lifecycle import clock as _clock
+                        aid = get_current_affair()
+                        if aid:
+                            update_affair(aid, status=AffairStatus.BLOCKED)
+                            from datetime import timedelta
+                            wake_dt = _clock.beijing_now_dt() + timedelta(minutes=30)
+                            wake_iso = _clock.to_storage_iso(wake_dt)
+                            set_alarm("timer", wake_iso, payload={
+                                "reason": "max_iterations auto-rest",
+                                "mental_context": "达到最大执行轮次自动休息",
+                            })
+                            clear_wait_intent(aid)
+                    except Exception:
+                        logger.debug("hard cutoff rest setup failed", exc_info=True)
+                    return {"final_response": final, "tool_calls": tool_calls_seen, "status": "blocked"}
+
             if not tool_calls:
                 # 中途信号触发"延续 turn"——模型自然结束本轮但事件队列里有新到的
                 # fan_out 消息（跨实例来源），强制再开一轮让模型处理。
@@ -328,41 +370,9 @@ class AIAgent:
                         continue
                 final = content or "已进入休息。"
                 return {"final_response": final, "tool_calls": tool_calls_seen, "status": "blocked"}
-        final = "达到最大迭代次数。自动休息——未完成的事会在下次醒来时继续。"
-        # 强制标记 blocked——模型跑完预算后不该继续
-        from domain.lifecycle.runtime_context import get_current_affair
-        from domain.lifecycle.affairs.runtime import (
-            update_affair, clear_wait_intent, get_affair,
-        )
-        from domain.lifecycle.state_machine import AffairStatus, WaitType
-        from domain.lifecycle.alarms import set_alarm
-        from domain.lifecycle import clock as _clock
-        aid = get_current_affair()
-        if aid:
-            existing = get_affair(aid)
-            if existing:
-                update_affair(aid, status=AffairStatus.BLOCKED)
-            try:
-                from datetime import timedelta
-                wake_dt = _clock.beijing_now_dt() + timedelta(minutes=30)
-                wake_iso = _clock.to_storage_iso(wake_dt)
-                set_alarm("timer", wake_iso, payload={
-                    "reason": "max_iterations auto-rest",
-                    "mental_context": "达到最大迭代次数自动休息",
-                })
-                intent = WaitIntent(
-                    wait_type=WaitType.UNTIL, resume_when=wake_iso,
-                    reason="max_iterations", resume_action="",
-                )
-                clear_wait_intent(aid)
-            except Exception:
-                pass
-        # 注释掉：scheduler 会根据 affair status 做后续处理
-        logger.info("Wake ended at max_iterations (%d), auto-rest 30min", max_iters)
-        self._append_message(session_id, "assistant", final)
-        messages.append({"role": "assistant", "content": final})
-        self._write_log(messages)
-        return {"final_response": final, "tool_calls": tool_calls_seen, "status": "blocked"}
+        # for 循环结束（理论上走不到这里——硬截断已经 return）
+        logger.warning("run_conversation: loop exhausted unexpectedly (max_iters=%d)", max_iters)
+        return {"final_response": "执行结束。", "tool_calls": tool_calls_seen, "status": "blocked"}
 
     def _strip_old_reasoning(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """摘掉超出 max_rounds 的旧 assistant 消息的 reasoning_content。
@@ -409,7 +419,7 @@ class AIAgent:
         return messages
 
     def _chat(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        self._inject_signalled_events(messages)
+        consumed_normal = self._inject_signalled_events(messages)
         self._inject_entity_recall(messages)
         url = self._chat_url()
         headers = {"Content-Type": "application/json"}
@@ -504,7 +514,7 @@ class AIAgent:
                         _msg["reasoning"] = _reasoning
                 except Exception:
                     pass
-                return {"message": _msg, "raw": data}
+                return {"message": _msg, "raw": data, "_consumed_normal": consumed_normal}
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429:
                     # 账号级熔断：收到 429 立即 trip（按 api_key 分区，跨实例共享）。
@@ -1551,30 +1561,40 @@ class AIAgent:
 
         Uses peek_signalled_events so the queue is NOT cleared here by default.
         Only message events call consume_signalled_events (which clears the queue).
+
+        Returns bool: True if a "normal" event (message/group_message/non-system) was
+        consumed — used by run_conversation to reset the event-driven round budget.
+        budget_soft_warning is excluded (system event, doesn't reset budget).
         """
         try:
             from domain.lifecycle.session_events import peek_signalled_events
             events = peek_signalled_events()
         except ImportError:
-            return
+            return False
 
         if not events:
-            return
+            return False
 
         new_events = [e for e in events if e.get("event_id") not in self._injected_signal_event_ids]
         if not new_events:
-            return
+            return False
 
         # Split by whether we auto-consume
         auto_consume_events: list[dict] = []
         manual_events: list[dict] = []
+        consumed_normal = False  # 有正常事件（非 budget_soft_warning）被消费
 
         for ev in new_events:
             kind = ev.get("kind", "")
             if kind in ("message", "group_message"):
                 auto_consume_events.append(ev)
+                consumed_normal = True
             else:
                 manual_events.append(ev)
+                # 非 message 事件：budget_soft_warning 是系统事件不重置预算
+                # 其它都算正常事件
+                if kind != "budget_soft_warning":
+                    consumed_normal = True
 
         # Mark all new events as injected (prevent re-injection this session)
         self._injected_signal_event_ids.update(e.get("event_id") for e in new_events)
@@ -1584,6 +1604,8 @@ class AIAgent:
 
         if manual_events:
             self._notify_manual_events(manual_events, messages)
+
+        return consumed_normal
 
     def _consume_human_events(self, events: list[dict], messages: list[dict[str, Any]]) -> None:
         """Show message/group_message content as tool result and auto-consume.

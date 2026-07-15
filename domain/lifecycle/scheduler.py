@@ -839,7 +839,7 @@ def _wake_digital_life_inner_safe(
 
         # 来自实例 app.yaml 的 agent.max_turns（ConfigCenter「实例配置 → 任务策略」编辑）；
         # 没配置时用 999 给足空间，让长任务不被切断（保持与历史行为一致）。
-        max_iterations = int(_cfg.get("agent", {}).get("max_turns") or 999)
+        max_iterations = int(_cfg.get("agent", {}).get("max_turns") or 90)
 
         # 醒来即标记 last_activity_at（vital-refactor 后的字段拆分）。
         #

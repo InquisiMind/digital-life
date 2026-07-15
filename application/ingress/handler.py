@@ -590,7 +590,7 @@ def _emit_l4_human_event(
                     "_merged_texts": _mt,
                     "_merged_texts_block": _mt_block,
                     # 多模态附件摘要（轻量，不含 local_path）——让模型在 wake prompt 看到"有图"
-                    "attachments": attachment_summaries,
+                    "attachments": attachment_summaries or [],
                 },
                 channel=f"gateway:{pf}:group",
             )

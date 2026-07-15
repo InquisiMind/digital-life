@@ -328,13 +328,11 @@ class AIAgent:
         """
         max_rounds = getattr(self._provider, "reuse_max_rounds", 5)
         if max_rounds <= 0:
-            # drop 模式或 reuse_max_rounds=0 → 全部摘掉
-            return [
-                {k: v for k, v in m.items() if k != "reasoning_content"}
-                if m.get("role") == "assistant"
-                else m
-                for m in messages
-            ]
+            # drop 模式或 reuse_max_rounds=0 → 全部摘掉（in-place，不返回新 list）
+            for m in messages:
+                if m.get("role") == "assistant":
+                    m.pop("reasoning_content", None)
+            return messages
 
         # 从后往前找含 reasoning_content 的 assistant msg，保留最后 max_rounds 条
         reasoning_indices: list[int] = []

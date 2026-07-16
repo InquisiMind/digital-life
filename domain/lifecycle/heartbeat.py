@@ -510,7 +510,19 @@ def build_wake_prompt(
 
     # ── Build action_parts: what to do NOW ──────────────────────
 
+    # 当前时间——让模型不需要调 sense_time 就知道"今天是几号、几点"
+    # 避免在 morning_plan 等场景下编造"昨天的对话"等幻觉
+    try:
+        from domain.lifecycle import clock as _clk_now
+        _now_dt = _clk_now.beijing_now_dt()
+        _now_str = _now_dt.strftime("%Y-%m-%d %H:%M %A")
+    except Exception:
+        _now_str = ""
+
     action_parts.append("## \u2500\u2500 \u2193 \u5f53\u4e0b\u4e8b\u4ef6 \u2193 \u2500\u2500")
+
+    if _now_str:
+        action_parts.append(f"\u23f0 \u5f53\u524d\u65f6\u95f4\uff1a{_now_str}")
 
     action_parts.append(f"\n### \u5524\u9192\u539f\u56e0\n\n{base}")
 

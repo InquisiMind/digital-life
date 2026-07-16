@@ -1883,12 +1883,19 @@ def _render_signal_message(ev: dict[str, Any]) -> str:
             + f"\n{body_inner}"
         )
 
-    # 3. 信号头 + 自动已读提示。chat_id 已经在 yaml 模板渲染的正文里
+    # 3. 信号头 + 当前时间 + 自动已读提示。chat_id 已经在 yaml 模板渲染的正文里
     # （私聊：「对话：{chat_id}」，群：「群：{chat_name}（{chat_id}）」），
     # 不再额外硬塞「必须 express_to_human(chat_id=xxx)」之类的具体调用方式——
     # 模型看到 chat_id 就知道回哪里，参数细节交给模型按工具 schema 自己决定。
+    try:
+        from domain.lifecycle import clock as _clk_mid
+        _mid_now = _clk_mid.beijing_now_dt().strftime("%Y-%m-%d %H:%M %A")
+    except Exception:
+        _mid_now = ""
+    _now_line = f"\n⏰ 当前时间：{_mid_now}\n" if _mid_now else ""
     return (
         f"[#{eid} · 新消息到达 - 会话中途注入]\n"
+        f"{_now_line}"
         f"{rendered_body}\n"
         f"> 注意：消息已自动标记为已读，稍后回复即可。"
     )

@@ -31,7 +31,11 @@ from domain.memory.memory.recall.unified import fts
 logger = logging.getLogger("domain.memory.recall.unified")
 
 # RRF 常数 + 预算
-_RRF_K = 60
+# k 调整 2026-07-16: 从 60 → 20
+# 用户语义场景实测: k=60 时 rank 1 与 rank 5 的 RRF 分差仅 0.002, 主向量命中的
+# 真实相关 chunk 经常被 lexical 低分多条稀释, 挤出 top5。k=20 让前几位权重更
+# 阶梯化, 单路高命中能直接站住 top-K。
+_RRF_K = 20
 _DEFAULT_TIMEOUT = 5.0
 _MAX_ROUTES = 3  # 向量 / 词法 / 注意力
 
@@ -68,6 +72,7 @@ def _route_vector(query: str, *, extra_context: str = "", max_chars: int) -> lis
             "source": h.get("source", ""),
             "source_kind": "",
             "text": h.get("text", ""),
+            "meta_phase": h.get("phase", "experience"),
         })
     return out[:20]
 
@@ -191,6 +196,7 @@ def _rrf_fuse(
                     "routes": [],
                     "matched_attention_token": c.get("matched_attention_token"),
                     "max_route_score": c.get("score", 0.0),
+                    "meta_phase": c.get("meta_phase", "experience"),
                 }
             fused[key]["rrf_score"] += contribution
             fused[key]["routes"].append(route_name)
@@ -390,8 +396,102 @@ def unified_recall(
     # 4. RRF 融合
     fused = _rrf_fuse(boosted_routes)
 
+    # P2.1 (用户认知修正 2026-07-16): 联想 = "助推" 而非 "召回",
+    # 邻居/derived 不再硬塞回调,而是进候选池 + spread_boost,
+    # 仍参与终排,可能因相关性不够被压在 top-K 外。
+    # 三阶段: 召回 → 扩散 → 终排。
+    seed_ids = [r.get("chunk_id") for r in fused
+                if isinstance(r.get("chunk_id"), int) and r.get("chunk_id", -1) >= 0]
+    # seed_ids 取召回阶段 top 5 作 seed(避免全 fused 都扩散,性能 + 噪音管理)
+    seed_top = seed_ids[:5]
+    spread_candidates: list[dict] = []
+    if seed_top:
+        try:
+            from domain.memory.memory.recall.unified.spread import spread_to_candidates
+            spread_candidates = spread_to_candidates(seed_top, depth=2)
+        except Exception as e:
+            logger.debug("spread_to_candidates failed (will skip spread): %s", e)
+
+    # 给 spread 候选包装成 RRF 兼容形态(标记 route=spread), 并参与终排
+    # 终排 score = rrf_score + spread_score + cognition_bias + freshness*ε
+    final_pool: dict[int, dict] = {}
+    for r in fused:
+        cid = r.get("chunk_id", -1)
+        if cid < 0:
+            # 无 id 的(向量 fallback)用 text hash 当 key
+            cid_key = f"text:{_texthash(r.get('text', ''))}"
+        else:
+            cid_key = cid
+        # cognition bonus(只在终排, 召回阶段已各自给过 vector 路)
+        # 用户反馈 2026-07-16: 0.3 太激进 → 挤掉真正相关的经历; 调到 0.05,
+        # 只做轻微提权, 让相关经历优先、紧贴的认知仍能排进但不当抢戏
+        cog_bonus = 0.0
+        if r.get("meta_phase") == "cognition":
+            cog_bonus = 0.05
+        r["final_score"] = (
+            r.get("rrf_score", 0.0)
+            + cog_bonus
+        )
+        final_pool[cid_key] = r
+
+    for s in spread_candidates:
+        cid = s["chunk_id"]
+        # 用户认知 2026-07-16: spread 不应跨主题串扰(尤其是 unrelated cognition 派生
+        # 把复盘话题带进 project X query 的情况)。这里对 spread 候选加 source
+        # 一致性硬过滤——派生跨 phase/source 类型的联想默认不生效, 保持每个 query
+        # 的主题边界。
+        seed_origin = s.get("spread_origin")
+        seed_source = None
+        # 拿 seed 自己的 source, 与 spread 候选 source 对比
+        for f in fused:
+            if f.get("chunk_id") == seed_origin:
+                seed_source = f.get("source", "")
+                break
+        cand_source = s.get("source", "")
+        # 同 source 类(都 digest_session / 都 rules / ...) 才放行;
+        # 否则只给 1/4 的弱 boost,保留"跨主题也能想到"的微弱关联。
+        if seed_source and cand_source and seed_source == cand_source:
+            actual_boost = s.get("spread_score", 0.0)
+        elif seed_source and cand_source:
+            # 跨 source 类(比如 derived cognition 把 experience 带进 cognition query)
+            # 只取微弱提示
+            actual_boost = s.get("spread_score", 0.0) * 0.25
+        else:
+            actual_boost = s.get("spread_score", 0.0)
+        if cid in final_pool:
+            # 已在召回结果里,只加 boost
+            final_pool[cid]["final_score"] = (
+                final_pool[cid].get("final_score", 0.0)
+                + actual_boost
+            )
+            final_pool[cid].setdefault("routes", []).append("spread")
+            if final_pool[cid].get("spread_origin") is None:
+                final_pool[cid]["spread_origin"] = s.get("spread_origin")
+        else:
+            # 新加入的扩散项
+            final_pool[cid] = {
+                "chunk_id": cid,
+                "text": s.get("text", ""),
+                "source": cand_source,
+                "source_kind": "",
+                "rrf_score": 0.0,
+                "routes": ["spread"],
+                "matched_attention_token": None,
+                "max_route_score": 0.0,
+                "spread_origin": s.get("spread_origin"),
+                "spread_depth": s.get("spread_depth", 1),
+                "final_score": actual_boost,  # 仅靠 boost 占位, 相关性弱时排不上
+            }
+
+    # 排序:final_score 为主
+    sorted_pool = sorted(
+        final_pool.values(),
+        key=lambda x: x.get("final_score", 0.0),
+        reverse=True,
+    )
+
     # 5. 排除 + 预算
-    filtered = [r for r in fused if r.get("chunk_id", -1) not in exclude]
+    filtered = [r for r in sorted_pool if r.get("chunk_id", -1) not in exclude]
     # 截到预算字符上限
     out: list[dict] = []
     total = 0
@@ -399,6 +499,8 @@ def unified_recall(
         body_len = len(r.get("text", ""))
         if total + body_len > max_chars and out:
             break
+        # 沿用 rrf_score 作对外 score(让消费侧统一口径)
+        r["rrf_score"] = r.get("final_score", 0.0)
         out.append(r)
         total += body_len
 

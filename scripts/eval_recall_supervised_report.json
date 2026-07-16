@@ -1,9 +1,9 @@
 {
   "n_queries": 8,
   "topk": 5,
-  "overall_recall": 1.0,
-  "overall_precision_at_k": 0.2,
-  "overall_unwanted_ratio": 0.05,
+  "overall_recall": 0.875,
+  "overall_precision_at_k": 0.175,
+  "overall_unwanted_ratio": 0.025,
   "temporal_chain_recall": 1.0,
   "derived_chain_recall": 1.0,
   "per_query": [
@@ -13,10 +13,10 @@
       "note": "精确语义命中经历, 干扰项同为 'A' 开头但内容是 standup",
       "topk_ids": [
         17,
+        23,
         24,
-        31,
         27,
-        29
+        31
       ],
       "must_hit_id": [
         17
@@ -33,11 +33,11 @@
       "query": "最近有没有调用详情",
       "note": "query 用 '调用详情'(不出现 invoke 字面) → 验证语义同义词召回",
       "topk_ids": [
-        31,
         19,
+        25,
+        26,
         27,
-        29,
-        20
+        31
       ],
       "must_hit_id": [
         19
@@ -54,18 +54,18 @@
       "query": "我说过的规划是什么",
       "note": "跨主题干扰测试: 'plan' 字面同但语义不同(规划 vs 餐食)",
       "topk_ids": [
-        31,
-        27,
         21,
-        20,
-        29
+        25,
+        26,
+        27,
+        31
       ],
       "must_hit_id": [
         20
       ],
-      "hits_must": 1,
-      "recall": 1.0,
-      "precision_at_k": 0.2,
+      "hits_must": 0,
+      "recall": 0.0,
+      "precision_at_k": 0.0,
       "unwanted_ratio": 0.2,
       "neighbor_recall": 0.0,
       "derived_recall": 0.0
@@ -75,11 +75,11 @@
       "query": "project X 阶段二 进展",
       "note": "时序连边测试: 命中第 2 步,应同时召回第 1 / 第 3 步(session 邻居)",
       "topk_ids": [
-        23,
         22,
+        23,
         24,
-        31,
-        27
+        27,
+        31
       ],
       "must_hit_id": [
         23
@@ -96,8 +96,8 @@
       "query": "周三 9 点复盘",
       "note": "诞生链测试: 命中认知 → 应同时召回它的 derived_from 源经历(认知是怎么来的)",
       "topk_ids": [
-        26,
         25,
+        26,
         27,
         29,
         31
@@ -117,11 +117,11 @@
       "query": "Mira 的提案 是什么",
       "note": "attention_tokens=Mira 让含它的 slice 排到 top; 通用的 OKR 例会不应挤进来",
       "topk_ids": [
-        28,
-        31,
+        25,
+        26,
         27,
-        20,
-        29
+        28,
+        31
       ],
       "must_hit_id": [
         28
@@ -129,7 +129,7 @@
       "hits_must": 1,
       "recall": 1.0,
       "precision_at_k": 0.2,
-      "unwanted_ratio": 0.2,
+      "unwanted_ratio": 0.0,
       "neighbor_recall": 0.0,
       "derived_recall": 0.0
     },
@@ -138,11 +138,11 @@
       "query": "构建失败 怎么办的",
       "note": "认知规则(权威 1.0)应排在经历记录之上, 因为它是结论性建议",
       "topk_ids": [
-        31,
-        30,
-        19,
+        25,
+        26,
         27,
-        29
+        30,
+        31
       ],
       "must_hit_id": [
         31
@@ -160,10 +160,10 @@
       "note": "精确专有名词 + 数字, 词法路应高度命中(token 精确匹配)",
       "topk_ids": [
         32,
-        31,
-        29,
+        25,
+        26,
         27,
-        19
+        31
       ],
       "must_hit_id": [
         32

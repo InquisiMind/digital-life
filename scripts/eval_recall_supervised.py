@@ -33,7 +33,14 @@ def main() -> int:
     token = set_current_instance_id(args.instance)
     try:
         truth = json.loads(Path(args.truth).read_text(encoding="utf-8"))
-        print(f"Loaded {len(truth)} supervised queries")
+        # 反查 hash → id(因为每次 inject 的 id 可能变化)
+        from domain.memory.memory.recall.vector import _get_db
+        db = _get_db()
+        hash_to_id: dict[str, int] = {}
+        for r in db.execute("SELECT id, chunk_hash FROM chunks WHERE chunk_hash != ''").fetchall():
+            hash_to_id[r["chunk_hash"]] = r["id"]
+        db.close()
+        print(f"Loaded {len(truth)} supervised queries; hash→id map: {len(hash_to_id)} entries")
         print(f"top-K={args.topk}, instance={args.instance}\n")
 
         # 确保 unified_recall 的 dependency 一次就位
@@ -50,36 +57,50 @@ def main() -> int:
         report_rows = []
         t0 = time.time()
         for q in truth:
+            #-hash 反查 id
+            def _resolve(ids):
+                out = []
+                for hid in ids:
+                    if isinstance(hid, int):
+                        out.append(hid)
+                    elif hid in hash_to_id:
+                        out.append(hash_to_id[hid])
+                return out
+            must_set = set(_resolve(q.get("must_hit_id", [])))
+            may_not_set = set(_resolve(q.get("may_not_hit_id", [])))
+            may_nbr_set = set(_resolve(q.get("may_hit_neighbor_id", [])))
+            may_der_set = set(_resolve(q.get("may_hit_derived_id", [])))
             # 取稍宽候选(max_total_chars 给 topk+5 的预算),再 [:topk] 截断
             # 这样 RRF 融合空间足够, 评测 topk 限定 matches 用户实际看到的 rank-k。
             res = unified_recall(q["query"], budget_kind="passive",
                                  max_total_chars=(args.topk + 5) * 200)
             topk_ids = [r.get("chunk_id", -1) for r in res[:args.topk]]
-            topk_ids = [i for i in topk_ids if i >= 0]
-            must = set(q["must_hit_id"])
+            topk_ids_set = set(i for i in topk_ids if i >= 0)
+            must = must_set
             may_not = set(q.get("may_not_hit_id", []))
             may_nbr = set(q.get("may_hit_neighbor_id", []))
             may_der = set(q.get("may_hit_derived_id", []))
 
-            hits_must = len(must & set(topk_ids))
-            hits_unwanted = len(may_not & set(topk_ids))
+            hits_must = len(must & topk_ids_set)
+            hits_unwanted = len(may_not_set & topk_ids_set)
             recall = hits_must / max(1, len(must))
-            precision_at_k = hits_must / max(1, len(topk_ids))
-            unwanted_ratio = hits_unwanted / max(1, len(topk_ids))
+            precision_at_k = hits_must / max(1, len(topk_ids_set))
+            unwanted_ratio = hits_unwanted / max(1, len(topk_ids_set))
 
-            # 连续性: 若 must 命中, 则看邻居是否一起被召回
+            # 连续性: 若 must 命中, 则看邻居是否一起被召回(对齐用户 2026-07-16
+            # "联想助推" 语义: 邻居应能进候选池/被提权;是否进 topk 不强制)
             must_hit = hits_must >= 1
             neighbor_ratio = 0.0
-            if may_nbr and must_hit:
-                neighbor_ratio = len(may_nbr & set(topk_ids)) / len(may_nbr)
+            if may_nbr_set and must_hit:
+                neighbor_ratio = len(may_nbr_set & topk_ids_set) / len(may_nbr_set)
             derived_ratio = 0.0
-            if may_der and must_hit:
-                derived_ratio = len(may_der & set(topk_ids)) / len(may_der)
+            if may_der_set and must_hit:
+                derived_ratio = len(may_der_set & topk_ids_set) / len(may_der_set)
 
             report_rows.append({
                 "theme": q["theme"], "query": q["query"][:50],
                 "note": q.get("note", ""),
-                "topk_ids": topk_ids,
+                "topk_ids": list(topk_ids_set),
                 "must_hit_id": list(must),
                 "hits_must": hits_must,
                 "recall": round(recall, 3),

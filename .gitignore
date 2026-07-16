@@ -53,6 +53,7 @@ docs/*
 docs/design/*
 !docs/design/.gitkeep
 !docs/design/digital-life-system-design.md
+!docs/design/unified-memory.md
 !docs/showcase/
 !docs/showcase/.gitkeep
 !docs/showcase/multi-instance-trading-2026-06.md

@@ -690,8 +690,10 @@ SELF_KNOWLEDGE.md 独立于上述碎片循环——它是"我在什么情况下�
 为避免文档给读者错觉，集中列出**当前未做**的记忆能力：
 - **跨实例实体共享**：实体索引每实例独立，无项目级/全局共享。
 - **统一召回接口**：wake 召回、mid-session 联想、`sense_entity` 三路径各自调 `query_entities_ranked`，未抽象成单一 facade。
+  > 统一化设计见 [`unified-memory.md` §4](./unified-memory.md#4-检索三类连边融合)。
 - **归档搜索工具**：CONSCIOUSNESS 归档会写入，但无工具回查归档内容。
 - **实体关系图谱（层级化）**：实体是扁平字典，无层级关系图谱。
+  > 三类连边的网状结构设计见 [`unified-memory.md` §3](./unified-memory.md#3-网状结构三类连边)。
 - **冷启动回填**：旧记忆不会自动补挂 entities，依赖模型在后续写入时逐步带上。
 
 ---

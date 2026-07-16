@@ -316,6 +316,15 @@ def unified_recall(
     if not query or not query.strip():
         return []
 
+    # P3 T034: 懒 backfill 历史 chunks(单进程一次)。失败不阻塞检索。
+    try:
+        from domain.memory.memory.recall.unified.migration import (
+            backfill_slice_fields_if_needed,
+        )
+        backfill_slice_fields_if_needed()
+    except Exception:
+        pass
+
     max_chars = max_total_chars or _BUDGET_MAX_CHARS.get(budget_kind, 600)
     exclude = exclude_chunk_ids or set()
 

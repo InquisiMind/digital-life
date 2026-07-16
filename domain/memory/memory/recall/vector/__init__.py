@@ -216,6 +216,50 @@ def _get_db() -> sqlite.Connection:
         db.execute("ALTER TABLE chunks ADD COLUMN phase TEXT NOT NULL DEFAULT ''")
     except Exception:
         pass  # column already exists — idempotent
+
+    # P3 T033: 统一切片层 schema 扩展。所有列加 DEFAULT,允许老行存在 NULL
+    # (回填在 T034)。幂等 ALTER。
+    _p3_columns: list[tuple[str, str]] = [
+        # (col, DDL-fragment-after ADD COLUMN)
+        ("source_kind",      "TEXT NOT NULL DEFAULT ''"),
+        ("session_id",       "TEXT NOT NULL DEFAULT ''"),
+        ("segment_index",    "INTEGER"),
+        ("derived_from",     "TEXT NOT NULL DEFAULT '[]'"),  # JSON array of chunk_id
+        ("derive_kind",      "TEXT NOT NULL DEFAULT ''"),
+        ("authority",        "REAL NOT NULL DEFAULT 0.5"),
+        ("permanence",       "REAL NOT NULL DEFAULT 0.3"),
+        ("freshness",        "REAL NOT NULL DEFAULT 1.0"),
+        ("activation",       "REAL NOT NULL DEFAULT 0.0"),
+        ("verification",     "REAL NOT NULL DEFAULT 0.0"),
+        ("evidence_count",   "INTEGER NOT NULL DEFAULT 0"),
+        ("challenge_count",  "INTEGER NOT NULL DEFAULT 0"),
+        ("cognition_state",  "TEXT"),  # NULL = 经历 slice
+        ("supersede_by",     "INTEGER"),
+        ("entity_links",     "TEXT NOT NULL DEFAULT '[]'"),  # JSON of names
+        ("attention_tokens", "TEXT NOT NULL DEFAULT '[]'"),
+        ("provenance",       "TEXT NOT NULL DEFAULT ''"),
+    ]
+    for col, ddl in _p3_columns:
+        try:
+            db.execute(f"ALTER TABLE chunks ADD COLUMN {col} {ddl}")
+        except Exception:
+            pass
+
+    # 索引:phase 用于 cognitive filter;session_id+segment_index 用于时序邻居
+    try:
+        db.execute("CREATE INDEX IF NOT EXISTS idx_chunks_session ON chunks(session_id, segment_index)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_chunks_phase ON chunks(phase)")
+    except Exception:
+        pass
+
+    # P3 T035: FTS5 虚拟表 + 触发器(若环境支持)。失败时静默降级(unified.fts 模块
+    # 会日志提示,检索不会因此失败 — FR-001 检索非阻断点)。
+    try:
+        from domain.memory.memory.recall.unified.fts import ensure_fts5_schema
+        ensure_fts5_schema(db)
+    except Exception:
+        pass  # FTS5 不可用或 import 失败 — facade 走 vector+entity 兜底
+
     return db
 
 
@@ -320,14 +364,22 @@ def _index_source(db: sqlite.Connection, label: str, cfg: dict) -> int:
         logger.debug("Embedding failed for %s, skipping index", label)
         return 0
     count = 0
+    # T037: P3 让 _index_source 在写入时填 phase + source_kind(走 baseline 表)。
+    # 其它字段(authority/permanence/...)留靠 backfill_slice_fields_if_needed 懒补,
+    # 避免每条 INSERT 都查表(可接受,因为这层调用不频繁)。
+    from domain.memory.memory.recall.unified.slice import baselines_for_source
+    baseline = baselines_for_source(label)
+    insert_phase = baseline["phase"]
+    insert_source_kind = baseline["source_kind"]
     for (ch, text, mt), emb in zip(new_chunks, embeddings):
         if emb is None:
             continue
         blob = _embedding_to_blob(emb)
         db.execute(
-            "INSERT OR REPLACE INTO chunks (source, chunk_hash, text, embedding, file_mtime, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (label, ch, text, blob, mt, time.time()),
+            "INSERT OR REPLACE INTO chunks "
+            "(source, chunk_hash, text, embedding, file_mtime, created_at, phase, source_kind) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (label, ch, text, blob, mt, time.time(), insert_phase, insert_source_kind),
         )
         count += 1
     db.commit()

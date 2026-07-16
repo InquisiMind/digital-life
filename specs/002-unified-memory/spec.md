@@ -2,7 +2,7 @@
 
 **Feature Branch**: `002-unified-memory`
 **Created**: 2026-07-16
-**Status**: Draft
+**Status**: Implemented (P1+P2+P3+P4 全部落地, 2026-07-16)
 **Input**: User description: "统一记忆体系：切片原子 + 三类连边网 + 认知演化生命周期。承接主设计第九章，统一记忆子系统的写入归一、检索融合、投递调度与认知演化机制。"
 **Design reference**: [`docs/design/unified-memory.md`](../../docs/design/unified-memory.md)（已对齐的设计深化稿）
 **Parent design**: [`docs/design/digital-life-system-design.md` 第九章「记忆系统」](../../docs/design/digital-life-system-design.md)

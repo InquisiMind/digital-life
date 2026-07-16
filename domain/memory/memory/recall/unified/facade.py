@@ -95,7 +95,10 @@ def _route_lexical(query: str, *, limit: int) -> list[dict]:
             ids = tuple(cid for cid, _ in hits)
             placeholders = ",".join("?" * len(ids))
             rows = db.execute(
-                f"""SELECT id, source, text, phase, activation, freshness,
+                # P3+ 改: SELECT 里不再读 activation 列 — 因为 chunks.activation 是
+                # 持久字段不应作为"动态注意力"源(用户文档 §5.1); activation 真值
+                # 由 attention_cache (运行时)提供, 这里读其它静态字段。
+                f"""SELECT id, source, text, phase, freshness,
                           cognition_state, derived_from, entity_links
                    FROM chunks WHERE id IN ({placeholders})""",
                 ids,
@@ -105,7 +108,6 @@ def _route_lexical(query: str, *, limit: int) -> list[dict]:
                     "source": r["source"],
                     "text": r["text"],
                     "phase": r["phase"] or "experience",
-                    "activation": float(r["activation"] or 0.0),
                     "freshness": float(r["freshness"] or 0.0),
                     "cognition_state": r["cognition_state"] or None,
                     "derived_from": r["derived_from"] or "[]",
@@ -115,6 +117,17 @@ def _route_lexical(query: str, *, limit: int) -> list[dict]:
             }
         finally:
             db.close()
+        # 从运行时 cache 读 activation(替代原 SQL 列)
+        try:
+            from domain.memory.memory.recall.unified.attention_cache import (
+                get_activations,
+            )
+            cache_acts = get_activations([r["id"] for r in rows])
+            for cid, act in cache_acts.items():
+                if cid in meta_by_id:
+                    meta_by_id[cid]["activation"] = act
+        except Exception as act_e:
+            logger.debug("attention_cache read failed (treat as 0): %s", act_e)
     except Exception as e:
         logger.warning("lexical route: failed to load chunk text: %s", e)
         meta_by_id = {}

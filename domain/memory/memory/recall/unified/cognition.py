@@ -63,11 +63,33 @@ _DEFAULT_DELTAS = {
 }
 
 
+def _bump_act(slice: Slice, key: str, *, now: float | None = None) -> None:
+    """统一处理 activation 提升: 同时写 attention_cache(运行时,优先)和
+    slice.activation(兼容字段, 单测友好)。都限幅 [0, 1.0]。
+    """
+    delta = _DEFAULT_DELTAS[key]
+    slice.activation = min(1.0, slice.activation + delta)
+    if slice.id is not None and slice.id >= 0:
+        try:
+            from domain.memory.memory.recall.unified.attention_cache import (
+                bump_activation,
+            )
+            bump_activation(slice.id, delta=delta, now=now)
+        except Exception:
+            pass
+
+
 def on_access(slice: Slice, *, now: float | None = None) -> None:
-    """铁律一:被命中只动 activation,不动 authority / verification。"""
-    # 不论 phase,access 只短期涨 activation
-    slice.activation = min(1.0, slice.activation + _DEFAULT_DELTAS["access_bump_activation"])
-    # 注:不动 authority,不动 verification — 这是堵回声室的根本闸
+    """铁律一:被命中只动 activation,不动 authority / verification。
+
+    P3+ 修正(用户文档 §5.1): activation 不再写 slice.activation (chunks 持久层),
+    改写运行时 attention_cache。重启进程后 activation 自然清零,符合"动态权重
+    只活在当前对话"原则。slice.activation 字段仍保留作 from_row 兼容读取,
+    但运行时 cache 优先(见 facade._route_lexical)。
+    """
+    # 优先写运行时 cache(若 chunk_id 已知)
+    _bump_act(slice, "access_bump_activation", now=now)
+    # 不动 authority, 不动 verification — 堵回声室的根本闸
 
 
 def on_reference(slice: Slice, *, now: float | None = None) -> None:
@@ -77,7 +99,7 @@ def on_reference(slice: Slice, *, now: float | None = None) -> None:
     authority 微涨仅经历类(作为"应晋升候选"信号);
     认知类 authority 不动(避免回声室)。
     """
-    slice.activation = min(1.0, slice.activation + _DEFAULT_DELTAS["reference_bump_activation"])
+    _bump_act(slice, "reference_bump_activation", now=now)
     slice.verification += _DEFAULT_DELTAS["reference_verification_inc"]
     if slice.phase == "experience":
         slice.authority = min(1.0, slice.authority + _DEFAULT_DELTAS["reference_experience_authority"])
@@ -93,6 +115,7 @@ def on_verified(slice: Slice, *, now: float | None = None) -> None:
         # 经历类按 reference 处理(走同一路径,简化)
         on_reference(slice, now=now)
         return
+    _bump_act(slice, "reference_bump_activation", now=now)
     slice.authority = min(1.0, slice.authority + _DEFAULT_DELTAS["verified_authority_inc"])
     slice.verification += _DEFAULT_DELTAS["verified_verification_inc"]
     slice.evidence_count += 1

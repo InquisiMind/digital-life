@@ -1235,10 +1235,25 @@ def _index_digest_to_vectors(
         blob = _embedding_to_blob(embedding)
         # P1 T016:顺便写入 phase 字段(P1 不消费,但 schema 已就位 — 见 spec Clarifications Q1)。
         # 所有 digest_* 都是 experience(经历摘要),按 data-model.md 相位映射表。
+        # P3 T040: session_id + segment_index 填入(用于时序邻居连边 §4 三类连边②)。
+        # segment 的 period 形如 "{session_id}#{seg_idx}";session/day 的 period 直接是 session_id/日期。
+        seg_id = ""
+        seg_idx = None
+        if layer == "segment" and "#" in period:
+            parts = period.split("#", 1)
+            seg_id, rest = parts[0], parts[1]
+            try:
+                seg_idx = int(rest)
+            except Exception:
+                pass
+        elif layer in ("session", "day", "week"):
+            seg_id = period  # 完整 period 作为 session identifier
         vec_db.execute(
-            "INSERT OR REPLACE INTO chunks (source, chunk_hash, text, embedding, file_mtime, created_at, phase) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (f"digest_{layer}", chunk_hash, digest_text, blob, time.time(), time.time(), "experience"),
+            "INSERT OR REPLACE INTO chunks "
+            "(source, chunk_hash, text, embedding, file_mtime, created_at, phase, session_id, segment_index) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (f"digest_{layer}", chunk_hash, digest_text, blob, time.time(), time.time(),
+             "experience", seg_id, seg_idx),
         )
         vec_db.commit()
         vec_db.close()

@@ -1519,6 +1519,17 @@ def _wake_digital_life_inner_safe(
         except Exception as e:
             logger.debug("Memory consolidation failed: %s", e)
 
+        # P3 T039: session 末把 projects / global_todos re-index 进 unified slice 池,
+        # 让"项目档案 / 待办" 能被检索命中(spec §User Story 3 / FR-303 可扩展性)。
+        # 跟 consolidate_after_session 同节奏(低频),失败绝对不阻塞 session end。
+        try:
+            from domain.memory.memory.recall.unified.normalizers import (
+                index_projects_and_todos,
+            )
+            index_projects_and_todos()
+        except Exception as e:
+            logger.debug("Project/todo re-index (failed, non-blocking): %s", e)
+
         # Session-end cleanup: consume ALL pending events that weren't consumed
         # during the session. Only do this on success — on failure events were
         # already rolled back so they can be re-popped on retry.

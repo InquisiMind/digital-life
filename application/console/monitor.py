@@ -1108,7 +1108,18 @@ class MonitorConsoleWorkflow:
             if db is None:
                 return UseCaseResult({"error": "not found"}, 404)
             try:
-                row = db.execute("SELECT id, source, text, created_at FROM chunks WHERE id=?", (chunk_id,)).fetchone()
+                # P3 T041: SELECT 加新切片字段(phase/source_kind/authority/permanence/
+                # freshness/cognition_state/session_id/segment_index/derived_from)
+                row = db.execute(
+                    """SELECT id, source, text, created_at, file_mtime,
+                              phase, source_kind, authority, permanence, freshness,
+                              activation, verification, evidence_count, challenge_count,
+                              cognition_state, supersede_by,
+                              session_id, segment_index, derived_from, derive_kind,
+                              entity_links, attention_tokens, provenance
+                       FROM chunks WHERE id=?""",
+                    (chunk_id,),
+                ).fetchone()
                 if not row:
                     return UseCaseResult({"error": "not found"}, 404)
                 chunk = dict(row)

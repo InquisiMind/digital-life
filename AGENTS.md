@@ -54,4 +54,7 @@ Do not use legacy Hermes gateway commands for this repository.
 <!-- SPECKIT START -->
 For active `full` or `lightweight` Spec Kit work, read the current feature plan
 after applying the Spec Kit gate. Do not load feature plans for ordinary tasks.
+
+Active feature plan: [specs/002-unified-memory/plan.md](specs/002-unified-memory/plan.md)
+(unified memory system; branch `002-unified-memory`; status: planning complete, ready to task-generate)
 <!-- SPECKIT END -->

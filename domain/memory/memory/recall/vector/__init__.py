@@ -75,6 +75,11 @@ _FILE_SOURCES = {
 _DYNAMIC_SOURCES = {
     "conversation": {"weight": 1.6, "threshold": 0.12, "decay_hours": 72},
     "digest_session": {"weight": 2.0, "threshold": 0.10, "decay_hours": 168},
+    # P1 T014 新增:segment narrative 摘要需进检索池。
+    # 若无此条目,recall() 的 _ALL_SOURCES.get("digest_segment") 为 None →
+    # 已写入的 segment chunks 也被跳过(recon 已确认:_index_digest_to_vectors 用
+    # source=f"digest_{layer}",代码 L1199 ⇒ segment 写出来的 source 是 'digest_segment')。
+    "digest_segment": {"weight": 2.0, "threshold": 0.10, "decay_hours": 168},
     "digest_day": {"weight": 1.5, "threshold": 0.12, "decay_hours": 336},
     "digest_week": {"weight": 1.2, "threshold": 0.14, "decay_hours": 720},
 }
@@ -108,6 +113,12 @@ def _get_api_key() -> Optional[str]:
 
 
 def _embed_texts(texts: List[str]) -> Optional[List[List[float]]]:
+    """批量嵌入。按 spec FR-103 / Clarifications Q3:
+       - 不重试(避免 429 风暴 + 不阻塞召回关键路径)
+       - 部分成功时保留成功项(失败项以 None 占位),不再 all-or-nothing
+       - 任何失败用 `logger.warning` 暴露(非 debug 静默)
+       全部子项失败、且 key 存在时,返回的是 list-of-Nones(消费侧已逐项 `if emb is None: continue`)。
+    """
     if not texts:
         return []
     api_key = _get_api_key()
@@ -129,21 +140,42 @@ def _embed_texts(texts: List[str]) -> Optional[List[List[float]]]:
                 "Content-Type": "application/json",
             },
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        # 单次 HTTP timeout 8s — 为 P2 unified_recall 整体 5s 上限让出余地(FR-104)。
+        with urllib.request.urlopen(req, timeout=8) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        embeddings = [None] * len(texts)
+        embeddings: List[Optional[List[float]]] = [None] * len(texts)
         for item in data.get("data", []):
             idx = item.get("index", 0)
             embeddings[idx] = item["embedding"]
-        return embeddings if all(e is not None for e in embeddings) else None
+        # 不再做 all-or-nothing。返回真实结果(可能含 None 占位),
+        # 让 _index_source / index_conversations 等已逐项 `if emb is None: continue`
+        # 的消费侧保留部分成功(spec FR-103 / Clarifications Q3)。
+        missing = sum(1 for e in embeddings if e is None)
+        if missing:
+            logger.warning(
+                "Embedding partial success: %d/%d returned null; keeping successful entries",
+                missing, len(texts),
+            )
+        return embeddings
     except Exception as e:
-        logger.debug("Embedding API failed: %s", e)
+        # 不重试(FR-001/FR-103: 召回不能阻塞)。warning 而非 debug,
+        # 让 embedding-API 失败在控制台可见(SC-003)。
+        logger.warning("Embedding API failed (no retry, will degrade): %s", e)
         return None
 
 
 def _embed_single(text: str) -> Optional[List[float]]:
+    """单条嵌入(转发 _embed_texts)。明确处理 [None] footgun:
+       T010 改造后 _embed_texts 可能返回 [None] 形式(全 batch 都 null 但 key 在),
+       原 `result[0] if result` 会返 None 但语义含糊;这里显式 None 检查第一项。
+    """
+    if not text:
+        return None
     result = _embed_texts([text])
-    return result[0] if result else None
+    if not result:
+        return None
+    first = result[0]
+    return first if first is not None else None
 
 
 # ──────────────────── SQLite 存储 ────────────────────
@@ -177,6 +209,13 @@ def _get_db() -> sqlite.Connection:
         CREATE INDEX IF NOT EXISTS idx_assoc_a ON associations(chunk_a);
         CREATE INDEX IF NOT EXISTS idx_assoc_b ON associations(chunk_b);
     """)
+    # P1 T012: 幂等加 `phase` 列(DEFAULT '')。P3 schema 会继续扩展更多字段。
+    # 仿 consolidation_runtime._get_db 的幂等 ALTER 模式(try/except "duplicate column")。
+    # phase 由 P1 阶段写入但不消费(数据预先就位,避免 P3 二改表 — 见 spec Clarifications Q1)。
+    try:
+        db.execute("ALTER TABLE chunks ADD COLUMN phase TEXT NOT NULL DEFAULT ''")
+    except Exception:
+        pass  # column already exists — idempotent
     return db
 
 

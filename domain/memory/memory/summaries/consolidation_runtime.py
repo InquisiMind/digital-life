@@ -705,25 +705,51 @@ def load_segment_narrative(session_id: str, segment_index: int) -> Optional[str]
 
 
 def update_entity_index_from_narrative(narrative: str) -> None:
-    """从叙事中提取实体并更新 entity_index（只追加新实体）。"""
+    """从叙事中提取实体并同步进 entity_index。
+
+    P1 T017 修复(recon 确认的两个 bug):
+      1. 旧代码 import `add_entity`(entity_index 不存在该函数) → ImportError
+         被外层 try/except 吞 → 整个函数静默 no-op。
+      2. 旧代码把 entity 当 dict 调 .get("name"), 但 extract_entities_from_context
+         返回 list[str] → AttributeError(双重 bug)。
+
+    本重写按 spec Clarifications Q1 + design doc §1 "4 源自动实体":
+    extract 后返回字符串列表,每个 name 经 sync_entity_from_source 写入。
+    失败容忍(单个实体出错不影响其它),但仍会在控制台暴露。
+    """
     try:
         from domain.memory.memory.consciousness.entity_index import (
             extract_entities_from_context,
-            add_entity,
+            sync_entity_from_source,
         )
-        entities = extract_entities_from_context(narrative)
-        for entity in entities:
-            try:
-                add_entity(
-                    name=entity.get("name", ""),
-                    entity_type=entity.get("type", "unknown"),
-                    context=narrative[:500],
-                    source_session="",
-                )
-            except Exception:
-                pass
-    except Exception:
-        pass
+    except ImportError as ie:
+        logger.warning("entity_index import failed (cannot sync narrative entities): %s", ie)
+        return
+
+    entities: list[str] = extract_entities_from_context(narrative)
+    if not entities:
+        return
+
+    summary_preview = narrative.strip().replace("\n", " ")[:200]
+    for entity_name in entities:
+        if not entity_name or not entity_name.strip():
+            continue
+        try:
+            # 与 contacts/store.create_contact 的调用方式一致:position name, kw 其他。
+            # 来源 narrative 不会强加 entity_type(模型可在后续 memory_hygiene
+            # 周期里给它准确类型);sync 是 create-or-update 幂等。
+            sync_entity_from_source(
+                entity_name.strip(),
+                entity_type="concept",
+                summary=summary_preview,
+            )
+        except Exception as per_entity_err:
+            # 窄 try/except:一个实体的失败不应阻塞其它实体,
+            # 但要可见(避免回归"完全静默")。
+            logger.debug(
+                "sync_entity_from_source failed for %r: %s",
+                entity_name, per_entity_err,
+            )
 
 
 _SESSION_SUMMARY_PROMPT = """你是一个数字生命的记忆总结助手。请根据以下对话记录，生成一段简洁的记忆摘要。
@@ -811,11 +837,25 @@ def _generate_segment_narratives_worker(session_db: Any, session_id: str, db_pat
         # 从已生成的叙事中提取实体并更新 index
         if generated > 0:
             rows = db.execute(
-                "SELECT llm_summary FROM memory_layers WHERE layer='segment' AND period LIKE ?",
+                "SELECT llm_summary, period FROM memory_layers WHERE layer='segment' AND period LIKE ?",
                 (f"{session_id}#%",),
             ).fetchall()
             for row in rows:
                 if row["llm_summary"]:
+                    # P1 T015: segment narrative 必须进向量索引。
+                    # recon 确认:旧实现写进 memory_layers 后从不切片,造成
+                    # "最该读到的第一人称经历在检索里蒸发"。修复:与 session 摘要
+                    # 一样走 _index_digest_to_vectors(layer="segment", period=row["period"])。
+                    # period 形如 f"{session_id}#{seg_idx}",作为 chunk_hash 用。
+                    try:
+                        _index_digest_to_vectors(
+                            row["llm_summary"], "segment", row["period"]
+                        )
+                    except Exception as idx_err:
+                        logger.warning(
+                            "Failed to index segment vector (session=%s period=%s): %s",
+                            session_id[:20], row["period"], idx_err,
+                        )
                     update_entity_index_from_narrative(row["llm_summary"])
 
         db.close()
@@ -1193,15 +1233,18 @@ def _index_digest_to_vectors(
     try:
         vec_db = _get_vec_db()
         blob = _embedding_to_blob(embedding)
+        # P1 T016:顺便写入 phase 字段(P1 不消费,但 schema 已就位 — 见 spec Clarifications Q1)。
+        # 所有 digest_* 都是 experience(经历摘要),按 data-model.md 相位映射表。
         vec_db.execute(
-            "INSERT OR REPLACE INTO chunks (source, chunk_hash, text, embedding, file_mtime, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (f"digest_{layer}", chunk_hash, digest_text, blob, time.time(), time.time()),
+            "INSERT OR REPLACE INTO chunks (source, chunk_hash, text, embedding, file_mtime, created_at, phase) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (f"digest_{layer}", chunk_hash, digest_text, blob, time.time(), time.time(), "experience"),
         )
         vec_db.commit()
         vec_db.close()
     except Exception as e:
-        logger.debug("Failed to index digest vector: %s", e)
+        # P1 SC-003: 不再静默 debug;向量索引失败也可能影响召回质量,用 warning 暴露。
+        logger.warning("Failed to index digest vector (layer=%s period=%s): %s", layer, period, e)
 
 
 # ──────────────────── Main Entry Point ────────────────────

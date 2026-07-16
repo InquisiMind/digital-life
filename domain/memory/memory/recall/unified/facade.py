@@ -321,6 +321,7 @@ def unified_recall(
     budget_kind: BudgetKind = "passive",
     max_total_chars: int | None = None,
     timeout_seconds: float = _DEFAULT_TIMEOUT,
+    scene_hint: str | None = None,
 ) -> list[dict]:
     """统一记忆检索入口。详见模块 docstring。
 
@@ -399,6 +400,17 @@ def unified_recall(
     # 4. RRF 融合
     fused = _rrf_fuse(boosted_routes)
 
+    # P3+ 场景意图过滤器(用户文档 §4): 判定当前 scene, 给每个 source
+    # 一个 multiplier, 在终排 final_score 上乘。一刀切的 RRF 改成"按场景分流"。
+    # 比如 deep_work 时把 conversation 0.4 压低、rules 1.4 抬高;
+    # chat 时反过来。这是 precision 0.20 痛点的根本解。
+    from domain.memory.memory.recall.unified.scene_weights import (
+        detect_scene, weight_multiplier,
+    )
+    scene = detect_scene(query, hint=scene_hint)
+    if scene != "balanced":
+        logger.debug("unified_recall scene=%s for query=%r", scene, query[:50])
+
     # P2.1 (用户认知修正 2026-07-16): 联想 = "助推" 而非 "召回",
     # 邻居/derived 不再硬塞回调,而是进候选池 + spread_boost,
     # 仍参与终排,可能因相关性不够被压在 top-K 外。
@@ -416,7 +428,7 @@ def unified_recall(
             logger.debug("spread_to_candidates failed (will skip spread): %s", e)
 
     # 给 spread 候选包装成 RRF 兼容形态(标记 route=spread), 并参与终排
-    # 终排 score = rrf_score + spread_score + cognition_bias + freshness*ε
+    # 终排 score = (rrf_score + cog_bonus) × scene_multiplier + spread_boost
     final_pool: dict[int, dict] = {}
     for r in fused:
         cid = r.get("chunk_id", -1)
@@ -432,10 +444,14 @@ def unified_recall(
         cog_bonus = 0.0
         if r.get("meta_phase") == "cognition":
             cog_bonus = 0.02
+        # 场景意图 multiplier(overlay 在 rrf+cog 之上)
+        scene_mult = weight_multiplier(r.get("source", ""), scene)
         r["final_score"] = (
             r.get("rrf_score", 0.0)
             + cog_bonus
-        )
+        ) * scene_mult
+        r["scene"] = scene
+        r["scene_mult"] = scene_mult
         final_pool[cid_key] = r
 
     for s in spread_candidates:
@@ -462,8 +478,10 @@ def unified_recall(
             actual_boost = s.get("spread_score", 0.0) * 0.25
         else:
             actual_boost = s.get("spread_score", 0.0)
+        # spread boost 也走场景权重(否则 conversation noise 仍可能靠 spread 抢位)
+        actual_boost *= weight_multiplier(cand_source, scene)
         if cid in final_pool:
-            # 已在召回结果里,只加 boost
+            # 已在召回结果里,只加 boost(其 base 已在主 loop 乘过 scene_mult)
             final_pool[cid]["final_score"] = (
                 final_pool[cid].get("final_score", 0.0)
                 + actual_boost
@@ -472,7 +490,7 @@ def unified_recall(
             if final_pool[cid].get("spread_origin") is None:
                 final_pool[cid]["spread_origin"] = s.get("spread_origin")
         else:
-            # 新加入的扩散项
+            # 新加入的扩散项:base 0 (无 RRF 命中), 仅靠 boost + scene_mult 占位
             final_pool[cid] = {
                 "chunk_id": cid,
                 "text": s.get("text", ""),
@@ -484,7 +502,9 @@ def unified_recall(
                 "max_route_score": 0.0,
                 "spread_origin": s.get("spread_origin"),
                 "spread_depth": s.get("spread_depth", 1),
-                "final_score": actual_boost,  # 仅靠 boost 占位, 相关性弱时排不上
+                "final_score": actual_boost,
+                "scene": scene,
+                "scene_mult": weight_multiplier(cand_source, scene),
             }
 
     # 排序:final_score 为主

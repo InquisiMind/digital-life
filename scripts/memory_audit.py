@@ -62,6 +62,44 @@ def is_wake_template(text: str) -> bool:
     return hits >= 2
 
 
+# v3 新增: 4 类已被抽样证实的垃圾识别规则 (2026-07-17)
+_DIGEST_DAY_DUMP = re.compile(
+    r"^\d{4}-\d{2}-\d{2}:\s*\|\s*.*\|.*精力\d+", re.MULTILINE
+)
+_WORK_CHECKLIST = re.compile(
+    r"- \[[x ]\] .*\| 来源:\s*(self|用户|自己)\s*\| 创建:\d{4}-\d{2}-\d{2}"
+)
+_HIM_META_PREFIX = re.compile(
+    # him 文件里大量时间戳行开头但无实质内容
+    r"^\d{1,2}:\d{2}:\d{2}\+\d{2}:\d{2}\s*↵\s*$|^.{0,5}↵\s*$",
+    re.MULTILINE,
+)
+_KG_TEST_RESIDUE = re.compile(
+    r"^(修订后的更准确判断|higher level cognition v\d|test_(promote|e2e|recurring))",
+    re.IGNORECASE,
+)
+
+
+def is_digest_day_dump(text: str) -> bool:
+    """digest_day chunk 是关键词 dump, 非句子 (39-50 字)。"""
+    if not text or len(text) > 80:
+        return False
+    return bool(_DIGEST_DAY_DUMP.search(text))
+
+
+def is_work_checklist(text: str) -> bool:
+    """work.md / notes 里 '已完成清单' 流水 — 时间戳 + 标签, 信息密度极低。"""
+    s = text or ""
+    matches = _WORK_CHECKLIST.findall(s)
+    return len(matches) >= 3  # 至少 3 行这种格式才算
+
+
+def is_test_residue(text: str) -> bool:
+    """测试残留(我们之前 E2E/cognition 测遗留的 fake cognition)。"""
+    s = (text or "").strip()
+    return bool(_KG_TEST_RESIDUE.match(s))
+
+
 def is_tool_result(text: str) -> bool:
     """工具返回值 / JSON 片段被当对话。"""
     head = (text or "").strip()[:200]
@@ -95,11 +133,14 @@ def is_low_value_junk(text: str) -> bool:
 
 RULES: list[tuple[str, Callable[[str], bool], str, str]] = [
     # name, predicate, severity (P0/P1/P2), reason
-    ("wake_template",  is_wake_template,  "P0", "wake prompt 模板被误当 conversation"),
-    ("tool_result",    is_tool_result,    "P0", "工具返回 / JSON 片段, 非真实对话"),
-    ("status_report",  is_status_report,  "P1", "意识流状态报告/【整理】标签"),
-    ("placeholder_ok", is_too_short,      "P2", "超短占位回复(好的/明白/收到)"),
-    ("low_value_junk", is_low_value_junk, "P2", "几乎全标点符号 / 无信息"),
+    ("wake_template",   is_wake_template,   "P0", "wake prompt 模板被误当 conversation"),
+    ("tool_result",     is_tool_result,     "P0", "工具返回 / JSON 片段, 非真实对话"),
+    ("test_residue",    is_test_residue,    "P0", "测试残留 fake cognition (E2E/单测遗留)"),
+    ("digest_day_dump", is_digest_day_dump, "P1", "digest_day 关键词 dump, 无实质句"),
+    ("work_checklist",  is_work_checklist,  "P1", "work/notes 流水清单(时间戳+标签), 信息密度极低"),
+    ("status_report",   is_status_report,   "P1", "意识流状态报告/【整理】标签"),
+    ("placeholder_ok",  is_too_short,       "P2", "超短占位回复(好的/明白/收到)"),
+    ("low_value_junk",  is_low_value_junk,  "P2", "几乎全标点符号 / 无信息"),
 ]
 
 

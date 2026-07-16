@@ -1864,7 +1864,9 @@ class AIAgent:
                     )
                 )
             ]
-            lines = ["[联想命中 — 你正在思考的上下文里提到了你有相关记忆的实体]"]
+            lines = ["[联想命中 — 三路融合]"]
+
+            # ── Route A: entity_index 精确触发（关键词刺激）──
             for mem in memories:
                 mtype = str(mem.get("memory_type", "")).upper()
                 entity = str(mem.get("_matched_entity", ""))
@@ -1873,22 +1875,55 @@ class AIAgent:
                 if len(snippet) > 200:
                     snippet = snippet[:100] + "…" + snippet[-100:]
                 if mtype == "PROFILE":
-                    # profile = 对该实体的提炼理解(profile-first,替代散乱碎片)
-                    lines.append(f"- [{entity} · 概念] {snippet}")
+                    lines.append(f"🎯 [{entity} · 概念] {snippet}")
                 else:
-                    # snippet 只截关键部分(避免长篇日记占满 faketool)
-                    lines.append(f"- [{mtype}]{tag} {snippet}")
-            # 注解:多少实体命中 / 多少 memory 返回
-            lines.append(f"(命中 {len(new_entities)} 实体: "
-                         f"{', '.join(new_entities[:8])}"
-                         + (f" 等{len(new_entities)-8}个" if len(new_entities) > 8 else "")
-                         + f"; 召回 {len(memories)} 条。"
-                           f"如需更多调 recall_entity('实体名'))")
+                    lines.append(f"🎯 [{mtype}]{tag} {snippet}")
+
+            entity_count = len(new_entities)
+
+            # ── Route B: 向量语义召回（情境相似）──
+            # 用 query 上下文做 embedding → cosine 相似度召回
+            # 补偿 Route A 的精确子串匹配盲区（如"止损线"找不到"A+策略"）
+            vec_lines: list[str] = []
+            try:
+                from domain.memory.memory.recall.vector import recall as _vec_recall
+                vec_result = _vec_recall(combined, max_total_chars=400)
+                if vec_result:
+                    # recall 返回拼接文本——拆成段落做关键词去重
+                    vec_paragraphs = [p.strip() for p in vec_result.split("\n") if p.strip()]
+                    # 去掉 Route A 已经返回过的（按 snippet 前 30 字模糊匹配）
+                    existing_snippets = set()
+                    for mem in memories:
+                        existing_snippets.add(str(mem.get("snippet", ""))[:30])
+                    for p in vec_paragraphs[:3]:
+                        if p[:30] not in existing_snippets and len(p) >= 10:
+                            # 标注来源
+                            source_tag = ""
+                            if "digest" in p.lower() or "session" in p.lower():
+                                source_tag = "[经历]"
+                            elif "lesson" in p.lower() or "教训" in p.lower():
+                                source_tag = "[教训]"
+                            elif "rule" in p.lower() or "规则" in p.lower():
+                                source_tag = "[规则]"
+                            else:
+                                source_tag = "[语义]"
+                            lines.append(f"🔍 {source_tag} {p[:200]}")
+                            vec_lines.append(p)
+            except Exception:
+                pass
+
+            # 注解
+            vec_count = len(vec_lines)
+            lines.append(
+                f"(🎯触发: {entity_count} 实体/{len(memories)} 条"
+                + (f" + 🔍语义: {vec_count} 条" if vec_count else "")
+                + "。如需更多调 recall_entity('实体名'))"
+            )
+
             breadcrumb_text = "\n".join(lines)
             assistant_msg, tool_msg = self._sys_tool_call("entity_recall", breadcrumb_text)
             messages.append(assistant_msg)
             messages.append(tool_msg)
-            self._recall_injection_indices = [len(messages) - 2, len(messages) - 1]
             if self.audit_ctx is not None:
                 try:
                     self.audit_ctx.recall("entity_recall", breadcrumb_text)

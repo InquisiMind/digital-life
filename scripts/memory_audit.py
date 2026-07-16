@@ -100,6 +100,55 @@ def is_test_residue(text: str) -> bool:
     return bool(_KG_TEST_RESIDUE.match(s))
 
 
+# v5 信息密度规则 (2026-07-17)
+# 用户观察:
+# - 过渡句 "[assistant] 两个关键思考值得沉淀" 长度短无信息
+# - 工具流水账 "[07/03 20:14] initiative [... ] ·工具:xxx ·工具:yyy"
+_OVERBOSE_INIT_LINE = re.compile(
+    r"^\[\d{2}/\d{2} \d{2}:\d{2}\] (timer|initiative|group_message|"
+    r"awaiting_reply|nurture_energy|human_message|"
+    r"task_reminder|todo_trigger|self_review|memory_hygiene)"
+)
+_TOOL_LIST_LINE = re.compile(r"^\s*·\s*工具:\s*\S+")
+
+
+def is_meta_transition(text: str) -> bool:
+    """极短"过渡句/启动语"< 45 字 且 含特殊动词。
+    例: 好的 走复盘 / 两个关键思考值得沉淀 / 现在写明日交接 / 已有 14:20 闹钟,复用它
+    """
+    s = (text or "").strip()
+    if len(s) > 50:
+        return False
+    # 不单纯短就必须清, 还要命中"过渡动作语言"特征
+    transition_keys = [
+        "值得沉淀", "走复盘", "走五个", "材料齐了", "复用它", "进休息", "标记今日计划",
+        "现在写明日", "好了", "好,让我", "材料归集", "好,准备", "让我把分析",
+        "现在我来", "好,让我", "全部完成", "状态盘点", "数据清楚了", "整理完成",
+        "Day 1 分析完成", "确认完成", "已发送", "已生成", "已记录",
+        "状态报告", "完成度: ", "精力", "现在时间",
+    ]
+    return any(k in s for k in transition_keys)
+
+
+def is_tool_call_dump(text: str) -> bool:
+    """digest_session 里的 "工具流水账" 摘要:
+       列一堆 "·工具: xxx" 没有模型可消费的信息。
+       特征: 列中 ≥5 行 "·工具:" 且 整体 unique_ratio 低。
+    """
+    s = text or ""
+    tool_lines = _TOOL_LIST_LINE.findall(s, re.MULTILINE)
+    if len(tool_lines) < 5:
+        return False
+    # 而且开头就是元 meta 头(时间戳 + initiative/timer/group_message 等)
+    if not _OVERBOSE_INIT_LINE.search(s):
+        return False
+    # unique ratio 判定 (高重复)
+    if not s:
+        return False
+    uniq = len(set(s)) / len(s)
+    return uniq < 0.30
+
+
 # v4 新增: 真正大面积的问题——该衰减的过期 digest/experience。
 # 这次 audit 不是按 text 内容,而是按 source + 创建时间。
 # audit_chunks 内部对该规则特殊处理(需 created_at, 不能只看 text)。
@@ -166,8 +215,10 @@ RULES: list[tuple[str, Callable[[str], bool], str, str]] = [
     ("wake_template",   is_wake_template,   "P0", "wake prompt 模板被误当 conversation"),
     ("tool_result",     is_tool_result,     "P0", "工具返回 / JSON 片段, 非真实对话"),
     ("test_residue",    is_test_residue,    "P0", "测试残留 fake cognition (E2E/单测遗留)"),
+    ("tool_call_dump",  is_tool_call_dump,  "P1", "digest 内的工具调用流水账(≥5 行 '工具:')"),
     ("digest_day_dump", is_digest_day_dump, "P1", "digest_day 关键词 dump, 无实质句"),
     ("work_checklist",  is_work_checklist,  "P1", "work/notes 流水清单(时间戳+标签), 信息密度极低"),
+    ("meta_transition", is_meta_transition, "P1", "过渡句/启动语(<50字, 动作描述无信息)"),
     ("status_report",   is_status_report,   "P1", "意识流状态报告/【整理】标签"),
     ("placeholder_ok",  is_too_short,       "P2", "超短占位回复(好的/明白/收到)"),
     ("low_value_junk",  is_low_value_junk,  "P2", "几乎全标点符号 / 无信息"),

@@ -760,10 +760,14 @@ def recall_structured(
                 age_hours = (now - row["created_at"]) / 3600
                 time_factor = math.exp(-age_hours / decay_hours)
                 sim *= max(time_factor, 0.1)
-            # Cognition 排序优先(设计 §6.6): 让规则/教训/认知排名高于经历
+            # Cognition 排序优先(设计 §6.6): cognition 排名略高于 experience,
+            # 但实际调参发现 +0.5 过强 → 把 conversation 经历完全挤出 candidate 池
+            # (用户实测 2026-07-16: "用户曾经说的话没被召回" 反映的就是这个)。
+            # 由于 vector cosine 本身在 0.4-1.0 区间稳定, +0.05 就足以做"打破 tie"
+            # 式提权; 真正的 cognition 优先在 facade 终排的 cog_bonus 0.05 那里再做。
             phase = row["phase"] if "phase" in row.keys() else ""
             if phase == "cognition":
-                sim += 0.5
+                sim += 0.05
             if sim >= cfg.get("threshold", 0.15) - (0.5 if phase == "cognition" else 0):
                 # cognition 因 +0.5 后可能本来没过阈的也排得起来, 放宽阈偏移
                 cid = row["id"]

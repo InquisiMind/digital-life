@@ -127,9 +127,12 @@ def _route_lexical(query: str, *, limit: int) -> list[dict]:
         # 因 base score 低、被高频老对话挤出)。
         bonus = (0.4 * meta.get("activation", 0.0)
                  + 0.2 * meta.get("freshness", 0.0))
-        # 认知类微 boost(规则/教训/晋升结果应有更高召回权重)
+        # 认知类微 boost(规则/教训/晋升结果应有更高召回权重):
+        # 原本 lexical 这里 +0.5 太重 — 与 vector 路的 +0.5 累加, 实测让所有
+        # cognition 抢占 top-K, 把 user 对话经历压至榜外(实测 "闹钟为什么没按
+        # 时触发" 召回全 rules, 无 conversation)。降到 +0.05 同其它位置。
         if meta.get("phase") == "cognition":
-            bonus += 0.5
+            bonus += 0.05
         out.append({
             "chunk_id": cid,
             "score": float(score) + bonus,  # 已转正 + 新鲜度/活度 bonus
@@ -423,11 +426,12 @@ def unified_recall(
         else:
             cid_key = cid
         # cognition bonus(只在终排, 召回阶段已各自给过 vector 路)
-        # 用户反馈 2026-07-16: 0.3 太激进 → 挤掉真正相关的经历; 调到 0.05,
-        # 只做轻微提权, 让相关经历优先、紧贴的认知仍能排进但不当抢戏
+        # 用户反馈 2026-07-16: cognition 过度抢占 → 把用户对话经历压在外;
+        # 不仅终排降到 0.05, 还要让出位置给真正命中 query 的 experience。
+        # 决断:cognition 应当只在"同 query 也匹配良好"时获优先,否则不算优选。
         cog_bonus = 0.0
         if r.get("meta_phase") == "cognition":
-            cog_bonus = 0.05
+            cog_bonus = 0.02
         r["final_score"] = (
             r.get("rrf_score", 0.0)
             + cog_bonus

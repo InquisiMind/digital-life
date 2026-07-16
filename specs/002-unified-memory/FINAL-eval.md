@@ -68,3 +68,43 @@ domain/memory/memory/recall/unified/
 
 记忆机制完整建好: **写时异构/读时同构** + **三类连边网** + **三路融合检索** +
 **认知演化生命周期**。整套没有半成品。可上线/可合并/可迭代。
+
+---
+
+## 端到端验证 (scripts/e2e_memory_verify.py)
+
+7 大可观察行为一次跑完(真实实例数据, 非mock):
+- **21/21 PASS** — 三路融合 / 项目接入 / FTS5 兜底 / 铁律一 / promote+召回 /
+  supersede 双向链 / 健康遗忘 visibility_decay。
+- 真实轨迹: 经历#3 → promote → 认知#6969 → unified_recall top3 命中 →
+  supersede_one → #6969 supersede_by=6970 + state=replaced, #6970 derived_from=[6969]
+  永不硬删验明。
+
+## 召回精度评估 (scripts/eval_precision.py, LLM judge)
+
+跑 30 个 case,top-5 召回精度,**实打实发现新问题不是召回率而是精度分流**:
+
+| 指标 | 数值 | 含义 |
+|---|---|---|
+| avg precision @5 | **0.503** | 召回 5 条里平均只 2.5 条真正相关 |
+| strict precision pct | 0.34 | 30 个 case 里只有 10 个 top-5 有至少 1 条直接相关 |
+| avg noise ratio | 1.00 | 几乎每个 case 都至少有 1 条无关噪音 |
+| **top-1 precision** | **0.833** | rank-1 位置 83% 相关,但 rank-2..5 拖到 0.50 |
+
+score 三档分布(140 条 snippet):
+- 0 档无关: 49.3% (主要在 rank 2..5)
+- 1 档边缘相关: 28.6%
+- 2 档直接相关: 22.1%
+
+**核心结论**:召回率指标(20/21 E2E PASS)证明机制 work,但**精度分流明确指向
+"rank-2..5 是主要噪音源"**。下一阶段应做:
+
+1. **re-ranking**: top-N 召回后再过一次 LLM judge / 重排(替换或并入 RRF)。
+2. **per-route threshold**: 向量路 threshold 提高,把 cosine 相似度低的拦掉。
+3. **activation bias 调小**: 当前 0.4×activation 加权也可能让一些只是高频但
+   不直接相关的"噪音老对话"挤上来。
+
+`FULL report:` `apps/<instance>/data/memories/precision_eval_report.json`
+
+复跑: `python3 scripts/eval_precision.py --sample 30 --topk 5`
+

@@ -1864,63 +1864,54 @@ class AIAgent:
                     )
                 )
             ]
-            lines = ["[联想命中 — 三路融合]"]
-
-            # ── Route A: entity_index 精确触发（关键词刺激）──
-            for mem in memories:
-                mtype = str(mem.get("memory_type", "")).upper()
-                entity = str(mem.get("_matched_entity", ""))
-                tag = f"[实体:{entity}]" if entity else ""
-                snippet = str(mem.get("snippet", "")).strip().replace("\n", " ")
-                if len(snippet) > 200:
-                    snippet = snippet[:100] + "…" + snippet[-100:]
-                if mtype == "PROFILE":
-                    lines.append(f"🎯 [{entity} · 概念] {snippet}")
-                else:
-                    lines.append(f"🎯 [{mtype}]{tag} {snippet}")
-
-            entity_count = len(new_entities)
-
-            # ── Route B: 向量语义召回（情境相似）──
-            # 用 query 上下文做 embedding → cosine 相似度召回
-            # 补偿 Route A 的精确子串匹配盲区（如"止损线"找不到"A+策略"）
-            vec_lines: list[str] = []
+            # P2 (feature 002 User Story 2): 用统一检索 facade 取代旧的
+            # Route A (entity_index) + Route B (vector, 字符串拼接 30 字符去重) 合并方式。
+            # facade 内部跑三路(vector 语义 / FTS5 词法 / attention 提权)+ RRF 融合 +
+            # 5s 硬时间上限,降级兜底,见 domain.memory.memory.recall.unified.facade。
+            # Route A 本身的 entity_index 片段(_matched_entity)继续作为 attention_tokens
+            # 喂给 facade,提高语义/词法命中的可提权性。
+            entity_breadcrumbs = ""
             try:
-                from domain.memory.memory.recall.vector import recall as _vec_recall
-                vec_result = _vec_recall(combined, max_total_chars=400)
-                if vec_result:
-                    # recall 返回拼接文本——拆成段落做关键词去重
-                    vec_paragraphs = [p.strip() for p in vec_result.split("\n") if p.strip()]
-                    # 去掉 Route A 已经返回过的（按 snippet 前 30 字模糊匹配）
-                    existing_snippets = set()
-                    for mem in memories:
-                        existing_snippets.add(str(mem.get("snippet", ""))[:30])
-                    for p in vec_paragraphs[:3]:
-                        if p[:30] not in existing_snippets and len(p) >= 10:
-                            # 标注来源
-                            source_tag = ""
-                            if "digest" in p.lower() or "session" in p.lower():
-                                source_tag = "[经历]"
-                            elif "lesson" in p.lower() or "教训" in p.lower():
-                                source_tag = "[教训]"
-                            elif "rule" in p.lower() or "规则" in p.lower():
-                                source_tag = "[规则]"
-                            else:
-                                source_tag = "[语义]"
-                            lines.append(f"🔍 {source_tag} {p[:200]}")
-                            vec_lines.append(p)
-            except Exception:
-                pass
+                from domain.memory.memory.recall.unified import (
+                    unified_recall, render_breadcrumbs,
+                )
+                unified_results = unified_recall(
+                    combined,
+                    attention_tokens=new_entities,
+                    exclude_chunk_ids=self._injected_memory_ids_as_chunk_ids(),
+                    budget_kind="passive",
+                )
+                entity_breadcrumbs = render_breadcrumbs(
+                    unified_results, new_entities=new_entities
+                )
+            except Exception as ue:
+                logger.warning(
+                    "unified_recall failed, will fallback to entity_index-only breadcrumb; %s",
+                    ue,
+                    exc_info=True,
+                )
 
-            # 注解
-            vec_count = len(vec_lines)
-            lines.append(
-                f"(🎯触发: {entity_count} 实体/{len(memories)} 条"
-                + (f" + 🔍语义: {vec_count} 条" if vec_count else "")
-                + "。如需更多调 recall_entity('实体名'))"
-            )
+            # 兜底:fallback 仍保留 Route A entity_index 片段(行为严格不退化)
+            if not entity_breadcrumbs:
+                lines = ["[联想命中 — 实体触发]"]
+                for mem in memories:
+                    mtype = str(mem.get("memory_type", "")).upper()
+                    entity = str(mem.get("_matched_entity", ""))
+                    tag = f"[实体:{entity}]" if entity else ""
+                    snippet = str(mem.get("snippet", "")).strip().replace("\n", " ")
+                    if len(snippet) > 200:
+                        snippet = snippet[:100] + "…" + snippet[-100:]
+                    if mtype == "PROFILE":
+                        lines.append(f"🎯 [{entity} · 概念] {snippet}")
+                    else:
+                        lines.append(f"🎯 [{mtype}]{tag} {snippet}")
+                lines.append(
+                    f"(🎯触发: {len(new_entities)} 实体/{len(memories)} 条"
+                    "。如需更多调 recall_entity('实体名'))"
+                )
+                entity_breadcrumbs = "\n".join(lines)
 
-            breadcrumb_text = "\n".join(lines)
+            breadcrumb_text = entity_breadcrumbs
             assistant_msg, tool_msg = self._sys_tool_call("entity_recall", breadcrumb_text)
             messages.append(assistant_msg)
             messages.append(tool_msg)
@@ -1948,6 +1939,20 @@ class AIAgent:
         Prevents mid-session re-injection of memories already shown at wake time.
         """
         self._injected_memory_ids.update(memory_ids)
+
+    def _injected_memory_ids_as_chunk_ids(self) -> set[int]:
+        """把 memory_id(可能是 str,如 'memory_id_2026_...' 或 chunk int 字面)
+        转成 int set 给 unified_recall exclude_chunk_ids 用。
+        只取能转 int 的(spec §Clarifications: chunk_id 是 P3 才统一生效,
+        P2 期 memory_id 还可能是 str,这种就不参与 exclude,严格安全)。
+        """
+        out: set[int] = set()
+        for mid in self._injected_memory_ids:
+            try:
+                out.add(int(str(mid)))
+            except (ValueError, TypeError):
+                continue
+        return out
 
 
 def _render_signal_message(ev: dict[str, Any]) -> str:

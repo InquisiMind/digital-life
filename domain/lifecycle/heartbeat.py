@@ -228,11 +228,42 @@ def _build_memory_context(reason: str = "", extra: str = "", events_text: str = 
             try:
                 from domain.memory.memory.consciousness.entity_index import (
                     extract_entities_from_context,
-                    query_entities_ranked,
                 )
                 entities = extract_entities_from_context(context_for_entities)
-                if entities:
-                    memories = query_entities_ranked(entities, current_context=context_for_entities, limit=5)
+
+                # P2 (feature 002 User Story 2): wake 路径统一过 unified_recall facade。
+                #   facade 内部跑 vector + FTS5 + attention 提权,RRF 融合;不再走拼接。
+                #   保留 entity_index 抽取的 entities 作 attention_tokens。
+                #   如 facade 整体不可用(fallback),ui_degrade 到 entity_index 精确结果。
+                from domain.memory.memory.recall.unified import (
+                    unified_recall, render_breadcrumbs,
+                )
+                unified_results = unified_recall(
+                    context_for_entities,
+                    attention_tokens=entities,
+                    budget_kind="passive",
+                )
+                breadcrumb = render_breadcrumbs(
+                    unified_results, new_entities=entities, max_total_chars=800
+                )
+                if breadcrumb:
+                    parts.append(f"## 实体触发记忆\n\n{breadcrumb}")
+
+                # 把 unified recall 返回的 chunk_id 登记为 presented,
+                # mid-session 不重注(spec §6.5 dedup handoff)。
+                # 也登记 entity_index 片段 mid(若有)。
+                for r in unified_results:
+                    cid = r.get("chunk_id")
+                    if isinstance(cid, int) and cid >= 0:
+                        _presented_memory_ids.add(str(cid))
+                # fallback 路径:entity_index 仍可能返回 fragment,登记其 mid。
+                if not unified_results and entities:
+                    from domain.memory.memory.consciousness.entity_index import (
+                        query_entities_ranked,
+                    )
+                    memories = query_entities_ranked(
+                        entities, current_context=context_for_entities, limit=5
+                    )
                     if memories:
                         lines = ["## 实体触发记忆\n"]
                         for m in memories:
@@ -241,7 +272,6 @@ def _build_memory_context(reason: str = "", extra: str = "", events_text: str = 
                             entity = str(m.get("_matched_entity", ""))
                             tag = f" [{entity}]" if entity else ""
                             if mtype == "PROFILE":
-                                # profile 卡 = 对该实体的提炼理解,优先于碎片展示
                                 lines.insert(1, f"- [{entity} · 概念] {snippet}")
                             else:
                                 lines.append(f"- [{mtype}]{tag} {snippet}")

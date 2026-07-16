@@ -199,7 +199,62 @@ def eval_vector_route(query_text: str, expected_entities: list[str],
     }
 
 
-# ── 主流程 ────────────────────────────────────────────────────
+def eval_unified_route(query_text: str, expected_entities: list[str],
+                       expected_keywords: list[str]) -> dict:
+    """P2 (feature 002): 跑 unified_recall facade 三路融合。
+
+    返回结构与 eval_vector_route 对齐: {recall_count, relevant_count, rank, top_snippets}。
+    relevance 判定:返回项 text 里含任一 expected_entity / expected_keyword。
+    (touch substring 局限性记入 p2-eval-after.md: semantics 命中可能字面不在)
+    """
+    try:
+        from domain.memory.memory.recall.unified import unified_recall
+        results = unified_recall(
+            query_text,
+            attention_tokens=expected_entities,
+            budget_kind="passive",
+        )
+    except Exception as exc:
+        logger.warning("unified recall failed: %s", exc, exc_info=True)
+        return {"recall_count": 0, "relevant_count": 0, "error": str(exc)}
+
+    if not results:
+        return {"recall_count": 0, "relevant_count": 0}
+
+    relevant = 0
+    rank = None
+    snippets = []
+    for i, r in enumerate(results):
+        text = (r.get("text") or "").lower()
+        source = r.get("source", "") or ""
+        snippets.append({
+            "source": source,
+            "snippet": text[:80],
+            "score": r.get("rrf_score", 0.0),
+            "routes": r.get("routes", []),
+        })
+
+        is_relevant = False
+        for entity in expected_entities:
+            if entity.lower() in text:
+                is_relevant = True
+                break
+        if not is_relevant:
+            for kw in expected_keywords:
+                if kw.lower() in text:
+                    is_relevant = True
+                    break
+        if is_relevant:
+            relevant += 1
+            if rank is None:
+                rank = i + 1
+
+    return {
+        "recall_count": len(results),
+        "relevant_count": relevant,
+        "rank": rank,
+        "top_snippets": snippets[:3],
+    }
 
 
 def main() -> int:
@@ -228,12 +283,15 @@ def main() -> int:
         print()
 
         # 逐 case 跑评测
-        print("Running eval (entity route + vector route)...")
+        print("Running eval (entity + vector + unified routes)...")
         results = []
         t0 = time.time()
         for i, case in enumerate(cases):
             entity_eval = eval_entity_route(case["query_text"], case["expected_entities"])
             vector_eval = eval_vector_route(
+                case["query_text"], case["expected_entities"], case["expected_keywords"]
+            )
+            unified_eval = eval_unified_route(
                 case["query_text"], case["expected_entities"], case["expected_keywords"]
             )
             results.append({
@@ -242,6 +300,7 @@ def main() -> int:
                 "memory_type": case["memory_type"],
                 "entity_route": entity_eval,
                 "vector_route": vector_eval,
+                "unified_route": unified_eval,
             })
             if (i + 1) % 20 == 0:
                 print(f"  {i+1}/{len(cases)} done ({time.time()-t0:.1f}s)")
@@ -266,20 +325,33 @@ def main() -> int:
             or r["vector_route"].get("relevant_count", 0) > 0
         )
 
+        # unified route stats (P2)
+        uni_cases = sum(1 for r in results if r.get("unified_route", {}).get("recall_count", 0) > 0)
+        uni_hit_cases = sum(1 for r in results if r.get("unified_route", {}).get("relevant_count", 0) > 0)
+        uni_rr = [1.0 / r["unified_route"]["rank"] for r in results if r.get("unified_route", {}).get("rank")]
+        uni_mrr = sum(uni_rr) / entity_cases if entity_cases else 0
+        # unified combined = entity | vector | unified 至少一路命中
+        triple_combined_hit = sum(
+            1 for r in results
+            if r["entity_route"]["hit_expected_count"] > 0
+            or r["vector_route"].get("relevant_count", 0) > 0
+            or r.get("unified_route", {}).get("relevant_count", 0) > 0
+        )
+
         print()
-        print("=" * 60)
+        print("=" * 75)
         print(f"MEMORY RECALL EVALUATION REPORT ({entity_cases} cases, {elapsed:.1f}s)")
-        print("=" * 60)
+        print("=" * 75)
         print()
-        print(f"{'Metric':<30s} {'Entity Route':>15s} {'Vector Route':>15s} {'Combined':>15s}")
+        print(f"{'Metric':<25s} {'Entity':>11s} {'Vector':>11s} {'Unified':>11s} {'Combined':>13s}")
         print("-" * 75)
-        print(f"{'Cases with results':<30s} {entity_cases:>15d} {vec_cases:>15d} {'—':>15s}")
-        print(f"{'Cases with hits':<30s} {entity_hit_cases:>15d} {vec_hit_cases:>15d} {combined_hit:>15d}")
+        print(f"{'Cases with results':<25s} {entity_cases:>11d} {vec_cases:>11d} {uni_cases:>11d} {'—':>13s}")
+        print(f"{'Cases with hits':<25s} {entity_hit_cases:>11d} {vec_hit_cases:>11d} {uni_hit_cases:>11d} {triple_combined_hit:>13d}")
         def _pct(n, d):
             return f"{n/d*100:.1f}%" if d else "0.0%"
 
-        print(f"{'Recall (hit/cases)':<30s} {_pct(entity_hit_cases, entity_cases):>15s} {_pct(vec_hit_cases, entity_cases):>15s} {_pct(combined_hit, entity_cases):>15s}")
-        print(f"{'MRR':<30s} {entity_mrr:>15.3f} {vec_mrr:>15.3f} {'—':>15s}")
+        print(f"{'Recall (hit/cases)':<25s} {_pct(entity_hit_cases, entity_cases):>11s} {_pct(vec_hit_cases, entity_cases):>11s} {_pct(uni_hit_cases, entity_cases):>11s} {_pct(triple_combined_hit, entity_cases):>13s}")
+        print(f"{'MRR':<25s} {entity_mrr:>11.3f} {vec_mrr:>11.3f} {uni_mrr:>11.3f} {'—':>13s}")
         print()
 
         # 按 memory_type 分组统计
@@ -314,8 +386,16 @@ def main() -> int:
                 "n_with_results": vec_cases,
                 "n_with_hits": vec_hit_cases,
             },
+            "unified_route": {
+                "recall": uni_hit_cases / entity_cases if entity_cases else 0,
+                "mrr": uni_mrr,
+                "n_with_results": uni_cases,
+                "n_with_hits": uni_hit_cases,
+            },
             "combined": {
+                # 兼容旧字段(entity|vector),新增 entity|vector|unified 三路并集
                 "recall": combined_hit / entity_cases if entity_cases else 0,
+                "triple_recall": triple_combined_hit / entity_cases if entity_cases else 0,
             },
             "details": results,
         }

@@ -1024,20 +1024,36 @@ registry.register(
 
 def _handle_recall_memory(args: Dict[str, Any], **_) -> str:
     _burn()
-    """检索记忆：按语义搜索历史经历。"""
+    """检索记忆：按语义搜索历史经历。
+    P2 (feature 002 User Story 2): 走统一检索 facade,向量 + 词法 + attention 三路融合 + RRF。
+    """
     query = args.get("query", "")
-    depth = args.get("depth", "digest")  # digest | original
+    depth = args.get("depth", "digest")  # legacy arg, facade 三路都跑;仍接受但不再单独切分流
     limit = int(args.get("limit", 5))
 
     if not query:
         return "请提供搜索关键词。"
 
     try:
-        from domain.memory.memory.summaries.consolidation_runtime import recall_memories
-        result = recall_memories(query, depth=depth, limit=limit)
-        return result or "(没有找到相关记忆)"
+        from domain.memory.memory.recall.unified import (
+            unified_recall, render_breadcrumbs,
+        )
+        # on_demand 预算更丰(章节 limit×~200 字)
+        results = unified_recall(
+            query,
+            budget_kind="on_demand",
+            max_total_chars=max(800, limit * 200),
+        )
+        breadcrumb = render_breadcrumbs(results, new_entities=None, max_total_chars=max(800, limit * 200))
+        return breadcrumb or "(没有找到相关记忆)"
     except Exception as e:
-        return f"记忆检索失败: {e}"
+        # 严格降级:fallback 到旧的 recall_memories(保留行为兼容)
+        try:
+            from domain.memory.memory.summaries.consolidation_runtime import recall_memories
+            result = recall_memories(query, depth=depth, limit=limit)
+            return result or f"(facade 失败,fallback 亦无结果: {e})"
+        except Exception as e2:
+            return f"记忆检索失败: facade={e}; legacy={e2}"
 
 
 registry.register(

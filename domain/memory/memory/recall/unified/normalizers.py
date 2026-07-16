@@ -128,17 +128,33 @@ def _body_of_project(p: dict) -> str:
 
 
 def _body_of_todo(t: dict) -> str:
+    """构造 todo slice 的 body, 把关键状态都纳入(用户 2026-07-16 发现 bug:
+    完成 todo 跟未完成 todo 在切片里没差,关键信息丢了)。
+    """
     title = str(t.get("title") or "").strip()
     desc = str(t.get("description") or "").strip()
     status = str(t.get("status") or "").strip()
+    priority = str(t.get("priority") or "").strip()
+    deadline = str(t.get("deadline") or "").strip()
     pid = str(t.get("project_id") or "").strip()
+    criteria = str(t.get("acceptance_criteria") or "").strip()
     parts = [f"# 待办:{title}"]
+    # 状态段落: status / priority / deadline / project 显式
+    meta_line_parts = []
     if status:
-        parts.append(f"状态: {status}")
+        meta_line_parts.append(f"状态:{status}")
+    if priority:
+        meta_line_parts.append(f"优先级:{priority}")
+    if deadline:
+        meta_line_parts.append(f"截止:{deadline}")
     if pid:
-        parts.append(f"所属项目: {pid}")
+        meta_line_parts.append(f"所属项目:{pid}")
+    if meta_line_parts:
+        parts.append(" · ".join(meta_line_parts))
     if desc:
         parts.append(desc)
+    if criteria:
+        parts.append(f"验收标准: {criteria}")
     return "\n".join(parts)
 
 
@@ -176,15 +192,54 @@ def index_projects_and_todos(*, max_total: int = 60, now: float | None = None) -
         if not t.get("title"):
             continue
         tid = str(t.get("id") or t.get("title"))
+        # 关键元数据进 slice 元字段(用户 2026-07-16 bug):
+        # - status 进 source_kind 利于前端展示 + facade 过滤
+        # - status=done/cancelled → freshness 衰一档(已完成的该让位未完成的)
+        # - priority 调 authority(high 紧迫 → 召回权重高)
+        # - tags 进 entity_links 当导航锚点(替代之前的空 [])
+        # - title 仍进 attention_tokens(让搜索 'todo名' 容易命中)
+        status = str(t.get("status") or "").strip()
+        priority = str(t.get("priority") or "").strip().lower()
+        tags = t.get("tags") or []
+        if not isinstance(tags, list):
+            try:
+                import json as _json
+                tags = _json.loads(tags) if isinstance(tags, str) else []
+            except Exception:
+                tags = []
+        # authority 按 priority 分档
+        auth = 0.4
+        if priority == "high":
+            auth = 0.6
+        elif priority == "low":
+            auth = 0.3
+        # freshness 按 status
+        fresh = 1.0
+        if status in ("done", "cancelled"):
+            fresh = 0.3  # 完成的"冷掉", 但不归档(响应历史查询)
+        # cognition_state 给已完成的打 archived(§6.4 归档不硬删)
+        cog_state = "archived" if status in ("done", "cancelled") else None
+        # entity_links: tags + title 本身 + project_id
+        links: list[str] = []
+        for tag in tags:
+            tag = str(tag).strip()
+            if tag:
+                links.append(tag)
+        if t.get("title"):
+            links.append(str(t["title"]))
+        if t.get("project_id"):
+            links.append(str(t["project_id"]))
         slice = Slice(
             source="todo",
             chunk_hash=f"todo:{tid}",
             body=_body_of_todo(t),
             phase="experience",
-            source_kind="todo",
-            authority=0.4,
+            source_kind=f"todo:{status}" if status else "todo",
+            authority=auth,
             permanence=0.2,
-            freshness=1.0,
+            freshness=fresh,
+            cognition_state=cog_state,
+            entity_links=links,
             attention_tokens=[str(t.get("title"))] if t.get("title") else [],
             provenance=f"todo:{tid}",
             created_at=now,

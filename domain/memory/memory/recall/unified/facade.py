@@ -106,25 +106,48 @@ def _route_lexical(query: str, *, limit: int) -> list[dict]:
             ids = tuple(cid for cid, _ in hits)
             placeholders = ",".join("?" * len(ids))
             rows = db.execute(
-                f"SELECT id, source, text FROM chunks WHERE id IN ({placeholders})",
+                f"""SELECT id, source, text, phase, activation, freshness,
+                          cognition_state, derived_from, entity_links
+                   FROM chunks WHERE id IN ({placeholders})""",
                 ids,
             ).fetchall()
-            text_by_id = {r["id"]: (r["source"], r["text"]) for r in rows}
+            meta_by_id = {
+                r["id"]: {
+                    "source": r["source"],
+                    "text": r["text"],
+                    "phase": r["phase"] or "experience",
+                    "activation": float(r["activation"] or 0.0),
+                    "freshness": float(r["freshness"] or 0.0),
+                    "cognition_state": r["cognition_state"] or None,
+                    "derived_from": r["derived_from"] or "[]",
+                    "entity_links": r["entity_links"] or "[]",
+                }
+                for r in rows
+            }
         finally:
             db.close()
     except Exception as e:
         logger.warning("lexical route: failed to load chunk text: %s", e)
-        text_by_id = {}
+        meta_by_id = {}
 
     out: list[dict] = []
     for cid, score in hits:
-        source, text = text_by_id.get(cid, ("", ""))
+        meta = meta_by_id.get(cid, {})
+        # E2E 修复: lexical base + 新鲜度/活度 bonus,
+        # 让刚写进来的晋升认知/项目/待办能挤进 RRF top(没这个 bonus 时新切片
+        # 因 base score 低、被高频老对话挤出)。
+        bonus = (0.4 * meta.get("activation", 0.0)
+                 + 0.2 * meta.get("freshness", 0.0))
+        # 认知类微 boost(规则/教训/晋升结果应有更高召回权重)
+        if meta.get("phase") == "cognition":
+            bonus += 0.5
         out.append({
             "chunk_id": cid,
-            "score": float(score),  # 已转正
-            "source": source,
+            "score": float(score) + bonus,  # 已转正 + 新鲜度/活度 bonus
+            "source": meta.get("source", ""),
             "source_kind": "",
-            "text": text,
+            "text": meta.get("text", ""),
+            "meta_phase": meta.get("phase", "experience"),
         })
     return out
 

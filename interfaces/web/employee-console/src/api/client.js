@@ -143,6 +143,10 @@ export const instanceApi = (iid) => ({
   mergeContacts: (sourceId, targetId) => api.post(`/api/employee/${iid}/contacts/merge`, { source_id: sourceId, target_id: targetId }),
   memories:      (name) => api.get(`/api/employee/${iid}/memories/${name}`),
   associations:  () => api.get(`/api/employee/${iid}/associations`),
+  // Feature 002 — 统一切片层(chunks 表)访问
+  chunks:        (p = {}) => api.get(`/api/employee/${iid}/chunks`,
+                  { q: p.q, source: p.source, limit: p.limit }),
+  chunkDetail:   (id) => api.get(`/api/employee/${iid}/chunks/${id}`),
   wakeSnapshot:  (limit, offset = 0) => api.get(`/api/employee/${iid}/wakes`, { limit: limit || 30, offset }),
   wakeDetail:    (wakeId) => api.get(`/api/employee/${iid}/wakes/${wakeId}`),
   wakeCallInput: (wakeId, callSeq) => api.get(`/api/employee/${iid}/wakes/${wakeId}/input/${callSeq}`),

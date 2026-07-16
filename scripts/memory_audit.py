@@ -100,6 +100,36 @@ def is_test_residue(text: str) -> bool:
     return bool(_KG_TEST_RESIDUE.match(s))
 
 
+# v4 新增: 真正大面积的问题——该衰减的过期 digest/experience。
+# 这次 audit 不是按 text 内容,而是按 source + 创建时间。
+# audit_chunks 内部对该规则特殊处理(需 created_at, 不能只看 text)。
+_STALE_SOURCE_DAYS = {
+    # source → 过多少天就算 stale 该归档(用户 2026-07-17 抽样观察)
+    "digest_session":  30,   # 30 天前的会话摘要信息价值近乎 0
+    "digest_segment":  30,   # 同上
+    "conversation":    14,   # 半月前对话细节该让位新对话
+    "digest_day":      60,   # 日摘要保留久一些(60 天)
+    "work":            7,    # 流水清单一周就过时
+    "notes":           7,    # 草稿本一周就过时
+    "context":         3,    # 上下文交接 3 天就过时
+    "goals":           90,   # 目标本身长期,但 90 天该 review
+    "plans":           90,
+}
+
+
+def _is_stale(row, now_ts: float) -> bool:
+    """判定一行是否'过期该衰减'。row 必含 source / created_at。"""
+    src = row["source"] if "source" in row.keys() else ""
+    days_thresh = _STALE_SOURCE_DAYS.get(src)
+    if not days_thresh:
+        return False
+    ca = row["created_at"] if "created_at" in row.keys() else None
+    if not ca:
+        return False
+    age_d = (now_ts - float(ca)) / 86400
+    return age_d >= days_thresh
+
+
 def is_tool_result(text: str) -> bool:
     """工具返回值 / JSON 片段被当对话。"""
     head = (text or "").strip()[:200]
@@ -169,12 +199,17 @@ def audit_chunks(
             ).fetchall()
 
             findings: dict[str, list[dict]] = {r[0]: [] for r in RULES}
+            # 额外加一个 v4 'stale_digest_or_workmem' 类规则(基于时间, 不是基于 text)
+            findings["stale_session_digest"] = []
             archived_ids: list[int] = []
+            now_ts = time.time()
             for row in rows:
                 # 已 archived / replaced 不再判
                 if row["cognition_state"] in ("archived", "replaced"):
                     continue
                 text = row["text"] or ""
+                # 先按 content 规则
+                hit = False
                 for rule_name, pred, _, _ in RULES:
                     if only_rule and rule_name != only_rule:
                         continue
@@ -187,7 +222,42 @@ def audit_chunks(
                             "phase": row["phase"],
                         })
                         archived_ids.append(row["id"])
+                        hit = True
                         break  # 一条只命中一种就够, 避免重复
+                if hit:
+                    continue
+                # 再按时间 stale 规则(需要 created_at, 不被 only_rule 复用除非显式)
+                if (not only_rule or only_rule == "stale_session_digest") and _is_stale(row, now_ts):
+                    age_d = (now_ts - float(row["created_at"])) / 86400
+                    # 安全检查: 不归档被某 cognition 引用为 derived_from 的源经历
+                    # (否则认知链 derived_from 指向 archived chunk, semantic 不顺)
+                    # 通过 row['derived_from'] 列反查不太现实(我们要查的是'谁引用了我'),
+                    # 这里用更准的策略: 只查 chunks 表里 source='knowledge' 的 cognition
+                    # 的 derived_from 是否含本 chunk 的 id。
+                    chunk_id = row["id"]
+                    is_derived_src = False
+                    if chunk_id is not None:
+                        try:
+                            ref_check = db.execute(
+                                "SELECT 1 FROM chunks WHERE source='knowledge' "
+                                "AND derived_from LIKE ? LIMIT 1",
+                                (f'%{chunk_id}%',),
+                            ).fetchone()
+                            is_derived_src = ref_check is not None
+                        except Exception:
+                            pass
+                    if is_derived_src:
+                        # 被某认知当源经历的 — 不归档(保 derived chain)
+                        continue
+                    findings["stale_session_digest"].append({
+                        "chunk_id": row["id"],
+                        "source": row["source"],
+                        "preview": text[:100].replace("\n", " "),
+                        "text_len": row["text_len"],
+                        "phase": row["phase"],
+                        "age_days": round(age_d, 1),
+                    })
+                    archived_ids.append(row["id"])
             # dedupe archived_ids
             archived_ids = sorted(set(archived_ids))
 
@@ -259,6 +329,10 @@ def main() -> int:
         n = report["noise_candidates"].get(name, 0)
         flag = "🟥" if sev == "P0" and n > 0 else "🟧" if sev == "P1" and n > 0 else ("🟨" if n > 0 else "  ")
         print(f"  {flag} [{sev}] {name:18s} n={n:4d}  — {reason}")
+    # v4 时间维度规则
+    n_stale = report["noise_candidates"].get("stale_session_digest", 0)
+    flag_stale = "🟧" if n_stale > 0 else "  "
+    print(f"  {flag_stale} [P1] stale_session_digest     n={n_stale:4d}  — 过期该衰减的 session 摘要 / work / notes (按时间)")
 
     total_noise = sum(report["noise_candidates"].values())
     print(f"{'=' * 60}")

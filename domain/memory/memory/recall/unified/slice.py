@@ -154,8 +154,8 @@ _BASELINES: dict[str, dict[str, Any]] = {
     "journal":           {"phase": "experience", "source_kind": "narrative",      "authority": 0.5, "permanence": 0.3},
     "notes":             {"phase": "experience", "source_kind": "scratchpad",     "authority": 0.3, "permanence": 0.2},
     "conversation":      {"phase": "experience", "source_kind": "conversation",   "authority": 0.5, "permanence": 0.3},
-    "digest_session":    {"phase": "experience", "source_kind": "digest",         "authority": 0.6, "permanence": 0.4},
-    "digest_segment":    {"phase": "experience", "source_kind": "digest",         "authority": 0.6, "permanence": 0.4},
+    "digest_session":    {"phase": "experience", "source_kind": "digest",         "authority": 0.6, "permanence": 0.3},
+    "digest_segment":    {"phase": "experience", "source_kind": "digest",         "authority": 0.6, "permanence": 0.3},
     "digest_day":        {"phase": "experience", "source_kind": "digest",         "authority": 0.7, "permanence": 0.5},
     "digest_week":       {"phase": "experience", "source_kind": "digest",         "authority": 0.8, "permanence": 0.6},
     # 经历零散

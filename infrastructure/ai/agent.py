@@ -67,6 +67,8 @@ class AIAgent:
         # Mid-session entity recall tracking
         self._last_scanned_msg_count: int = 0
         self._injected_entities: set[str] = set()
+        # 预查的实体列表——由 tool dispatch 并行预查阶段产出，_inject_entity_recall 复用
+        self._prefetched_entities: list[str] | None = None
         self._injected_memory_ids: set[str] = set()
         # Track recall injection message indices so we only keep the LAST round
         self._recall_injection_indices: list[int] = []
@@ -326,6 +328,47 @@ class AIAgent:
                     sense_only_streak = 0  # 重置计数；下一轮如果还是 sense-only → 直接停
 
             session_blocked = False
+
+            # ── 预检查：tool_calls 里有没有 rest？如果有则跳过 memory 预召回 ──
+            _has_rest = any(
+                (call.get("function") or {}).get("name") == "rest"
+                for call in tool_calls
+            )
+
+            # ── 并行：memory 召回预查（与 tool dispatch 同时跑）──
+            # tool 执行（terminal/express_to_human 等）可能耗时数秒。
+            # 在这段时间里并行做 entity_recall 扫描，下轮 _chat 时就有现成结果。
+            # 只有非 rest 场景才做——rest 后没必要召回。
+            _recall_prefetch = None
+            if not _has_rest and len(tool_calls) > 0:
+                import concurrent.futures
+                def _do_recall_prefetch():
+                    try:
+                        self._last_scanned_msg_count = len(messages)  # 标记已扫描位置
+                        new_messages = []  # 空列表——recall 需要 messages 但工具还没 append
+                        # 不执行真实召回——只做 entity 提取 + query（最轻的部分）
+                        # 真实召回留给 _chat 里的 _inject_entity_recall
+                        # 这里只预查"模型 reasoning 里提到哪些实体"
+                        thinking_texts = []
+                        for m in messages[-5:]:
+                            if m.get("role") == "assistant":
+                                rc = m.get("reasoning_content") or m.get("content") or ""
+                                if len(rc.strip()) >= 30:
+                                    thinking_texts.append(rc)
+                        if not thinking_texts:
+                            return None
+                        combined = " ".join(thinking_texts[-2:])[-500:]
+                        try:
+                            from domain.memory.memory.consciousness.entity_index import extract_entities_from_context
+                            entities = extract_entities_from_context(combined)
+                            return entities
+                        except Exception:
+                            return None
+                    except Exception:
+                        return None
+                _recall_prefetch = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                _prefetch_future = _recall_prefetch.submit(_do_recall_prefetch)
+
             for call in tool_calls:
                 function = call.get("function") or {}
                 name = function.get("name") or ""
@@ -338,6 +381,20 @@ class AIAgent:
                 # rest() returns __l4_block__ — stop the loop immediately
                 if '"__l4_block__": true' in result or '"__l4_block__":true' in result:
                     session_blocked = True
+
+            # 关闭 recall 预查线程池
+            if _recall_prefetch:
+                try:
+                    _prefetched_entities = _prefetch_future.result(timeout=2.0)
+                    # 预查到的实体存在——_inject_entity_recall 下一轮可以直接用
+                    if _prefetched_entities:
+                        self._prefetched_entities = _prefetched_entities
+                except Exception:
+                    pass
+                _recall_prefetch.shutdown(wait=False)
+                # 重置 _last_scanned_msg_count——_chat 里的 _inject_entity_recall
+                # 需要看到完整的 messages（含 tool result），不能从预查时跳过的位置开始
+                self._last_scanned_msg_count = max(0, len(messages) - 10)
             if session_blocked:
                 # rest-boundary 消息保留：rest() 完成后检查内存池里是否有未在本 wake
                 # 注入过的新事件。若有 → 撤销 rest 副作用（回滚 affair → RUNNING、清
@@ -1757,6 +1814,16 @@ class AIAgent:
             return
 
         entities = extract_entities_from_context(combined)
+
+        # 合并预查结果——dispatch 并行阶段已提前从 reasoning 提取的实体
+        if self._prefetched_entities:
+            seen = set(entities)
+            for e in self._prefetched_entities:
+                if e not in seen:
+                    entities.append(e)
+                    seen.add(e)
+            self._prefetched_entities = None  # 消费后清空
+
         if not entities:
             return
 

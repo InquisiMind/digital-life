@@ -272,7 +272,30 @@ def create_contact(
         logger.warning("create_contact failed: %s", exc)
     finally:
         conn.close()
-    return get_contact(cid) or {"id": cid, "name": name, "notes": notes, "platform_ids": []}
+    result = get_contact(cid) or {"id": cid, "name": name, "notes": notes, "platform_ids": []}
+
+    # 自动注册联系人到 entity_index——让联想召回能命中
+    try:
+        from domain.memory.memory.consciousness.entity_index import sync_entity_from_source
+        entity_name = name if name and name.strip() else cid[:8]
+        sync_entity_from_source(
+            entity_name,
+            entity_type="person",
+            summary=f"联系人: {name or '(未命名)'}" + (f"，备注: {notes}" if notes else ""),
+            extra={"contact_id": cid, "kind": kind},
+        )
+        # 如果有 name 且 name != cid，也注册 cid 作为 alias
+        if name and name.strip() and name != cid:
+            import contextlib
+            with contextlib.suppress(Exception):
+                from domain.memory.memory.consciousness.entity_index import mark_entity_status
+                # 不注册 cid 为别名——太长了。但如果 name 为空的 stub，
+                # 后续 merge_contacts 时会触发 entity 同步。
+                pass
+    except Exception:
+        pass
+
+    return result
 
 
 def update_contact(contact_id: str, *, name: str | None = None, notes: str | None = None,
@@ -436,6 +459,22 @@ def merge_contacts(source_id: str, target_id: str) -> bool:
                 "merge_contacts: source %s → target %s (%d platform_ids moved)",
                 source_id[:8], target_id[:8], len(source_pids),
             )
+            # 同步 entity_index——如果 source 和 target 都有对应实体、做 entity merge
+            try:
+                from domain.memory.memory.consciousness.entity_index import merge_entities, sync_entity_from_source
+                src_name = conn.execute(
+                    "SELECT name FROM contacts WHERE id = ?", (source_id,)
+                ).fetchone()
+                tgt_name = conn.execute(
+                    "SELECT name FROM contacts WHERE id = ?", (target_id,)
+                ).fetchone()
+                src_name_val = (src_name[0] if src_name else "") or source_id[:8]
+                tgt_name_val = (tgt_name[0] if tgt_name else "") or target_id[:8]
+                merge_entities(src_name_val, tgt_name_val)
+                sync_entity_from_source(tgt_name_val, entity_type="person",
+                                       extra={"contact_id": target_id, "merged_from": source_id[:8]})
+            except Exception:
+                pass
             return True
         except sqlite3.Error:
             conn.rollback()
@@ -460,7 +499,19 @@ def set_blocked(contact_id: str, blocked: bool, reason: str = "") -> bool:
                 (1 if blocked else 0, reason, _now_iso(), contact_id),
             )
             conn.commit()
-            return cur.rowcount > 0
+            result = cur.rowcount > 0
+            if result:
+                try:
+                    from domain.memory.memory.consciousness.entity_index import mark_entity_status
+                    name_row = conn.execute(
+                        "SELECT name FROM contacts WHERE id = ?", (contact_id,)
+                    ).fetchone()
+                    entity_name = (name_row[0] if name_row and name_row[0] else "") or contact_id[:8]
+                    mark_entity_status(entity_name, contact_blocked=blocked,
+                                       block_reason=reason if blocked else "")
+                except Exception:
+                    pass
+            return result
         finally:
             conn.close()
     except sqlite3.Error as exc:

@@ -95,6 +95,19 @@ def create_project(project_id: str, name: str, description: str = "", manager: s
         logger.warning("init default todo tree failed for %s: %s", project_id, exc)
 
     logger.info("Created project %s (%s)", project_id, name)
+
+    # 自动注册项目到 entity_index
+    try:
+        from domain.memory.memory.consciousness.entity_index import sync_entity_from_source
+        sync_entity_from_source(
+            name,
+            entity_type="project",
+            summary=f"项目: {name}" + (f"，{description}" if description else ""),
+            extra={"project_id": project_id, "manager": manager, "status": "active"},
+        )
+    except Exception:
+        pass
+
     return True
 
 
@@ -147,6 +160,12 @@ def archive_project(project_id: str) -> bool:
         yaml.dump(raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
     logger.info("Archived project %s", project_id)
+    try:
+        from domain.memory.memory.consciousness.entity_index import mark_entity_status
+        raw_name = raw.get("project", {}).get("name", project_id)
+        mark_entity_status(raw_name, project_archived=True)
+    except Exception:
+        pass
     return True
 
 

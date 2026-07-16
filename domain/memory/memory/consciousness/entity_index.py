@@ -660,6 +660,86 @@ def prune_fragments_for_entity(name: str, keep: int = 5) -> dict[str, Any]:
     return {"ok": True, "removed": removed, "kept": len(kept)}
 
 
+def sync_entity_from_source(
+    name: str,
+    *,
+    entity_type: str = "",
+    summary: str = "",
+    extra: dict[str, Any] | None = None,
+    aliases: list[str] | None = None,
+) -> None:
+    """源系统变更时调用——自动创建或更新 entity。
+
+    与 set_entity_profile 的区别：
+      - set_entity_profile 是模型主动调（完整覆盖 profile.summary/facts）
+      - sync_entity_from_source 是 contacts/projects/skills 等源系统自动调
+      - **不覆盖模型已写的 profile.summary**——只在 entity 不存在或 summary 为空时写
+      - **追加 extra 字段**（merge，不覆盖已有 extra 的 key 如果新值和旧值同）
+      - 更新 type 和 aliases（只在 entity 还没 type 或 type 为空时设）
+
+    设计意图：保持"模型写的 > 系统生成的"优先级。系统只负责"注册身份"，
+    不影响模型对实体的深度理解。
+    """
+    if not name or not name.strip():
+        return
+    name = name.strip()
+    try:
+        data = load_entity_index()
+        entities_dict = data.setdefault("entities", {})
+        entity = entities_dict.setdefault(name, {"aliases": [], "type": None, "memories": []})
+
+        # type：只在空时设（模型可能已手动设了更精确的 type）
+        if entity_type and not entity.get("type"):
+            entity["type"] = entity_type
+
+        # aliases：追加新 alias（不覆盖已有的）
+        if aliases:
+            existing_aliases = set(entity.get("aliases", []))
+            for a in aliases:
+                a = a.strip()
+                if a and a != name and a not in existing_aliases:
+                    entity.setdefault("aliases", []).append(a)
+                    existing_aliases.add(a)
+
+        # profile：摘要只在空时写，extra 追加合并
+        profile = entity.setdefault("profile", {})
+        if summary and not profile.get("summary"):
+            profile["summary"] = summary
+        if extra:
+            pe = profile.setdefault("extra", {})
+            for k, v in extra.items():
+                if k not in pe:  # 不覆盖已有 key
+                    pe[k] = v
+        profile["last_updated"] = _now_iso()
+        profile["last_source_sync"] = _now_iso()
+
+        save_entity_index(data)
+    except Exception as exc:
+        logger.warning("sync_entity_from_source failed for '%s': %s", name[:20], exc)
+
+
+def mark_entity_status(name: str, **flags: Any) -> None:
+    """在 entity profile.extra 里标记状态标志（deleted/archived/blocked 等）。
+
+    不删除实体、不删碎片——只标记。entity_recall 打分时可以读取这些标志
+    做降权（比如 archived 的项目碎片 recency 权重可以降低）。
+    """
+    if not name or not name.strip():
+        return
+    name = name.strip()
+    try:
+        data = load_entity_index()
+        entities_dict = data.setdefault("entities", {})
+        entity = entities_dict.setdefault(name, {"aliases": [], "type": None, "memories": []})
+        profile = entity.setdefault("profile", {})
+        extra = profile.setdefault("extra", {})
+        extra.update(flags)
+        extra["last_status_update"] = _now_iso()
+        save_entity_index(data)
+    except Exception as exc:
+        logger.warning("mark_entity_status failed for '%s': %s", name[:20], exc)
+
+
 __all__ = [
     "load_entity_index",
     "save_entity_index",
@@ -679,4 +759,7 @@ __all__ = [
     "index_health_check",
     "prune_fragments_for_entity",
     "list_entity_names",
+    # Auto-sync API:
+    "sync_entity_from_source",
+    "mark_entity_status",
 ]

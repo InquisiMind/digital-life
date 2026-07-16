@@ -1092,8 +1092,14 @@ class MonitorConsoleWorkflow:
                 where_sql = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
                 capped_limit = min(int(limit), 50)
                 total = db.execute(f"SELECT COUNT(*) as c FROM chunks{where_sql}", params).fetchone()["c"]
+                # Feature 002 (T028+D): 列表带 phase / source_kind / authority /
+                # freshness / cognition_state / supersede_by, 让前端能展示切片层属性
+                # (chunk_detail 已含全 P3 schema, 这里只是 list 加 5 个关键列)
                 rows = db.execute(
-                    f"SELECT id, source, substr(text, 1, 200) as text, created_at FROM chunks{where_sql} ORDER BY created_at DESC LIMIT ?",
+                    f"""SELECT id, source, substr(text, 1, 200) as text, created_at,
+                              phase, source_kind, authority, freshness, cognition_state
+                        FROM chunks{where_sql}
+                        ORDER BY created_at DESC LIMIT ?""",
                     params + [capped_limit],
                 ).fetchall()
                 return UseCaseResult({"chunks": [dict(row) for row in rows], "total": total})

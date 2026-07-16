@@ -71,11 +71,101 @@ def _policy_flag(policy: dict, key: str, default: bool = True) -> bool:
     return policy.get(key, default)
 
 
+def _unified_layer_stats() -> tuple[str, list[str]]:
+    """统一切片层体检: 查 chunks 表得 phase / cognition_state / freshness 取代链数。
+    返回 (additional_lines, additional_warning_items) — 由 caller 拼到面板尾部。
+    失败时返回 ([], []) 不阻塞。
+    """
+    try:
+        from domain.memory.memory.recall.vector import _get_db_path
+        import sqlite3 as _sqlite3
+        db_path = _get_db_path()
+        if not db_path.exists():
+            return ([], [])
+        conn = _sqlite3.connect(str(db_path)); conn.row_factory = _sqlite3.Row
+        warn_items: list[str] = []
+        lines: list[str] = []
+        try:
+            # phase 分布
+            phase_rows = conn.execute(
+                "SELECT phase, COUNT(*) AS n FROM chunks GROUP BY phase ORDER BY n DESC"
+            ).fetchall()
+            phase_str = " / ".join(f"{r['phase']}={r['n']}" for r in phase_rows if r["phase"])
+            total_chunks = sum(r["n"] for r in phase_rows)
+            if total_chunks:
+                lines.append(f"  · 切片层 {total_chunks} 条 ({phase_str})")
+
+            # cognition_state 分布(active / replaced / reinforced / archived / nascent / higher)
+            state_rows = conn.execute("""
+                SELECT cognition_state, COUNT(*) AS n
+                FROM chunks WHERE phase='cognition'
+                GROUP BY cognition_state ORDER BY n DESC
+            """).fetchall()
+            if state_rows:
+                state_str = " / ".join(
+                    f"{r['cognition_state'] or 'active-no-state'}={r['n']}"
+                    for r in state_rows
+                )
+                lines.append(f"  · 认知状态 {state_str}")
+
+            # 取代链 + 诞生链计数
+            chain = conn.execute("""
+                SELECT
+                  SUM(CASE WHEN supersede_by IS NOT NULL THEN 1 ELSE 0 END) AS superseded,
+                  SUM(CASE WHEN derived_from IS NOT NULL AND derived_from NOT IN ('', '[]') THEN 1 ELSE 0 END) AS derived
+                FROM chunks
+            """).fetchone()
+            if chain and (chain["superseded"] or chain["derived"]):
+                lines.append(
+                    f"  · 取代链 {chain['superseded'] or 0} / 诞生链 {chain['derived'] or 0}"
+                )
+
+            # freshness 平均 + 陈旧率 < 0.1 占比 (推断归档趋势)
+            try:
+                avg_row = conn.execute(
+                    "SELECT AVG(freshness) AS avg_fresh, "
+                    "SUM(CASE WHEN freshness < 0.1 THEN 1 ELSE 0 END) AS stale_n, "
+                    "COUNT(*) AS total FROM chunks WHERE freshness IS NOT NULL"
+                ).fetchone()
+                if avg_row and avg_row["total"]:
+                    avg_fresh = avg_row["avg_fresh"] or 0
+                    stale_n = avg_row["stale_n"] or 0
+                    total = avg_row["total"]
+                    lines.append(f"  · freshness avg={avg_fresh:.2f} · 陈旧(<0.1) {stale_n}/{total}")
+                    if stale_n / max(1, total) > 0.3:
+                        warn_items.append(f"切片层陈旧率 {stale_n/max(1,total):.0%}(>30% — 应考虑清理或归档)")
+            except Exception:
+                pass
+
+            # 内存告警: cognition 总数过低(认知空白) 或 experience 泛滥
+            cog_n = sum(r["n"] for r in state_rows)
+            exp_n = sum(
+                r["n"] for r in phase_rows if r["phase"] == "experience"
+            )
+            if cog_n and exp_n:
+                ratio = exp_n / max(1, cog_n)
+                if ratio > 50:
+                    warn_items.append(
+                        f"经历:认知 = {ratio:.0f}:1 过高(memory_hygiene 应做 promote)"
+                    )
+        finally:
+            conn.close()
+        return (lines, warn_items)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug("unified_layer_stats failed: %s", e)
+        return ([], [])
+
+
 def _memory_health_snapshot() -> str:
-    """记忆体检面板:扫各文件状态,生成简短摘要 + ⚠️ 异常标记。
+    """记忆体检面板:扫各文件状态 + 统一切片层统计,生成简短摘要 + ⚠️ 异常标记。
 
     每次 wake 注入到 prompt 顶部,让模型自觉到记忆系统健康度。
     ~150 token 预算内。
+
+    两段组成:
+    - 老 markdown 体检(保留,skill step 0-2 仍依赖 CONSCIOUSNESS status 警告)
+    + 新统一切片层体检(phase 计数 / 认知状态分布 / 取代诞生链 / freshness)
     """
     try:
         from pathlib import Path as _P
@@ -184,6 +274,12 @@ def _memory_health_snapshot() -> str:
                     warn_items.append("还未跑过 memory_hygiene skill(evening_review)")
         except Exception:
             pass
+
+        # P2.1 / feature 002 — 统一切片层体检追加。memory_vectors.db 的 phase /
+        # cognition_state / freshness / 取代链统计算入面板。失败时不破坏老逻辑。
+        layer_lines, layer_warns = _unified_layer_stats()
+        lines.extend(layer_lines)
+        warn_items.extend(layer_warns)
 
         if warn_items:
             lines.append("  ⚠ 待清理: " + " · ".join(warn_items))

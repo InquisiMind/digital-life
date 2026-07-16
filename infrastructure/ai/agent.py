@@ -819,6 +819,7 @@ class AIAgent:
             "interfaces.tools.skills_tool",
             "interfaces.tools.capability_tools",
             "interfaces.tools.vision_tool",
+            "interfaces.tools.memory_cognition_tools",
             "domain.todos.tools",
             "domain.project.tools",
             "interfaces.tools.terminal_tool",

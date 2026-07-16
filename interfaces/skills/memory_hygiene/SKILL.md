@@ -79,221 +79,215 @@ platforms: []
 - ❌ 删了文件没留 audit trail(consciousness 里要留 [整理] tag 记录改了什么)
 - ❌ 把 record_thought(status) 误删 — 那是当下 active 的运行时信息
 
-### 3. LESSONS 同主题合并(嗅觉:300 秒)
+### 3. 认知取代:用新版替换旧版认知(嗅觉:300 秒)
 
-**做什么**: 在 LESSONS.md 内某一 section, 把多次写的同一理念压成最新版本。
+**做什么**: 在 cognition slice 中, 同一主题有多条认知时, 用新版取代老版 — 不是删,
+是 supersede(老版标 replaced, 新版 derived_from 含老版 id, 双向链保留可溯源)。
 
-**怎么判断"同一理念"**:
+**怎么判断"同一主题同概念"**:
 - 关键词重叠(论断4 → 涨停次日 → 实战 反思 → 修正执行)
-- 主题一致:不是「时间相近」或「section 相同」
-- 老 ts 没新信息(新版本已包含了老版本所有结论)
+- 主题一致:不是「时间相近」或「来源相同」
+- 老版本没新信息(新版本已包含了老版本所有结论)
 
-**工具**:
-1. 调 `dedup_lessons` 看系统自动报告相似度 > 0.7 的对(只报不并)
-2. 自己读那些建议对,**核对语义**(机械相似度会误判)
-3. 真要合并的话用 `terminal` 写回主文件:
+**工具(P2.1 统一认知层)**:
+1. 先 **召回 + 看 cognition 切片**: 调 `recall_memory("论断4 修正")` 看 cognition 路由的切片列表
+2. 自己读那些 cognition, **判断语义** 哪条是最新的、哪条是 superseded 候选
+3. 真要取代时用统一 API:
    ```
-   [YYYY-MM-DD HH:MM] 【新表】包含了旧版 X 条结论:...
+   supersede_memory(
+     old_chunk_id=<老认知的 chunk_id>,
+     new_body="<新版本认知 body 文本>",
+     entity_name=<同名 entity>
+   )
    ```
-4. 删原条目
+   老认知自动转 `cognition_state=replaced` + `supersede_by=新认知`, **永不硬删**。
 
 **完成定义**:
-- 同 section 同主题最多 3 条(超就收)
-- 长 section(trading 72 条)收 ≤ 30 条(机械 + 语义混合)
+- 同主题同概念的认知不超过 3 条最新 active (取代链保留老版但不再 inject 给模型)
+- 长期告警 (高 challenge_count) 的认知标 falsified 或 supersede
 
 **反模式**:
-- ❌ 跨 section 合并 — trading 教训绝不能合到 system section
-- ❌ 因为 sim > 0.72 系统说相似就合 — 看 ts 6/12 vs ts 6/18 内容含义,可能恰好相反
-- ❌ 删整个 section 「交易策略」只留 3 条 — 收 ≠ 抹
+- ❌ 跨主题合并 — 例如 "交易策略" 不能 supersede "工作流策略"
+- ❌ 仅凭 bm25 高分相似度就合 — 必须核对语义, 自己读懂两者之间的演化关系
+- ❌ 直接删老版 — supersede 即可, 删了不可溯源
 
-### 4. RULES 过期标注(看项目死活)
+### 4. 规则与教训老化标注: supersede 或 revise(看项目死活)
 
-**做什么**: 找出"已结束项目"对应的 rules,标 ⚠️ 不删,等下次 wake 模型决定。
+**做什么**: 找出"已结束项目"对应的 rules/lessons, 用 `supersede_memory` 替换或 `revise_memory` 加注。
+让模型联想时不再被陈旧认知干扰。
 
 **判断标准**: 看 `projects/<pid>/project.yaml` 的 `goal.deadline`:
-- deadline < 今天 且项目 status != active → 项目结束
-- 该 projects/<pid>/positions 里所有 position 的 rules 都标过期
+- deadline < 今天 且 project status != active → 项目结束
+- 该项目相关的 cognition (规则/教训) 已不再 active
 
-**工具**: `terminal` 直接 read projects/<pid>/project.yaml + project rules 段; 然后回 RULES.md 用 `update_rules` 改场景名加 ⚠️ 前缀。
+**工具**:
+1. 读 `projects/<pid>/project.yaml` 确认项目状态
+2. 召回该项目相关 rules: `recall_memory("项目X 规则")`
+3. 对过期但仍有保留价值的 → `revise_memory(chunk_id, new_body="<原 body>· · 已结束 <proj>")` 加标
+4. 对完全失效的 → `supersede_memory(old_chunk_id, new_body="<新总结>")` 用新理解替换
 
 **完成定义**:
-- 已结束 rules 加 `**已结束**(可删)` 前缀;
-- 同场景重复 rules 5 条 → 合 1 条(`update_rules` 用 replace mode 自动按场景去重)
+- 已结束项目的 rules/lessons 要么 revise 加标, 要么 supersede 替换
+- ≤ 0 条 version_log 错误 / dangling entity link
 
 **反模式**:
-- ❌ 主动删 rules(没用户拍板,有风险)
-- ❌ 把 ⚠️ 加到仍生效 rules
+- ❌ 主动硬删 rules(没有用户拍板,有风险) - 用 supersede 保留链路
+- ❌ 把 ⚠️ 加到仍生效的 cognition
 
 ### 5. SCRATCHPAD 收敛(纪律:60 秒)
 
-**做什么**: 草稿本oría 「我正在做什么 1-2 个事」。 把已 done 任务 7 天后删,只留 active。
+**做什么**: 草稿本只是「我正在做什么 1-2 个事」的工作记忆, 不是长期记忆。
+把它已 done 任务 7 天后删, 只留 active。**不再向其中注入"追求认知密度"的内容**——
+那是认知层的事, 不属于 SCRATCHPAD。
 
 **工具**:
-- `update_scratchpad(mode=replace)` 一次性覆写整盘,只保留 active 段
-- 历史 SCRATCHPAD 内容已 import 到 DAILY.md,删了不丢
+- `update_scratchpad(mode=replace)` 一次性覆写整盘, 只保留 active 段
+- 历史 SCRATCHPAD 内容应已 consolidate 进 digest_session, 删了不丢
 
 **完成定义**:
 - ≤ 2 个 ## 段(并行任务)
 - 每段 < 500 字
 - 已 done ≥ 7 天的任务段全删
 
-### 6. INSIGHTS 升级与清理(判断:120 秒)
+### 6. 经历 → 认知晋升(A 路径,核心意识: 120 秒)
 
-INSIGHTS 没有专用 update/delete 工具, 走 `terminal` 改文件。
+**做什么**: 把反复触发的 INSIGHTS, 高频被召回的 lessons, 升级为独立 cognition slice
+(promote), 让它们在 §6.4 状态机里获得 nascent → active → reinforced 的演化身份。
 
-**规则**:
-- idea 已被采纳且写了对应 `add_lesson` → **删**该 insight(升级完不再原位存)
-- warning 持续 14 天没复现 → **删**(误报或已修复)
-- block **已解决** (下个 wake 已经能解决卡点) → **删** 别再当 unresolved
-- 同概念多个 idea → 合并最新版
+**触发条件(只 promote 真有晋升价值的内容)**:
+- INSIGHTS idea 已被采纳且反复复述:满足了参考信号
+- lesson 被多次召回验证 (verification_count >= 2)
+- 对某实体的多条碎片反复同时出现: 一个共同"理解"该提炼出来了
 
-**工具**: `terminal` 直接 read INSIGHTS.md + 删除目标段 + write 回去。
+**工具**:
+1. 看候选: `recall_memory("<某主题/实体>")` 看返回的 top 经历切片
+2. 升级:
+   ```
+   promote_memory(
+     chunk_id=<经历/碎片/insight 的 chunk_id>,
+     summary="<你总结的认知理解>",
+     entity_name="<关联的 entity>"
+   )
+   ```
 
 **完成定义**:
-- 总 entry 数 ≤ 30
-- 没有 kind=block 的 ages > 7 天 entry (解决了或转化为 sense_*-based 任务)
-- 加 `[整理]` 注释一行说明今天删了哪些
+- INSIGHTS 里 kind=idea 已被采纳且 promote 完, **删该 insight**(已不在原位存, 进了认知层)
+- INSIGHTS kind=warning 持续 14 天没复现 → **删**(误报或已修复)
+- INSIGHTS kind=block 已解决 → 整理后归入认知层或删, 别再当 unresolved
+- 同概念多个 idea → promote 成一条 cognition + 删原 idea
 
 **反模式**:
-- ❌ 把「有用 idea」误删 — INSIGHTS 是长期资产,删前必看
-- ❌ 把 idea 转 lesson 没验证就迁 — 一定要先 self_review 验证
+- ❌ 把「有用的 idea」直接删而非 promote — 升级路径是 promote 再删原 INSIGHT, 不是删
+- ❌ 没验证就 promote — verified 应在 prior self_review 阶段已有 (memory_hygiene 只做信号抄录)
 
 ### 7. CONTEXT 24h 清(机械:30 秒)
 
-CONTEXT.md 仅作为「下一个 rest 的交接清单」存在。每晚必清。
+CONTEXT.md 仅作为「下一个 rest 的交接清单」存在, 每晚必清。
 
-**做什么**: 删掉所有「日期段 ## YYYY-MM-DD」中**超过 24 小时**的段。
+**做什么**: 删掉所有「日期段 ## YYYY-MM-DD」中**超过 24 小时**的段。这跟 SCRATCHPAD 一样属于工作记忆,
+归位而非"认知"。
 
 **工具**:
-- `update_context` 工具用 mode=replace 写回最新版
+- `update_context(mode=replace)` 写回最新版
 - 或 `terminal` 直接改
 
 **完成定义**:
 - 只保留最近 24 小时的清单
 - 文件总长 < 2000 字
 
-### 7.5 实体索引整理(核心 step,价值保证)
+### 7.5 认知形成核心 step: 经历晋升 + 概念卡消化(核心动作,价值保证)
 
-> **实体是联想唯一的入口**。如果 entity_index 噪音太多,模型 wake 时联想会被水量淹没,真正该想起的远期记忆反而召不出。
->
-> **存在的标准只有一个:有联想价值** —— 反复出现,或足够重要(单次也该挂)。
+> 这一步把"整理"和"思考"合二为一 — 是设计 doc §6 的"双驱动中的认知半边"。
+> 你做这一步的过程, 就是设计 doc §6.1 说的"生命体自我反思、形成认知、不让生命硬退化为 LLM"。
 
-#### 什么是真实体 vs 噪音
+#### 三件核心动作(按时间序列)
 
-|✅ 真实体|❌ 不是实体|
-|---|---|
-|反复出现的人(张浩普 / 苏迪)|临时任务 ID(hash / 编号)|
-|稳定可记的概念(涨停次日策略 / 论断3)|代码文件名(action_tools.py / sense_tools.py)|
-|反复发生的事件模式(止损失败 / 集合竞价首板失败)|动词 / 没上下文的词("修复" / "复查")|
-|外部服务/工具(akshare / 飞书 / sina)|模块名表 / 表名(messages.db / events 表)|
-|反复触到的股票(电投产融 / 华能蒙电)|股票代码(000539 这种,模型用人话交流才联想)|
-|稳定的项目角色(7月策略 / 风控)|子代动作名(sense_schedule / wake_brief)|
+##### a. 阶段清扫: 删噪音实体(P0, 砍 ≥ 30%)
 
-#### 4 件整理动作
+> **联想 = entity_links 作 attention boost**。entity_index 噪音太多 → 真正该想起的
+> 反而被弱相关列表淹没。
 
-#### a. 删噪音实体(P0，砍 ≥ 30%)
+**噪音判断**(三条都满足):
+1. mem_count == 1 (只挂一条 memory)
+2. type == '?' or '' (无类型)
+3. 不在 active project yaml 关键词 / persona 关键词里
 
-删除标准(完整三条都满足):
-1. `mem_count == 1` (只挂一条 memory)
-2. `type == '?' or ''` (无类型)
-3. 不在 `aliases` 列表(不是别名)
-4. **名字不在任何 active project 的 .yaml 关键词 / persona 关键词里**(防止误删重要但只单 mem 实体)
+**工具**: `terminal` 直接 edit entity_index.json(备份原版)。一次最多砍 1/3。
+完成定义: 总数减少 ≥ 30%, 理想从 600+ → ~200。
 
-工具: `terminal` 直接 edit entity_index.json (备份原版),或运行:
-```python
-# 一行实现 P0 砍 noise
-load_entity_index() → for n,e in ents.items(): if 噪音判断: del ents[n] → save
+##### b. 经历晋升成认知(A 路径) ⭐
+
+对那些"碎片反复出现、有 profile 但新碎片带增量认知"的 entity, 走真实晋升:
+
+1. **重读碎片+现有 profile**:
+   ```
+   recall_entity("<实体名>")  # 看碎片 + profile
+   ```
+2. **判断: 该不该晋升?** 标准是"碎片分散但共同指向一个清晰理解" — 升级成
+   独立的 cognition slice 这才有了"形成认知"的身份。
+3. **晋升**:
+   ```
+   promote_memory(
+     chunk_id=<该实体最有代表性的经历切片>,
+     summary="<你对它的最新理解, 1-2 句概括>",
+     entity_name="<实体名>"
+   )
+   ```
+4. **收碎片**: 经典碎片用旧 API `prune_fragments_for_entity(<实体名>, keep=3)` 留数条;
+   其余进认知层已不再需要。
+
+**原则**:
+- 升级 = 写认知 (biu cognitive status nascent) **+ 收碎片**, 两件事一起做
+- profile 写一次理解, 不是把碎片逐条翻译; 升华, 不是摘抄
+- 做不到的留到下次(消化是渐进的, 不强求一夜全部清完)
+- 老认知 (active cognition 含新碎片增量) → 走 step 4 的 `revise_memory` 而不是再 promote
+
+##### c. 认知升级 → 元认知(B 路径, 设计 doc §6.6 真正"成长"机制) ⭐⭐
+
+> 这是"思考出更高阶主题"的能力 — 多条近义 cognition 共同抽象成更高一层的认知。
+
+**触发**: 在 step 3/4 升级过程中, 你会发现某些不同 cognition 共同指向同一原理:
+- "止损线要动态调整" / "复盘最佳在固定时间" / "委托执行设检查点" → 共同是"系统的纪律性"
+
+**工具**: 把它们聚成更高阶:
 ```
+cluster_born_memory(
+  member_chunk_ids=[<id1>, <id2>, <id3>],
+  summary="<这 N 条认知共同指向的元主题/原则>",
+  entity_name="系统纪律性"  # 可选
+)
+```
+结果: 一个 `cognition_state=higher` 的元认知, derived_from 含全部成员 id。
 
-完成定义: entity_index 总数减少 ≥ 30%,理想从 616 → ~ 200。
+**慎选**: 不是每隔硬要 B 路径 — 只在你真看出规律时做。1-2 条元认知/晚就够。
+没有就跳过这步。质量优先, batch 不优先。
 
-**反模式**: ❌ 一夜删光全部单 mem entity —— 一次砍最多 1/3,剩下的下次再评估
+##### d. 反证与取代(更新认知质量)
 
-#### b. 合并别名(P1)
-
-找出同一概念不同写法:
-- `论断4` / `论断 4` / `论断四` / `论断4修正执行缺陷` — 同一实体几个写法
-- `电投产融` / `600025` (如果有) — 同一公司代码与名
-
-工具有 2:
-- 看完 candidates 后用 `merge_entities(primary='<strongest>', alias='<weak>')` (在 entity_curation skill 或 entity_index.py)
-- 或者 terminal 改 json
-
-判断标准:
-- 名字仅标点 / 大小写 / 数字写法不同
-- 或明肖是同一概念(如 "论断4修正" 显然属于 "论断4" 家族)
-
-完成定义: 同一 hot entity 没有 ≥ 3 个写法变体分散在外。merge 后别名进 aliases,memories 合并去重。
-
-#### c. 清 dangling memory 引用(P0)
-
-合并 LESSONS / 删 INSIGHTS 之后,entity_index.memories 里的 `memory_id` 可能指向已删的 memory。
-
-逐 entity memories_list 查:
-- 如果 `memory_type=lesson` 但 memory_id 对应的 ts 在 LESSONS.md 里 grep 不到 → dangling
-- 删该 memory entry(从 entity memories list 移除)
-
-完成定义: 减完或 0 个 dangling memory_id ref(asttest unload 通过 orphan memory_id count ≈ 0)
-
-#### d. 关键 lesson 补回 entity (P1,但有严门槛)
-
-对 LESNSONS.md 里某些**高度可联想的 lessons** 写入时没标 entities(或标错):
-- 该 lesson 描述一个事件模式(如"涨停 < 10 时停止")
-- 当前没挂在对应 entity("集合竞价" / "涨停阈值")下
-
-**门槛**: 只补**单日内 ≤ 5 条**(避免一次重写大量),且每条用 `terminal` 用 grep 验证"该 lesson 描述的核心概念确实可省这次想抽的 entity"。
-
-工具: `update_entity_index(entity, snippet, memory_type='lesson', memory_id='lesson:ts')`
-
-完成定义: 验证 5 条很有联想价值的 lessons 已挂合理 entity。
-
-#### e. 把碎片消化成「概念理解」(核心动作)
-
-a→d 都是对索引做**归类 / 清扫**(删噪音、合别名、清悬空、补挂)。这一步是**消化**:
-读一个实体的碎片,重新理解「我现在对这个东西到底知道什么」,把理解写进它的 profile。
-
-> 它和前四步是两类操作。前面是机械 CRUD,这一步是思考——类比你睡前回望今天,
-> 把零散印象综合成"对张三 / 对那只票 / 对那个策略,我现在什么结论"。
->
-> **为什么这一步重要**:联想命中实体时,系统现在**优先读它的 profile**(概念卡),
-> 碎片只作补充。所以 profile 的质量直接决定你下次想起一个实体时,读到的是
-> "提炼后的理解"还是"一堆散乱原始碎片"。消化就是给联想装上"结论层"。
-
-**工具**
-- 看碎片:`execute_code` 跑 `get_entity_summary("实体名")` —— 拿该实体的全量碎片 + 现有 profile,不被截断。
-  (`recall_entity` / `sense_entity` 也行,但只给最近几条且截断,不适合"重读整个实体"。)
-- 写理解:`set_entity_profile(name, summary, facts, kind)`。
-- 收碎片:`prune_fragments_for_entity(name, keep=N)` —— 留最近 N 条,其余清掉。keep 的值你定。
-
-**原则(只有这几条)**
-- 这是**整合**:消化 = 写 profile **+ 收碎片**,两件事一起做。光写 profile 不收碎片不叫整合。
-- 消化完,一个实体应收敛成「一条 profile(主)+ 少量核心碎片(辅)」。因为联想以 profile 为主,
-  散在的老碎片信息已进 profile 就不必全留——留着是噪音,会占掉联想的碎片配额。
-- 收多少**你定**:重要的(人/标的/策略)留几条最近核心当活跃底档;
-  一次性事件、已被 profile 完全覆盖的,碎片基本可以 prune 掉甚至清掉。
-  不强制清零,也不强制留几条——看这些碎片的 value 还在不在。
-- profile 写**一次理解**(1-2 句 summary + 几条核心 facts),不是把碎片逐条翻译成 facts。升华,不是摘抄。
-- 已有 profile 的实体也要看——新碎片有没有带来增量认知?有就更到最新;旧 profile 已涵盖新碎片就没必要重写。
-- **消化顺序你自己挑**:碎片多但没 profile 的最该处理;高价值实体(人/标的/策略)优先于一次性事件。做不完的自然留到下次。
-- 别把运行时 status 类碎片当事实收进 facts;facts 优先取 lesson / rule 这类已沉淀过的。
+对有 challenge_count 高的认知(被新证据反复反驳的):
+- 用 `signal_memory(chunk_id, signal="falsified", reason="<具体反证>")` 加反证
+- 多次反证后, 自己重出结论 → `supersede_memory(old, new_body)` 取代
 
 ### 8. 写 [整理] audit trail(必做)
 
-整理全做完,在 CONSCIOUSNESS.md 顶部 record_thought 一行(用 `record_thought(kind=status)`):
+整理全做完, 在 CONSCIOUSNESS.md 顶部 record_thought 一行(用 `record_thought(kind=status)`):
 
 ```
 [整理] 2026-06-21 23:30
   - 清意识流 28 条 status → 0
-  - 合论断 4 段 11 条 → 3 条
-  - 删 INSIGHTS 5 个 block + 升级 2 个 idea 为 lesson
-  - SCRATCHPAD 4 段 → 2 段
-  - CONTEXT 清 6/18 / 6/19 段
-  - entity_index 砍 noise 329→~200, 合别名 8 对, 清 dangling 12 条, 补 entity 5 条
-  - 消化实体 profile: 华能蒙电/论断4/张浩普 … 共 N 个(其余下次继续)
+  - 认知取代 3 处(都属同主题演化链, 老版标记为 replaced)
+  - 规则 revise 4 条(项目已结束), supersede 1 条(失效规则)
+  - INSIGHTS 5 升级为 promote_memory 进入认知层 + 删原 insight
+  - SCRATCHPAD / CONTEXT 收敛仅保留近 24h
+  - 实体 noise 砍 329→~200
+  - promote: 华能蒙电/A+/论断4 各 1 条新认知, derived_from 反向链接
+  - cluster_born: 元认知"系统纪律性"(包含 3 条成员)
+  - falsified 1 条(止损线固定值已被实践证伪)
 下次醒来应在「## 记忆体检」段看到 ✓ 记忆状态健康。
 ```
 
-这是 audit trail,模型内部记忆的「今天 dream 干了什么」。
+这是 audit trail,模型内部记忆的「今天 dream 干了什么」。要看到 supersede/promote/
+cluster 的具体数量和新认知 id 列表, 方便溯源。
 
 ### 9. 收口
 

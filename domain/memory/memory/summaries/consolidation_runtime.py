@@ -35,6 +35,45 @@ from domain.memory.memory.summaries import (  # noqa: E402
 
 logger = logging.getLogger("domain.memory.summaries.consolidation")
 
+
+# B 治源 (用户 2026-07-17 指引): 前置过滤 conversation 索引阶段的垃圾内容。
+# 与 scripts/memory_audit.py 的规则同源, 在源头拦截, 比事后清效率高得多。
+# 命中 → return True → 调用者跳过该条消息, 不进 chunks 表。
+_WAKE_TEMPLATE_FEATURES = [
+    re.compile(p) for p in [
+        r"── ↓ 当下事件 ↓ ──",
+        r"### 唤醒原因",
+        r"## 记忆体检",
+        r"⏰ 当前时间：\d",
+        r"按优先级排列（仅标题",
+        r"⏰ 你设的闹钟响了",
+        r"上一轮留下的备注：",
+        r"^\[user\] ## ── ↓ 当下事件 ↓ ──",
+    ]
+]
+
+
+def _is_noise_content(text: str) -> bool:
+    """检 conversation content 是否是已知垃圾模式。
+    返回 True 表示该条不应进检索池。
+   保守起见: 只过滤有把握的 wake_template (≥2 特征同时命中) 和 tool_result。
+    过渡句等 client-side 已经够用, 不在这里跳过(避免误伤真实对话)。
+    """
+    if not text:
+        return False
+    # wake_prompt 系统注入: ≥2 个特征同命中才算
+    if sum(1 for p in _WAKE_TEMPLATE_FEATURES if p.search(text)) >= 2:
+        return True
+    # 纯 JSON / 工具返回值 (开头是 { 或 [)
+    s = text.strip()
+    if s.startswith("{") or s.startswith("["):
+        try:
+            json.loads(s[:200])
+            return True
+        except Exception:
+            pass
+    return False
+
 _mem_dir_cache: Path | None = None
 
 
@@ -1617,6 +1656,11 @@ def index_conversations(session_db: Any = None, max_age_hours: float = 1.0) -> i
                     continue
                 text = content.strip()[:300]
                 if text.startswith("{") or text.startswith("[") or len(text) < 10:
+                    continue
+                # B 治源(2026-07-17): skip wake_template 等垃圾内容 -
+                # 否则 system 注入的 wake prompt 会被当 user 对话喂进 chunks,
+                # 跑 audit 时再清效率低。前置过滤更优。
+                if _is_noise_content(text):
                     continue
                 texts_to_index.append((row["session_id"], row["role"], text, row["timestamp"]))
 

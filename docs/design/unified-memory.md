@@ -188,3 +188,50 @@ query → 命中节点 → 沿三类连边各产候选 → 融合 → 一份去�
 | 9.5 自我认知 | 认知切片源，复用同一演化引擎 |
 | 9.7 缺环：统一召回接口 | §4 统一 facade |
 | 9.7 缺环：实体关系图谱 | §3 三类连边法则 |
+
+---
+
+## 附录：实现期落地决策（feature 002 实施后回填）
+
+设计本身体现"参数先立机制、阈值跑起来再调"，以下为实现期落地时的具体决策（均可在源码中找到，作为机制常数）：
+
+### A.1 检索：三路并发 + 两层时间预算
+
+- **整体 facade 上限 5s**（`unified_recall(timeout_seconds=_DEFAULT_TIMEOUT)`），用 `ThreadPoolExecutor + concurrent.futures.wait(timeout=5)` 实现，超时返回已完成的部分结果——是 SC-001「检索永远非阻断点」的精确落地。
+- **单条嵌入 HTTP timeout 8s**（`_embed_texts` 内 `urlopen(..., timeout=8)`）——比原 30s 大幅缩短，为整体 5s 上限让出余地；嵌入失败**不重试**（避免 429 风暴）。
+
+### A.2 RRF 融合常数
+
+- **k = 60**（标准倒数排名融合常数）。
+- 同 chunk_id 合并、不同源各自 rank；文本指纹（md5 前 200 字）兜底用于 vector 路没回 id 的候选去重——取代了原来"30 字符前缀去重"的脆弱做法。
+
+### A.3 FTS5 中文分词策略
+
+- 用 **bigram（CJK 双字）+ Latin word boundary**，自实现 `tokenize_for_fts(text)`，写入和查询共用同一函数——不引入 jieba 等第三方依赖。
+- FTS5 编译时探测（`PRAGMA compile_options LIKE '%ENABLE_FTS5%'`）→ 不可用时 facade 静默降级，走纯 vector + attention 兜底。
+
+### A.4 参数衰减公式
+
+- `freshness *= exp(-Δ_hours × (1 - permanence) × λ)`，**指数衰减**（不是线性——线性会让认知 30 天后 freshness→0、违反 §6.4「认知几乎不衰」的承诺）。
+- 实测：permanence=0.95 时 30d 后 freshness=0.835；permanence=1.0 时 1 年后仍 0.11 不归档。
+- 归档阈值：`max(0.05, 0.1 × permanence)`；认知类 permanence≈1，靠 challenge 不靠时间触发归档。
+
+### A.5 supersede 持久化的 id 保留
+
+- `cognition_store._persist_slice` 用 **UPDATE-first**（保留 chunk id 不变），不用 `INSERT OR REPLACE`（后者因 UNIQUE(source, chunk_hash) 会重新分配 id、断认知 derived_from/supersede_by 链）。
+- 临床表现：`promote_one(经历#3)` 产出认知 #6928；`supersede_one(#6928)` 产出 #6929，#6929.derived_from 含 6928、#6928.supersede_by=6929 + state=replaced——双向链完整可溯源。
+
+### A.6 模块地图
+
+```
+domain/memory/memory/recall/unified/
+├── __init__.py          facade export (unified_recall, render_breadcrumbs)
+├── facade.py            unified_recall 主体 — 三路 RRF + 预算 + 5s 硬上限
+├── fts.py               FTS5 + 中文 bigram + BM25 + 触发器
+├── slice.py             Slice dataclass + baseline 表 + 参数演化引擎
+├── migration.py         历史回填(backfill_slice_fields_if_needed)
+├── normalizers.py       project / todo 归一器 + register_normalizer 接入
+├── cognition.py         认知状态机 + 跃迁 + 三铁律(纯内存层)
+└── cognition_store.py   hygiene-facing API + 持久层(promote_one / supersede_one / ...)
+```
+

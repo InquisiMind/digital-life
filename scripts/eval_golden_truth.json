@@ -1,0 +1,104 @@
+[
+  {
+    "theme": "A",
+    "query": "上次产品 A 上线效果怎么样",
+    "note": "精确语义命中经历, 干扰项同为 'A' 开头但内容是 standup",
+    "must_hit_id": [
+      17
+    ],
+    "may_not_hit_id": [
+      18
+    ],
+    "may_hit_neighbor_id": [],
+    "may_hit_derived_id": []
+  },
+  {
+    "theme": "B",
+    "query": "最近有没有调用详情",
+    "note": "query 用 '调用详情'(不出现 invoke 字面) → 验证语义同义词召回",
+    "must_hit_id": [
+      19
+    ],
+    "may_not_hit_id": [],
+    "may_hit_neighbor_id": [],
+    "may_hit_derived_id": []
+  },
+  {
+    "theme": "C",
+    "query": "我说过的规划是什么",
+    "note": "跨主题干扰测试: 'plan' 字面同但语义不同(规划 vs 餐食)",
+    "must_hit_id": [
+      20
+    ],
+    "may_not_hit_id": [
+      21
+    ],
+    "may_hit_neighbor_id": [],
+    "may_hit_derived_id": []
+  },
+  {
+    "theme": "D",
+    "query": "project X 阶段二 进展",
+    "note": "时序连边测试: 命中第 2 步,应同时召回第 1 / 第 3 步(session 邻居)",
+    "must_hit_id": [
+      23
+    ],
+    "may_not_hit_id": [],
+    "may_hit_neighbor_id": [
+      22,
+      24
+    ],
+    "may_hit_derived_id": []
+  },
+  {
+    "theme": "E",
+    "query": "周三 9 点复盘",
+    "note": "诞生链测试: 命中认知 → 应同时召回它的 derived_from 源经历(认知是怎么来的)",
+    "must_hit_id": [
+      27
+    ],
+    "may_not_hit_id": [],
+    "may_hit_neighbor_id": [],
+    "may_hit_derived_id": [
+      25,
+      26
+    ]
+  },
+  {
+    "theme": "F",
+    "query": "Mira 的提案 是什么",
+    "note": "attention_tokens=Mira 让含它的 slice 排到 top; 通用的 OKR 例会不应挤进来",
+    "must_hit_id": [
+      28
+    ],
+    "may_not_hit_id": [
+      29
+    ],
+    "may_hit_neighbor_id": [],
+    "may_hit_derived_id": []
+  },
+  {
+    "theme": "G",
+    "query": "构建失败 怎么办的",
+    "note": "认知规则(权威 1.0)应排在经历记录之上, 因为它是结论性建议",
+    "must_hit_id": [
+      31
+    ],
+    "may_not_hit_id": [],
+    "may_hit_neighbor_id": [],
+    "may_hit_derived_id": [
+      30
+    ]
+  },
+  {
+    "theme": "H",
+    "query": "PROJ-4532 工单",
+    "note": "精确专有名词 + 数字, 词法路应高度命中(token 精确匹配)",
+    "must_hit_id": [
+      32
+    ],
+    "may_not_hit_id": [],
+    "may_hit_neighbor_id": [],
+    "may_hit_derived_id": []
+  }
+]

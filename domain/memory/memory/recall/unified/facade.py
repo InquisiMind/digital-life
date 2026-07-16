@@ -47,44 +47,28 @@ _BUDGET_MAX_CHARS: dict[BudgetKind, int] = {
 # ───────────────── subroute primitives ─────────────────
 
 def _route_vector(query: str, *, extra_context: str = "", max_chars: int) -> list[dict]:
-    """向量语义路 — 委托既有 vector.recall,解析其字符串输出为候选。
-    返回 [{chunk_id(int|-1), score, source, text}]。
+    """向量语义路 — 调 recall_structured 拿 list[dict](含真实 chunk_id)。
+    返回 [{chunk_id, score, source, text}]。
+    (P2 修复: 原本走 recall() 字符串解析导致 chunk_id 全 -1、RRF 对应不上。)
     """
     try:
-        from domain.memory.memory.recall.vector import recall as vc_recall
-        raw = vc_recall(query, extra_context=extra_context, max_total_chars=max_chars)
+        from domain.memory.memory.recall.vector import recall_structured
+        hits = recall_structured(query, extra_context=extra_context, max_total_chars=max_chars)
     except Exception as e:
         logger.warning("vector route failed (will degrade): %s", e)
         return []
-    if not raw:
+    if not hits:
         return []
-    # vector.recall 返回纯文本拼接,我们需要解析 [tag score=N] text 行
-    # 因 vector.recall 不再回 chunk_id,这里用文本指纹弱识别(score 取自 tag)。
+    # 加上 metadata 让 lexical bonus 路径与 vector 共享同一字段
     out: list[dict] = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line or line.startswith("[联想记忆") or line.startswith("[/联想记忆"):
-            continue
-        score = 0.3  # 默认分
-        text = line
-        # 形式: "[tag score=0.42] text..."
-        if "]" in line:
-            head, rest = line.split("]", 1)
-            text = rest.strip()
-            if "score=" in head:
-                try:
-                    score = float(head.split("score=")[1].split()[0])
-                except Exception:
-                    pass
-        if text:
-            out.append({
-                "chunk_id": -1,  # vector.recall 不回 id(P3 改造后会带)
-                "score": score,
-                "source": "vector",
-                "source_kind": "",
-                "text": text,
-            })
-    # 截掉过多条,避免压死融合
+    for h in hits:
+        out.append({
+            "chunk_id": int(h.get("chunk_id", -1)),
+            "score": float(h.get("score", 0.0)),
+            "source": h.get("source", ""),
+            "source_kind": "",
+            "text": h.get("text", ""),
+        })
     return out[:20]
 
 

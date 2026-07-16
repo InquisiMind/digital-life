@@ -705,4 +705,94 @@ def recall(
         db.close()
 
 
+def recall_structured(
+    query: str,
+    extra_context: str = "",
+    max_total_chars: int = 800,
+    sources: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """同 recall() 但返回结构化 list, 带 chunk_id / source / text / score。
+
+    facade unified_recall 用这个版本, 避免 P2 之前 facade 只能走文本解析、
+    chunk_id 全是 -1 导致 RRF 对应不上真实 chunk 的设计漏洞。
+    内部逻辑与 recall() 一致, 只是把组装 cut 改 list[dict]。
+    特殊打分: cognition 类(source=rules/lessons/self_knowledge/knowledge)
+    加 +0.5 boost, 让它们排到 experience 经历之上, 对齐设计 §6.6。
+    """
+    import json as _json
+    full_query = f"{query} {extra_context}".strip()
+    if not full_query:
+        return []
+
+    ensure_indexed(max_age_hours=2.0)
+    query_emb = _embed_single(full_query)
+    if not query_emb:
+        return []
+
+    db = _get_db()
+    try:
+        if sources:
+            placeholders = ",".join("?" * len(sources))
+            rows = db.execute(
+                f"SELECT id, source, text, embedding, created_at, phase FROM chunks "
+                f"WHERE embedding IS NOT NULL AND source IN ({placeholders})",
+                sources
+            ).fetchall()
+        else:
+            rows = db.execute(
+                "SELECT id, source, text, embedding, created_at, phase FROM chunks "
+                "WHERE embedding IS NOT NULL"
+            ).fetchall()
+
+        now = time.time()
+        chunk_data: Dict[int, Tuple[str, str, List[float], str]] = {}
+        final_scores: Dict[int, float] = {}
+
+        for row in rows:
+            source = row["source"]
+            cfg = _ALL_SOURCES.get(source)
+            if not cfg:
+                continue
+            chunk_emb = _blob_to_embedding(row["embedding"])
+            sim = _cosine_sim(query_emb, chunk_emb) * cfg["weight"]
+            decay_hours = cfg.get("decay_hours")
+            if decay_hours and row["created_at"]:
+                age_hours = (now - row["created_at"]) / 3600
+                time_factor = math.exp(-age_hours / decay_hours)
+                sim *= max(time_factor, 0.1)
+            # Cognition 排序优先(设计 §6.6): 让规则/教训/认知排名高于经历
+            phase = row["phase"] if "phase" in row.keys() else ""
+            if phase == "cognition":
+                sim += 0.5
+            if sim >= cfg.get("threshold", 0.15) - (0.5 if phase == "cognition" else 0):
+                # cognition 因 +0.5 后可能本来没过阈的也排得起来, 放宽阈偏移
+                cid = row["id"]
+                chunk_data[cid] = (source, row["text"], chunk_emb, phase)
+                final_scores[cid] = sim
+
+        if not final_scores:
+            return []
+
+        # 简化:不带 MMR, 按 score 排序 + 字符预算
+        sorted_cands = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)
+        out: List[Dict[str, Any]] = []
+        total = 0
+        for cid, score in sorted_cands:
+            if total >= max_total_chars:
+                break
+            source, text, _, phase = chunk_data[cid]
+            text_slice = text[:200]
+            out.append({
+                "chunk_id": int(cid),
+                "source": source,
+                "text": text_slice,
+                "score": float(score),
+                "phase": phase,
+            })
+            total += len(text_slice)
+        return out
+    finally:
+        db.close()
+
+
 __all__ = ["recall", "ensure_indexed"]

@@ -669,6 +669,18 @@ def _wake_digital_life_inner_safe(
 
     init_db()
 
+    # P0-2 fix: scheduler 启动初期(每 tick first-run 用 once-flag)强制跑 backfill。
+    # 之前 backfill 只在 unified_recall 内部首次调用时跑; 如果某次 tick 没有
+    # 触发 recall(比如纯定时器唤醒), 旧切片的 authority/phase/permanence 就不会
+    # 被修正(rules authority 一直 0.5 不是 1.0)。
+    try:
+        from domain.memory.memory.recall.unified.migration import (
+            backfill_slice_fields_if_needed,
+        )
+        backfill_slice_fields_if_needed()
+    except Exception:
+        pass  # 启动期间 backfill 失败不阻塞 tick
+
     # 重置 exec 调用计数器
     try:
         from interfaces.tools.code_execution_tool import reset_exec_counter

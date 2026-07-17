@@ -953,9 +953,12 @@ def _llm_summary_worker(
                 blob = _embedding_to_blob(emb)
                 chunk_hash = f"session:{session_id}"
                 vdb.execute(
-                    "INSERT OR REPLACE INTO chunks (source, chunk_hash, text, embedding, file_mtime, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (f"digest_session", chunk_hash, summary, blob, time.time(), time.time()),
+                    "INSERT OR REPLACE INTO chunks "
+                    "(source, chunk_hash, text, embedding, file_mtime, created_at, "
+                    " phase, source_kind, session_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (f"digest_session", chunk_hash, summary, blob, time.time(), time.time(),
+                     "experience", "digest", session_id),
                 )
                 vdb.commit()
                 vdb.close()
@@ -1599,9 +1602,12 @@ def _index_single_conversation(
 
     blob = _embedding_to_blob(embedding)
     vec_db.execute(
-        "INSERT OR REPLACE INTO chunks (source, chunk_hash, text, embedding, file_mtime, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        ("conversation", chunk_hash_val, indexed_text, blob, timestamp, timestamp),
+        "INSERT OR REPLACE INTO chunks "
+        "(source, chunk_hash, text, embedding, file_mtime, created_at, "
+        " phase, source_kind, session_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("conversation", chunk_hash_val, indexed_text, blob, timestamp, timestamp,
+         "experience", "conversation", session_id),
     )
     return True
 
@@ -1672,6 +1678,8 @@ def index_conversations(session_db: Any = None, max_age_hours: float = 1.0) -> i
             embed_texts = []
             chunk_hashes = []
             indexed_texts = []
+            # P0-1 fix: 保留 session_id 跟随 INSERT (之前丢了, 导致 session_id 100% 空)
+            conv_sids = []
             for sid, role, text, ts in texts_to_index:
                 chunk_hash_val = f"conversation:{sid}:{ts}"
                 existing = vec_db.execute(
@@ -1685,6 +1693,7 @@ def index_conversations(session_db: Any = None, max_age_hours: float = 1.0) -> i
                 embed_texts.append(indexed_text)
                 chunk_hashes.append(chunk_hash_val)
                 indexed_texts.append(indexed_text)
+                conv_sids.append(sid or "")
 
             if not embed_texts:
                 return 0
@@ -1692,11 +1701,13 @@ def index_conversations(session_db: Any = None, max_age_hours: float = 1.0) -> i
             # 分批 embedding（每批最多 20 条）
             count = 0
             batch_size = 20
+            all_times = [ts for _, _, _, ts in texts_to_index]
             for i in range(0, len(embed_texts), batch_size):
                 batch_texts = embed_texts[i:i + batch_size]
                 batch_hashes = chunk_hashes[i:i + batch_size]
                 batch_indexed = indexed_texts[i:i + batch_size]
-                batch_times = [t for _, _, _, t in texts_to_index[i:i + batch_size]]
+                batch_times = all_times[i:i + batch_size]
+                batch_sids = conv_sids[i:i + batch_size]
 
                 # 过滤已存在的 hash
                 existing_hashes = set()
@@ -1709,26 +1720,31 @@ def index_conversations(session_db: Any = None, max_age_hours: float = 1.0) -> i
                         existing_hashes.add(h)
 
                 filtered = [
-                    (t, h, idx, ts)
-                    for t, h, idx, ts in zip(batch_texts, batch_hashes, batch_indexed, batch_times)
+                    (t, h, idx, ts, sid)
+                    for t, h, idx, ts, sid in zip(batch_texts, batch_hashes, batch_indexed, batch_times, batch_sids)
                     if h not in existing_hashes
                 ]
                 if not filtered:
                     continue
 
-                ft, fh, fi, ftimes = zip(*filtered)
+                ft, fh, fi, ftimes, fsids = zip(*filtered)
                 embeddings = _embed_texts(list(ft))
                 if not embeddings:
                     continue
 
-                for emb, h, text, ts in zip(embeddings, fh, fi, ftimes):
+                for emb, h, text, ts, sid in zip(embeddings, fh, fi, ftimes, fsids):
                     if emb is None:
                         continue
                     blob = _embedding_to_blob(emb)
+                    # P0-1 fix: conversation INSERT 现在写 phase/source_kind/session_id
+                    # 之前只写 6 列导致 session_id 100% 空、时序连边全失效
                     vec_db.execute(
-                        "INSERT OR REPLACE INTO chunks (source, chunk_hash, text, embedding, file_mtime, created_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
-                        ("conversation", h, text, blob, ts, ts),
+                        "INSERT OR REPLACE INTO chunks "
+                        "(source, chunk_hash, text, embedding, file_mtime, created_at, "
+                        " phase, source_kind, session_id) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        ("conversation", h, text, blob, ts, ts,
+                         "experience", "conversation", sid),
                     )
                     count += 1
 
@@ -1826,10 +1842,18 @@ def backfill_conversations(limit: int = 500) -> int:
                     if emb is None:
                         continue
                     blob = _embedding_to_blob(emb)
+                    # P0-1 fix: backfill_conversations 也写 phase/source_kind/session_id
+                    # chunk_hash 形如 'conversation:<session_id>:<timestamp>'
+                    # → 解析出 session_id
+                    hash_parts = chunk_hash.split(":", 2)
+                    bf_sid = hash_parts[1] if len(hash_parts) >= 3 else ""
                     vec_db.execute(
-                        "INSERT OR REPLACE INTO chunks (source, chunk_hash, text, embedding, file_mtime, created_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
-                        ("conversation", chunk_hash, text, blob, ts, ts),
+                        "INSERT OR REPLACE INTO chunks "
+                        "(source, chunk_hash, text, embedding, file_mtime, created_at, "
+                        " phase, source_kind, session_id) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        ("conversation", chunk_hash, text, blob, ts, ts,
+                         "experience", "conversation", bf_sid),
                     )
                     count += 1
 

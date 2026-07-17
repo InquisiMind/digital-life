@@ -45,6 +45,10 @@ def backfill_slice_fields_if_needed(*, force: bool = False) -> int:
         from domain.memory.memory.recall.unified.slice import _BASELINES
 
         for source, baseline in _BASELINES.items():
+            # P0-2 fix: 之前 WHERE 只匹配 phase='' OR source_kind='',
+            # 但 _index_source 已写 phase 后 backfill 跳过 → rules/lessons 的
+            # authority 一直停在 0.5 default 不是 baseline 的 1.0/0.8。
+            # 修法: 改成 'phase 空 OR source_kind 空 OR authority 偏离 baseline 较多'。
             cur = db.execute(
                 """
                 UPDATE chunks
@@ -56,10 +60,16 @@ def backfill_slice_fields_if_needed(*, force: bool = False) -> int:
                     entity_links = COALESCE(NULLIF(entity_links, ''), '[]'),
                     attention_tokens = COALESCE(NULLIF(attention_tokens, ''), '[]')
                 WHERE source = ?
-                  AND (phase = '' OR phase IS NULL OR source_kind = '' OR source_kind IS NULL)
+                  AND (
+                    phase = '' OR phase IS NULL
+                    OR source_kind = '' OR source_kind IS NULL
+                    OR ABS(COALESCE(authority, 0) - ?) > 0.15
+                    OR ABS(COALESCE(permanence, 0) - ?) > 0.15
+                  )
                 """,
                 (baseline["phase"], baseline["source_kind"],
-                 baseline["authority"], baseline["permanence"], source),
+                 baseline["authority"], baseline["permanence"],
+                 source, baseline["authority"], baseline["permanence"]),
             )
             updated += cur.rowcount if cur.rowcount > 0 else 0
         # 兜底:未在 _BASELINES 里的 source 走 experience 默认

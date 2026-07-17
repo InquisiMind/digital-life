@@ -534,6 +534,7 @@ def recall(
     extra_context: str = "",
     max_total_chars: int = 800,
     sources: Optional[List[str]] = None,
+    include_obsolete: bool = False,
 ) -> str:
     """向量联想召回 + 扩散激活 + MMR 多样性采样。
 
@@ -559,16 +560,25 @@ def recall(
 
     db = _get_db()
     try:
+        # 默认过滤死信认知(用户 2026-07-17 闸门一: replaced/challenged/archived
+        # 不进默认召回 — 避免旧矛盾认知投递给模型)
+        obsolete_filter = "" if include_obsolete else (
+            " AND (cognition_state IS NULL "
+            "      OR cognition_state NOT IN ('replaced','challenged','archived'))"
+        )
         # 1. 计算所有 chunk 的基础相似度
         if sources:
             placeholders = ",".join("?" * len(sources))
             rows = db.execute(
-                f"SELECT id, source, text, embedding, created_at FROM chunks WHERE embedding IS NOT NULL AND source IN ({placeholders})",
+                f"SELECT id, source, text, embedding, created_at FROM chunks "
+                f"WHERE embedding IS NOT NULL AND source IN ({placeholders})"
+                f"{obsolete_filter}",
                 sources
             ).fetchall()
         else:
             rows = db.execute(
-                "SELECT id, source, text, embedding, created_at FROM chunks WHERE embedding IS NOT NULL"
+                f"SELECT id, source, text, embedding, created_at FROM chunks "
+                f"WHERE embedding IS NOT NULL{obsolete_filter}"
             ).fetchall()
 
         now = time.time()
@@ -710,6 +720,7 @@ def recall_structured(
     extra_context: str = "",
     max_total_chars: int = 800,
     sources: Optional[List[str]] = None,
+    include_obsolete: bool = False,
 ) -> List[Dict[str, Any]]:
     """同 recall() 但返回结构化 list, 带 chunk_id / source / text / score。
 
@@ -731,17 +742,23 @@ def recall_structured(
 
     db = _get_db()
     try:
+        # 闸门一(2026-07-17): 默认过滤死信认知 replaced/challenged/archived
+        obsolete_filter = "" if include_obsolete else (
+            " AND (cognition_state IS NULL "
+            "      OR cognition_state NOT IN ('replaced','challenged','archived'))"
+        )
         if sources:
             placeholders = ",".join("?" * len(sources))
             rows = db.execute(
                 f"SELECT id, source, text, embedding, created_at, phase FROM chunks "
-                f"WHERE embedding IS NOT NULL AND source IN ({placeholders})",
+                f"WHERE embedding IS NOT NULL AND source IN ({placeholders})"
+                f"{obsolete_filter}",
                 sources
             ).fetchall()
         else:
             rows = db.execute(
-                "SELECT id, source, text, embedding, created_at, phase FROM chunks "
-                "WHERE embedding IS NOT NULL"
+                f"SELECT id, source, text, embedding, created_at, phase FROM chunks "
+                f"WHERE embedding IS NOT NULL{obsolete_filter}"
             ).fetchall()
 
         now = time.time()

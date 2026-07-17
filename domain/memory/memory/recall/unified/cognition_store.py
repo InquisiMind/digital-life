@@ -155,6 +155,10 @@ def promote_one(
 ) -> dict[str, Any]:
     """Hygiene 调:把某经历切片提纯为认知。
     返回 {ok, new_cognition_chunk_id, derived_from}。
+
+    闸门二(2026-07-17): promote 前查重 — 用 summary 做语义召回,
+    看已有 cognition 里有没有高度相似的。有的话不无脑新建 — 返回提示给模型,
+    让它自己决定是 supersede 还是 verified。
     """
     exp = load_slice_by_id(experience_chunk_id)
     if exp is None:
@@ -162,6 +166,52 @@ def promote_one(
     if exp.phase != "experience":
         return {"ok": False, "error": f"chunk {experience_chunk_id} is not experience "
                                        f"(phase={exp.phase})"}
+
+    # ── 闸门二: 查已有认知相似度 ──
+    # 用 recall_structured 限定 cognition source, 看前 5 条里有没有 > 阈的。
+    try:
+        from domain.memory.memory.recall.vector import recall_structured
+        existing = recall_structured(
+            summary,
+            max_total_chars=600,
+            sources=["rules", "lessons", "knowledge", "self_knowledge"],
+            include_obsolete=False,  # 只查 active 认知; 死信的已经不该复用
+        )
+    except Exception as e:
+        logger.debug("promote dedup check failed (will proceed): %s", e)
+        existing = []
+
+    # 判相似度: 直接用 recall 返回的 score(cosine × weight ≥ threshold 已过滤过)
+    # score >= 0.7 我们认为"语义相似",值得让模型判断
+    DEDUP_THRESHOLD = 0.7
+    similar: list[dict] = []
+    for r in existing:
+        if r.get("score", 0.0) >= DEDUP_THRESHOLD:
+            similar.append(r)
+
+    if similar:
+        # 不直接写新认知 — 告诉调用者已有相似认知, 建议走 supersede 或 verified
+        return {
+            "ok": False,
+            "skip_reason": "duplicate_cognition",
+            "similar_cognitions": [
+                {
+                    "chunk_id": r.get("chunk_id"),
+                    "source": r.get("source"),
+                    "score": round(r.get("score", 0), 3),
+                    "preview": (r.get("text") or "")[:120],
+                }
+                for r in similar[:5]
+            ],
+            "advice": (
+                "已有高度相似的认知。如果是同一意思 → 用 signal_memory "
+                "给已有认知打 verified 强化它(不新建)。如果需要更新措辞 → "
+                "用 supersede_memory 取代已有认知。如果确实是完全不相关的新领域 → "
+                "修改 summary 重新调 promote_memory。"
+            ),
+        }
+
+    # ── 无重复: 正常走 promote 路径 ──
     entity_links = [entity_name] if entity_name else list(exp.entity_links)
     new_cog = promote(exp, summary=summary, derived_from_ids=[experience_chunk_id],
                       entity_links=entity_links)

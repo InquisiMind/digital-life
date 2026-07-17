@@ -165,11 +165,13 @@ def fts_search(
     *,
     limit: int = 20,
     sources: list[str] | None = None,
+    include_obsolete: bool = False,
 ) -> list[tuple[int, float]]:
     """BM25 词法检索。返回 [(chunk_id, -bm25_score), ...]。
     bm25() 返回负数(越负越相关)，我们取负返(越大越相关),与 vector 路语义一致。
 
     sources 过滤:限定到特定 source 类型(如 ['conversation', 'digest_session'])。
+    include_obsolete=False(默认): 过滤死信认知(replaced/challenged/archived)。
     """
     if not _detect_fts5():
         return []
@@ -183,6 +185,12 @@ def fts_search(
     # ensure schema(幂等)。即使触发器从未跑过(老库),也对一次触发表查询里生效。
     ensure_fts5_schema()
 
+    # 闸门一(2026-07-17): 默认过滤死信认知
+    obsolete_filter = "" if include_obsolete else (
+        " AND (c.cognition_state IS NULL "
+        "      OR c.cognition_state NOT IN ('replaced','challenged','archived'))"
+    )
+
     db = _get_db()
     try:
         if sources:
@@ -193,6 +201,7 @@ def fts_search(
                 FROM chunks_fts
                 JOIN chunks c ON c.id = chunks_fts.rowid
                 WHERE chunks_fts MATCH ? AND c.source IN ({placeholders})
+                {obsolete_filter}
                 ORDER BY score
                 LIMIT ?
                 """,
@@ -200,11 +209,12 @@ def fts_search(
             ).fetchall()
         else:
             rows = db.execute(
-                """
+                f"""
                 SELECT c.id AS cid, bm25(chunks_fts) AS score
                 FROM chunks_fts
                 JOIN chunks c ON c.id = chunks_fts.rowid
                 WHERE chunks_fts MATCH ?
+                {obsolete_filter}
                 ORDER BY score
                 LIMIT ?
                 """,

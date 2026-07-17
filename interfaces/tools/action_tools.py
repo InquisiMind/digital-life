@@ -2211,6 +2211,61 @@ registry.register(
 
 # ──────────────────────────────── rest ────────────────────────────────
 
+def _summarize_current_session_outputs() -> str:
+    """当前 session 内的产出汇总——只抓"产出类"工具(写文件/沉淀/认知形成/
+    完成任务/重要发消息), 不抓纯 sense/记忆查询。用于 rest 提示卡前的"本轮产出"。
+
+    返回 "<N> 项: file1, file2, lesson X, task done #abc, ..." 形式, 无产出时返 ""。
+    """
+    try:
+        from infrastructure.config import get_current_session_id
+        session_id = get_current_session_id()
+        if not session_id:
+            return ""
+        # 从 session_db 拿当前 session 所有 tool_calls
+        from domain.lifecycle.session_db import get_session_db
+        session_db = get_session_db()
+        if session_db is None:
+            return ""
+        rows = session_db._conn.execute(
+            "SELECT tool_calls FROM messages WHERE session_id=? AND tool_calls IS NOT NULL AND tool_calls != ''",
+            (session_id,),
+        ).fetchall()
+        # 产出类关键词
+        OUTPUT_PREFIXES = ("写文件: ", "沉淀 ", "形成认知", "取代认知", "修订认知",
+                           "更新规则: ", "更新自我认知: ", "注册 ", "登记附件: ",
+                           "完成任务: ", "创建待办: ", "日记: ")
+        outputs: list[str] = []
+        for r in rows:
+            try:
+                calls = json.loads(r["tool_calls"])
+            except Exception:
+                continue
+            for call in calls:
+                fn = call.get("function", {})
+                name = fn.get("name", "")
+                try:
+                    args = json.loads(fn.get("arguments", "{}"))
+                except Exception:
+                    args = {}
+                from domain.memory.memory.summaries import summarize_tool_call
+                s = summarize_tool_call(name, args)
+                if s and any(s.startswith(p) for p in OUTPUT_PREFIXES):
+                    # 简短化: 取前 50 chars
+                    short = s[:50] + ("…" if len(s) > 50 else "")
+                    if short not in outputs:  # 去重
+                        outputs.append(short)
+        if not outputs:
+            return ""
+        if len(outputs) > 6:
+            # 太多 → 折叠
+            head = "; ".join(outputs[:5])
+            return f"{len(outputs)} 项 — {head} 等"
+        return "; ".join(outputs)
+    except Exception:
+        return ""
+
+
 def _build_pre_rest_card() -> str:
     """睡前的简短提示卡：让模型在 rest 前扫一眼"是否还有该改/该记的事"。
 
@@ -2233,6 +2288,14 @@ def _build_pre_rest_card() -> str:
         iid = ""
 
     parts: list[str] = []
+
+    # ── 0. 本轮产出（session 内的产出汇总, 来自同一 session 的 summarize_tool_call） ──
+    try:
+        outputs_summary = _summarize_current_session_outputs()
+        if outputs_summary:
+            parts.append(f"📤 本轮产出: {outputs_summary}")
+    except Exception as exc:
+        logger.debug("pre_rest_card outputs summary failed: %s", exc)
 
     # ── 1. 待办（todo）盘点 ──
     try:

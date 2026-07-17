@@ -151,7 +151,8 @@ def summarize_tool_call(name: str, args: Dict[str, Any]) -> str:
         return f"思绪[{tag}]: {first_line}" if tag else f"思绪: {first_line}"
 
     if name == "update_scratchpad":
-        return "更新笔记"
+        # 草稿本更新无 info: 内容短且无明确语义, 进 digest 没用 → 返 ""
+        return ""
 
     # ── 产出类: 沉淀永久记忆 ──
     if name == "add_lesson":
@@ -192,7 +193,7 @@ def summarize_tool_call(name: str, args: Dict[str, Any]) -> str:
         p = (args.get("path") or "")[:60].strip()
         return f"登记附件: {p}" if p else "登记附件"
 
-    # ── 产出类: todo 完成动作 ──
+    # ── 产出类: todo 实质动作(只记 create/done/cancel;list/get/search/update 是查看, 不进) ──
     if name == "todo":
         action = (args.get("action") or "").strip()
         if action == "done":
@@ -201,10 +202,11 @@ def summarize_tool_call(name: str, args: Dict[str, Any]) -> str:
         if action == "create":
             t = (args.get("title") or "")[:60].strip()
             return f"创建待办: {t}" if t else "创建待办"
-        if action in ("cancel", "start", "update", "pause"):
+        if action == "cancel":
             tid = (args.get("todo_id") or "")[:20].strip()
-            return f"待办 {action}: {_short_id(tid)}"
-        return f"待办: {action}" if action else "工具: todo"
+            return f"取消待办: {_short_id(tid)}"
+        # update / start / pause / list / get / search / plan 都是查看/旁调, 不进 digest
+        return ""
 
     # ── 产出类: terminal / execute_code 文件操作 ──
     if name == "terminal":
@@ -212,21 +214,20 @@ def summarize_tool_call(name: str, args: Dict[str, Any]) -> str:
         paths = _extract_file_ops_from_terminal(cmd)
         if paths:
             return f"写文件: {', '.join(paths)}"
-        # 普通命令: 取前 50 chars, 不可见
-        return f"命令: {cmd[:50]}" if cmd else "terminal"
+        # 没有文件操作的普通命令: 不进 digest(太多"工具: terminal"会污染摘要)
+        return ""
     if name == "execute_code":
         code = (args.get("code") or "").strip()
         paths = _extract_file_ops_from_code(code)
         if paths:
             return f"写文件: {', '.join(paths)}"
-        return "执行代码" if code else "execute_code"
+        # 没文件操作: 不进 digest
+        return ""
 
-    # 注:manage_goals/manage_plan/manage_daily/manage_work/sense_* 等
-    # 工具已于 2026-07-17 退役(handler 保留可 dispatch, schema 不再注入)。
-    # 这里删除它们的历史 summary 分支, 让它们走通用 fallback——避免后人误以为还在用。
-    # 退役工具的 args 多含 _deprecated_hint,自然在通用字符截断里投机出现。
-
-    return f"工具: {name}"
+    # 未识别工具(含已退役的 manage_goals/manage_daily/sense_work 等历史调用):
+    # 返 "" 让它不进 digest——摘要应该只含**有信息密度**的动作,
+    # 而不是 "工具: name" 类纯计数噪音。
+    return ""
 
 
 def _short_id(tid: str) -> str:

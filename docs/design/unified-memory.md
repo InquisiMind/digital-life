@@ -229,9 +229,50 @@ domain/memory/memory/recall/unified/
 ├── facade.py            unified_recall 主体 — 三路 RRF + 预算 + 5s 硬上限
 ├── fts.py               FTS5 + 中文 bigram + BM25 + 触发器
 ├── slice.py             Slice dataclass + baseline 表 + 参数演化引擎
-├── migration.py         历史回填(backfill_slice_fields_if_needed)
+├── migration.py         历史回填 (backfill_slice_fields + backfill_entity_links)
 ├── normalizers.py       project / todo 归一器 + register_normalizer 接入
 ├── cognition.py         认知状态机 + 跃迁 + 三铁律(纯内存层)
-└── cognition_store.py   hygiene-facing API + 持久层(promote_one / supersede_one / ...)
+├── cognition_store.py   hygiene-facing API + 持久层(promote_one / supersede_one / ...)
+├── spread.py            联想扩散 — 时序邻居 + 诞生链 depth=2 BFS
+├── scene_weights.py     场景意图过滤 — chat/deep_work/self_review/balanced
+└── attention_cache.py   运行时短期注意力 cache (进程级, 不入 chunks 持久层)
 ```
+
+---
+
+## 附录 B：全体系审计发现与修复（2026-07-17）
+
+> 本节记录 feature 002 完整落地后做的一次穿透审计的发现，以及对应修复。
+> 设计原则与实现的偏差记录在此，方便未来读者理解"为什么 chunks 表的某些列填得不完整"。
+
+### B.1 已修复（commit 链）
+
+| # | 问题 | 修复 | commit |
+|---|---|---|---|
+| P0-1 | 4 处 conversation INSERT 只写 6 列 → session_id 100% 空 | 全部改 9 列 INSERT | 5629bbfc |
+| P0-2 | backfill 只看 phase="" → rules authority 一直 0.5 | 改 WHERE 看 authority 偏差 >0.15 也重刷 + scheduler tick 启动时跑一次 | 5629bbfc |
+| P1-3 | entity_links 填充率 1% → 导航骨架形同虚设 | conversation INSERT 写 entity_links + backfill_entity_links(import 实体名) | 00459cb1 |
+| scene | precision 0.503 仍低 | scene_weights 4 场景按 query 切换 weight profile → 0.662 | 9b8f36dd |
+| activation | chunks 表混了运行时/持久 | 搬 attention_cache 进程级 cache | 03dcf4b0 |
+| audit | 大量垃圾(模板/过期)占 62% | memory_audit.py + apply archived 988 条 | 70ea0306 |
+| B 治源 | 新对话继续产 wake_template | _is_noise_content 入口过滤 | 17cc7d33 |
+
+### B.2 已知限制（不在本轮修的）
+
+| # | 问题 | 影响 | 下一步 |
+|---|---|---|---|
+| P1-4 | digest_session cognition_state 混用 NULL/archived | 统计需防御 | 直接 SQL 改 archived→NULL |
+| P2-5 | 历史 1576 行 session_id 未回填 | 旧数据无时序连边 | 回填脚本 from chunk_hash |
+| C 监控 | heartbeat 没有 noise_n | 看不到当前垃圾率 | _unified_layer_stats 加 |
+| eval 重设 | eval 集从 entity_index 自派生 → 清理后 answer 失效 → precision 假低 | 30 case 独立金标集 |
+| 独立 golden eval | 缺素质 | 不依赖 entity_index | 30 条人工标定 |
+
+### B.3 数据完整性校准值（实测 commit 00459cb1 后）
+
+- `entity_links` 填充率 25.5% (真实命中 entity 名, 未命中的是 text 里不含已知实体)
+- `authority` rules=1.0 / lessons=0.8 / knowledge=0.7 / digest_session=0.6 / conversation=0.5
+  跟 data-model.md §相位映射完全对齐
+- `session_id` 对 active 596 切片里 NEW conversation 已写(增量); 历史旧数据 P2-5
+  做批量回填后恢复
+
 

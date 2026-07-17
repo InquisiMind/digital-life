@@ -33,30 +33,58 @@ def _extract_file_ops_from_terminal(command: str) -> List[str]:
       cat > a.md, > a.md, touch a.md, mkdir a, mv b c, cp b c,
       echo ... > a.md, tee a.md, curl -o / mv -O / wget -O,
       sed -i, rsync ... dst/
+
+    严格过滤避免误抓:
+      - 跳过 /dev/null / /dev/stderr / /dev/stdout (重定向噪音)
+      - 跳过纯数字/日期(2>/dev/null 的 stderr 重定向、sed 替换内容里的数字)
+      - 跳过 heredoc EOF 标记
+      - 跳过 .bak / .tmp 这种临时文件(噪音太多)
     """
     ops = []
     cmd = command.strip()
-    # 限定只看 "命令前缀" 决定模式, 避免把 git log | grep '>abc' 这类误抓
-    # cat > / >> /  <<EOF
-    for m in re.finditer(r'(?:>>?|\bc cat\b)\s*([^\s|;&]+)', cmd[:300]):
+    JUNK = {"/dev/null", "/dev/stderr", "/dev/stdout", "EOF", "&1", "2"}
+
+    def _is_real_path(p: str) -> bool:
+        p = p.strip().strip('"\'')
+        if not p or p in JUNK:
+            return False
+        # 跳纯数字 / 时间戳(sed 替换里的 2%, 2026-07-17 之类)
+        if re.fullmatch(r"[\d.:/-]+", p):
+            return False
+        # 跳相对编码 stderr 重定向  "2", "1", "2>&1"
+        if re.fullmatch(r"[12]>&?[12]?", p):
+            return False
+        # 必须看起来像 path: 含 / 或 .ext 或 至少不是 single token
+        return "/" in p or re.search(r"\.[a-zA-Z]{1,5}$", p)
+
+    # cat > / >> /  <<EOF  (这个匹配要排除 sed -i 's/.../.../' 的 > 形式)
+    # 只匹配 cat > 或 直接的 cmd > 或 cat >> (.md 等 path)
+    for m in re.finditer(r'(?:\bcat\b\s+)?>>?\s*([^\s|;&<]+)', cmd[:500]):
         p = m.group(1).strip().strip('"\'')
-        if p and p not in ('EOF', '&1', '2', '1'):
+        if _is_real_path(p):
             ops.append(p)
     # touch
     for m in re.finditer(r'\btouch\s+([^\s|;&]+)', cmd):
-        ops.append(m.group(1).strip().strip('"\''))
+        if _is_real_path(m.group(1)):
+            ops.append(m.group(1).strip().strip('"\''))
     # mkdir
     for m in re.finditer(r'\bmkdir\s+(?:-p\s+)?([^\s|;&]+)', cmd):
-        ops.append(m.group(1).strip().strip('"\'') + '/(dir)')
+        if _is_real_path(m.group(1)):
+            ops.append(m.group(1).strip().strip('"\'') + '/(dir)')
     # mv / cp with destination
-    for m in re.finditer(r'\b(?:mv|cp)\s+(?:-[rfv]+\s+)?([^\s|;&]+)\s+([^\s|;&]+)', cmd):
-        ops.append(f"{m.group(1)} → {m.group(2)}")
+    for m in re.finditer(r'\b(?:mv|cp)\s+(?:-[rfv]+\s+)?(\S+)\s+(\S+)', cmd):
+        src = m.group(1).strip()
+        dst = m.group(2).strip().strip('"\'')
+        if _is_real_path(src) or _is_real_path(dst):
+            ops.append(f"{src} → {dst}")
     # tee
     for m in re.finditer(r'\btee\s+(?:-[a]\s+)?([^\s|;&]+)', cmd):
-        ops.append(m.group(1).strip().strip('"\''))
-    # curl/wget -O
-    for m in re.finditer(r'\b(?:curl|wget)\s+.*?-O\s+([^\s|;&]+)', cmd):
-        ops.append(m.group(1).strip().strip('"\''))
+        if _is_real_path(m.group(1)):
+            ops.append(m.group(1).strip().strip('"\''))
+    # curl/wget -O (避开 -O0 / -O3 这种 gcc 选项)
+    for m in re.finditer(r'(?:curl|wget)[^\n]*?(?:-o|-O)\s+([^\s|;&]+)', cmd):
+        if _is_real_path(m.group(1)):
+            ops.append(m.group(1).strip().strip('"\''))
     # 截断长路径最后两段
     cleaned = []
     for p in ops:

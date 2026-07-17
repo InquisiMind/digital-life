@@ -2223,22 +2223,20 @@ def _summarize_current_session_outputs() -> str:
         if not session_id:
             return ""
         # 从 session_db 拿当前 session 所有 tool_calls
-        from domain.lifecycle.session_db import get_session_db
-        session_db = get_session_db()
-        if session_db is None:
-            return ""
-        rows = session_db._conn.execute(
-            "SELECT tool_calls FROM messages WHERE session_id=? AND tool_calls IS NOT NULL AND tool_calls != ''",
-            (session_id,),
-        ).fetchall()
-        # 产出类关键词
+        from infrastructure.ai.session_db import SessionDB
+        session_db = SessionDB()
+        messages = session_db.get_messages(session_id)
+        # 产出类关键词(与 digest 抓产出对齐)
         OUTPUT_PREFIXES = ("写文件: ", "沉淀 ", "形成认知", "取代认知", "修订认知",
                            "更新规则: ", "更新自我认知: ", "注册 ", "登记附件: ",
                            "完成任务: ", "创建待办: ", "日记: ")
         outputs: list[str] = []
-        for r in rows:
+        for m in messages:
+            tc = m.get("tool_calls")
+            if not tc:
+                continue
             try:
-                calls = json.loads(r["tool_calls"])
+                calls = tc if isinstance(tc, list) else json.loads(tc or "[]")
             except Exception:
                 continue
             for call in calls:
@@ -2258,7 +2256,6 @@ def _summarize_current_session_outputs() -> str:
         if not outputs:
             return ""
         if len(outputs) > 6:
-            # 太多 → 折叠
             head = "; ".join(outputs[:5])
             return f"{len(outputs)} 项 — {head} 等"
         return "; ".join(outputs)

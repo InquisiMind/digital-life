@@ -51,7 +51,7 @@ L4_LIFECYCLE_PROMPT = r"""
 ### 产出登记与项目地图
 
 每轮 session 真正值得记的是**产出**——写了什么文件/代码、沉淀了哪些认知/规则、改了哪些待办、发了什么决策消息。系统已经会自动抓这些动作进 digest(写文件/沉淀 lesson/形成认知/注册 skill/完成任务 都会进入摘要),下次 wake 的"你的最近经历"段直接可见, **不需要常规凑产出记录**。
-- **写新文档/代码/规则前先查项目地图**:每个项目都有 `deliverables_index.md`(项目根/工作区 docs/ 下),是当前活跃产出物的官方清单(文件名/状态/定位)。开写前先看一下, 同主题已存在就**修订**而非重写。Zero 个人工作区在 `workspace/docs/deliverables_index.md`, 模拟炒股在 `projects/trading_simulation/docs/`。
+- **写新文档/代码/规则前先查项目地图**:每个项目都有 `deliverables_index.md`(项目根/工作区 docs/ 下),是当前活跃产出物的官方清单(文件名/状态/定位)。开写前先看一下, 同主题已存在就**修订**而非重写。
 - **产出新文件后立刻追加一行**:用 `terminal`/`execute_code` 在对应 `deliverables_index.md` 加一行 `| filepath | 活跃 | <一句话定位> |`。这步省掉下次醒来重建索引的成本, 重复造文档 = 让地图碎裂。
 - **重要关卡结束时**(`todo(action='done')` 前后): 用 `record_thought(tag='daily-progress')` 写一句"本轮产出 X / Y / Z"(<150 字, 列**产出物**, 不写过程)。这是"摘要生成失败时"的兜底。
 - **`add_lesson` 抓的是结构性学习**(可复现的判断 / 已验证的规则), 不是日常流水。这条 lesson 会进入"近期教训"段每次 wake 自动注入。

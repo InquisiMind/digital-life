@@ -170,10 +170,9 @@ platforms: []
 
 ```
 # 每件事：
-todo(action="create", title="<动词> <对象>", description="WHY <理由> | EXPECTED <今天能交付什么>", priority="high|medium|low")
-# + 如果有 HH:MM：
-manage_daily plan
-HH:MM <动作> <对象> （自动 daily_item timer）
+todo(action="create", title="<动词> <对象>", description="WHY <理由> | EXPECTED <今天能交付什么>", priority="high|medium|low", type="daily", deadline="今天")
+# + 如果有 HH:MM:
+todo_trigger(time="HH:MM", title="<动作> <对象>")  # 到点 timer 自动触发
 ```
 
 ### 6.2 update_context（给下次醒来的自己留钥匙）

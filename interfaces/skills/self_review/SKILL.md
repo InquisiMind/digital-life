@@ -29,7 +29,7 @@ platforms: []
 |---|---|
 | `sense_insights days_back=1` | 今天所有 idea / doubt / block / warning—— **按 kind 分组** |
 | `sense_memory topic=diary days_back=0` | 今天日记（如果还没写，先 `write_diary` 一段） |
-| `sense_daily` | 今日计划完成率 |
+| `sense_todos type=daily` | 今日计划完成率 |
 | `sense_self` | session 摘要里的 end_reason：completed / timeout / blocked / 0-message |
 | `sense_todos` | 待办状态变化：今天哪些 in_progress→done？哪些 in_progress→还卡着？ |
 

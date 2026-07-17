@@ -1,4 +1,10 @@
-"""Digital Life toolset definitions."""
+"""Digital Life toolset definitions.
+
+注: 2026-07-17 工具治理后以下工具已退役(handler 保留, schema 不再注入):
+  sense_work / sense_goals / sense_plans / sense_daily
+  manage_work / manage_goals / manage_plan / manage_daily / remember_him
+迁移目标见 commit 注释。这些列表不应再列已退役工具。
+"""
 
 from __future__ import annotations
 
@@ -14,13 +20,11 @@ CORE_TOOLS = [
     "sense_nurture_log",
     "sense_scratchpad",
     "sense_todos",
-    "sense_daily",
     "skills_list",
     "skill_view",
     "express_to_human",
     "write_diary",
     "record_thought",
-    "remember_him",
     "update_scratchpad",
     "todo",
     "todo_note",
@@ -44,7 +48,6 @@ TOOLSETS = {
             "sense_nurture_log",
             "sense_scratchpad",
             "sense_todos",
-            "sense_daily",
             "sense_contacts",
             "skills_list",
             "skill_view",
@@ -58,9 +61,7 @@ TOOLSETS = {
             "express_to_human",
             "write_diary",
             "record_thought",
-            "remember_him",
             "update_scratchpad",
-            "manage_daily",
             "rest",
             "terminal",
             "execute_code",

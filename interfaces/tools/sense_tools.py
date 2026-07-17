@@ -603,19 +603,6 @@ def _handle_sense_work(args: Dict[str, Any], **_) -> str:
     return _j({"work": "（待办看板为空）", "_note": "此工具已统一为 sense_todos，请改用 sense_todos"})
 
 
-registry.register(
-    name="sense_work",
-    toolset="senses",
-    schema={
-        "name": "sense_work",
-        "description": "[兼容] 查看待办看板。已统一为 sense_todos，推荐直接用 sense_todos。",
-        "parameters": {"type": "object", "properties": {}},
-    },
-    handler=_handle_sense_work,
-    check_fn=lambda: True,
-    emoji="📝",
-)
-
 
 # ──────────────────────────────── sense_my_projects ────────────────────────────────
 
@@ -681,21 +668,13 @@ registry.register(
 # ──────────────────────────────── sense_goals ────────────────────────────────
 
 def _handle_sense_goals(args: Dict[str, Any], **_) -> str:
+    """[退役中] 查看目标列表。原读 GOALS.md, 现转发到 tasks 表 type='goal'。"""
     _burn()
-    return _j({"goals": read_goals()})
+    from domain.todos.crud import list_tasks
+    goals = [t for t in list_tasks() if t.get("type") == "goal"]
+    return _j({"goals": goals, "count": len(goals),
+               "_deprecated_hint": "sense_goals 已退役, 改用 sense_todos(type='goal') 或 sense_todos 看全部。"})
 
-
-registry.register(
-    name="sense_goals",
-    toolset="senses",
-    schema={
-        "name": "sense_goals",
-        "description": "看看你的目标列表——你在追求什么，有什么想达成的。",
-        "parameters": {"type": "object", "properties": {}},    },
-    handler=_handle_sense_goals,
-    check_fn=lambda: True,
-    emoji="🎯",
-)
 
 
 # ──────────────────────────────── sense_contacts ────────────────────────────────
@@ -764,15 +743,56 @@ registry.register(
 # ──────────────────────────────── sense_daily ────────────────────────────────
 
 def _handle_sense_daily(args: Dict[str, Any], **_) -> str:
+    """[退役中] 查看每日计划。原读 DAILY.md + timers, 现统一从 tasks 表 type='daily' 读。
+
+    HH:MM 部分一直走 timer 闹钟(sense_schedule 已覆盖); 这里只回当日文字任务。
+    """
     _burn()
     days_back = int(args.get("days_back") or 0)
-    daily_text = read_daily(days_back=days_back)
-    # 今天的时间表：查 manage_daily 注册的 timer 闹钟(仅 days_back=0 时)
+    from datetime import datetime as _dt, timedelta as _td
+
+    # 计算当天(支持 days_back = 历史日)
+    from domain.lifecycle.clock import now_iso
+    today_str = _dt.fromisoformat(now_iso()).date() - _td(days=days_back)
+    target_date = today_str.isoformat()
+
+    text_lines = []
+    pending_count = 0
+    done_count = 0
+    try:
+        from domain.todos.crud import list_tasks
+        items = [t for t in list_tasks()
+                 if t.get("type") == "daily" and (t.get("deadline") or "") == target_date]
+        # 按状态聚合
+        for t in items:
+            tag = "✓" if t.get("status") == "done" else " "
+            text_lines.append(f"  [{tag}] {t.get('title')}")
+            if t.get("status") == "done":
+                done_count += 1
+            else:
+                pending_count += 1
+    except Exception:
+        pass
+
+    daily_text = ""
+    if text_lines:
+        daily_text = (f"## {target_date}\n"
+                      f"  待办 {pending_count} / 完成 {done_count}\n" + "\n".join(text_lines))
+
+    # 兼容旧路径:若 tasks 表无数据,尝试回退 read_daily(迁移期间双源)
+    if not text_lines:
+        try:
+            legacy = read_daily(days_back=days_back)
+            if legacy:
+                daily_text = legacy
+        except Exception:
+            pass
+
+    # 今天的时间表:timer 闹钟(仅 days_back=0 时)
     timer_info = ""
     if days_back == 0:
         try:
             from domain.lifecycle.alarms import list_pending_alarms
-            from datetime import datetime as _dt
 
             timers = list_pending_alarms(kind="timer")
             if timers:
@@ -783,8 +803,6 @@ def _handle_sense_daily(args: Dict[str, Any], **_) -> str:
                     try:
                         import json
                         payload = json.loads(row.get("payload_json", "{}"))
-                        # plan 项的 reason 形如 "📋 检查候选池", source='manage_daily' 标记来源
-                        # 其他 timer 还有 rest 注册的, 这里都列入 schedule 即可
                         reason = payload.get("reason", "")
                     except Exception:
                         pass
@@ -800,26 +818,10 @@ def _handle_sense_daily(args: Dict[str, Any], **_) -> str:
                     timer_info = "\n\n今日时间表（{}项）：\n".format(len(lines)) + "\n".join(lines)
         except Exception:
             pass
-    return _j({"daily": daily_text + timer_info, "days_back": days_back})
+    return _j({"daily": daily_text + timer_info, "days_back": days_back,
+               "_deprecated_hint": "sense_daily 已退役, 文字任务改用 sense_todos(type='daily'), "
+                                   "时间表改用 sense_schedule。"})
 
-
-registry.register(
-    name="sense_daily",
-    toolset="senses",
-    schema={
-        "name": "sense_daily",
-        "description": "看看每日计划——今天或过去某天打算做什么。days_back=0 今天，days_back=1 昨天。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "days_back": {"type": "integer", "description": "读几天前的计划。0=今天，1=昨天。默认 0"},
-            },
-        },
-    },
-    handler=_handle_sense_daily,
-    check_fn=lambda: True,
-    emoji="📅",
-)
 
 
 # ──────────────────────────────── sense_nurture_log ────────────────────────────────
@@ -888,22 +890,27 @@ registry.register(
 # ──────────────────────────────── sense_plans ────────────────────────────────
 
 def _handle_sense_plans(args: Dict[str, Any], **_) -> str:
+    """[退役中] 查看长期计划与里程碑。
+
+    原读 PLANS.md, 现从 tasks 表 type='goal' 查找, 每条带 todo_plans 里程碑列表。
+    """
     _burn()
-    return _j({"plans": read_plans()})
+    from domain.todos.crud import list_tasks, list_plans
+    plans_out = []
+    for t in list_tasks():
+        if t.get("type") != "goal":
+            continue
+        milestones = list_plans(t["id"])
+        plans_out.append({
+            "goal_id": t["id"],
+            "goal_title": t.get("title") or "",
+            "goal_status": t.get("status") or "",
+            "milestones": milestones,
+        })
+    return _j({"plans": plans_out,
+               "_deprecated_hint": "sense_plans 已退役, 改用 sense_todos(type='goal') "
+                                   "+ todo_plan(action='list') 查看里程碑。"})
 
-
-registry.register(
-    name="sense_plans",
-    toolset="senses",
-    schema={
-        "name": "sense_plans",
-        "description": "查看长期计划与里程碑——你在追求什么长远目标。",
-        "parameters": {"type": "object", "properties": {}},
-    },
-    handler=_handle_sense_plans,
-    check_fn=lambda: True,
-    emoji="📐",
-)
 
 
 # ──────────────────────────────── sense_context ────────────────────────────────
@@ -1515,3 +1522,41 @@ registry.register(
 
 
 __all__ = []
+
+
+# ──────────────────────────────── 退役工具(handler-only, schema 不暴露) ────────────────────────────────
+# 同 action_tools.py 末尾的退役注册: 历史 tool_call 重放仍可 dispatch, 但 schema 不进 system prompt。
+# 退役时间: 2026-07-17
+
+def _register_retired_handlers() -> None:
+    registry.register_handler_only(
+        name="sense_work",
+        toolset="senses",
+        handler=_handle_sense_work,
+        description="[retired] → sense_todos",
+        emoji="📝",
+    )
+    registry.register_handler_only(
+        name="sense_goals",
+        toolset="senses",
+        handler=_handle_sense_goals,
+        description="[retired] → sense_todos(type='goal')",
+        emoji="🎯",
+    )
+    registry.register_handler_only(
+        name="sense_plans",
+        toolset="senses",
+        handler=_handle_sense_plans,
+        description="[retired] → sense_todos(type='goal') + todo_plan(action='list')",
+        emoji="📐",
+    )
+    registry.register_handler_only(
+        name="sense_daily",
+        toolset="senses",
+        handler=_handle_sense_daily,
+        description="[retired] → sense_todos(type='daily') + sense_schedule",
+        emoji="📅",
+    )
+
+
+_register_retired_handlers()

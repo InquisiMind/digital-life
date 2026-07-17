@@ -81,7 +81,7 @@ platforms: []
 
 ## 反模式（自己识别）
 
-- "我先 sense 一下"型：每次 wake 都调一堆 sense（`sense_todos` + `sense_daily` + `sense_scratchpad` + `recall_memory`），5 turn 走完还没动。**待办看板和近期经历已经注入了，不要重复拉。**
+- "我先 sense 一下"型：每次 wake 都调一堆 sense（`sense_todos` + `sense_scratchpad` + `recall_memory`），5 turn 走完还没动。**待办看板和近期经历已经注入了，不要重复拉。**
 - "重新建待办"型：in_progress 还在跑却新建一个类似的——浪费看板
 - "打算做完"型：脑子里同时跑多个步骤，结果用 5 个 tool_calls 描述未来 3 步——一个都落地不了
 - "探索即拖延"型：发现一个新方向就立刻去做，原待办被搁置——记录给晚上决定

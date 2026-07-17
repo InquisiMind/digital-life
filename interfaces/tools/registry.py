@@ -38,6 +38,13 @@ class ToolEntry:
     emoji: str = ""
     max_result_size_chars: int | float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    schema_visible: bool = True
+    """schema_visible=False 的工具仍可被 dispatch(历史 tool_call 重放可用),
+    但不出现在 get_definitions() 输出里(不进 system prompt 的 tools 数组)。
+
+    用于"退役工具向新家转发"过渡期——模型看不到 schema 自然不会主动调,
+    但旧 session 的历史 tool_call 重放 / 模型偶尔幻觉调用时,handler 仍工作。
+    """
 
 
 class ToolRegistry:
@@ -59,6 +66,7 @@ class ToolRegistry:
         description: str = "",
         emoji: str = "",
         max_result_size_chars: int | float | None = None,
+        schema_visible: bool = True,
         **metadata: Any,
     ) -> None:
         self._tools[name] = ToolEntry(
@@ -73,9 +81,37 @@ class ToolRegistry:
             emoji=emoji,
             max_result_size_chars=max_result_size_chars,
             metadata=dict(metadata),
+            schema_visible=schema_visible,
         )
         if check_fn and toolset not in self._toolset_checks:
             self._toolset_checks[toolset] = check_fn
+
+    def register_handler_only(
+        self,
+        name: str,
+        toolset: str,
+        handler: Callable[..., Any],
+        *,
+        description: str = "",
+        emoji: str = "",
+    ) -> None:
+        """注册一个"退役中"工具——只挂 handler,不暴露 schema。
+
+        场景:旧 tool_calls 重放 / 模型幻觉调用时仍可 dispatch(返回 _deprecated_hint),
+        但 system_prompt 的 tools 数组不再包含它。
+
+        schema 字段给一个 stub(只为 ToolEntry frozen 字段必填),不会被 get_definitions 取用。
+        """
+        self.register(
+            name=name,
+            toolset=toolset,
+            schema={"name": name, "description": description or "[retired]"},
+            handler=handler,
+            check_fn=lambda: True,
+            description=description,
+            emoji=emoji,
+            schema_visible=False,
+        )
 
     def deregister(self, name: str) -> None:
         entry = self._tools.pop(name, None)
@@ -87,7 +123,14 @@ class ToolRegistry:
     def dispatch(self, name: str, args: dict[str, Any] | None = None, **kwargs: Any) -> str:
         entry = self._tools.get(name)
         if not entry:
-            return tool_error(f"Unknown tool: {name}")
+            return tool_error(f"Unknown tool: {name}",
+                              retired=False,
+                              hint="此工具从未注册或被硬删除。请检查 tools 列表。")
+        # 退役中工具 (schema_visible=False) 仍可 dispatch,但结果附 "_deprecated" 提示,
+        # 让模型在下一轮自然改用新家。
+        deprecated_prefix = ""
+        if not entry.schema_visible:
+            deprecated_prefix = "[retired] "
         try:
             payload = args or {}
             if entry.is_async:
@@ -101,22 +144,29 @@ class ToolRegistry:
             if not isinstance(result, str):
                 result = json.dumps(result, ensure_ascii=False, default=str)
             limit = entry.max_result_size_chars or DEFAULT_RESULT_SIZE_LIMIT
-            return truncate_result(result, limit)
+            return deprecated_prefix + truncate_result(result, limit)
         except Exception as exc:
             logger.exception("Tool %s dispatch error: %s", name, exc)
-            return tool_error(f"Tool execution failed: {type(exc).__name__}: {exc}")
+            return tool_error(f"{deprecated_prefix}Tool execution failed: {type(exc).__name__}: {exc}")
 
     def get_definitions(self, tool_names: set[str], quiet: bool = False) -> list[dict[str, Any]]:
         definitions: list[dict[str, Any]] = []
         for name in sorted(tool_names):
             entry = self._tools.get(name)
-            if not entry or not self._entry_available(entry, quiet=quiet):
+            # schema_visible=False 的工具(router 标 退役中)不进 system prompt
+            if not entry or not entry.schema_visible:
+                continue
+            if not self._entry_available(entry, quiet=quiet):
                 continue
             definitions.append({"type": "function", "function": dict(entry.schema)})
         return definitions
 
-    def get_all_tool_names(self) -> list[str]:
-        return sorted(self._tools)
+    def get_all_tool_names(self, *, include_retired: bool = False) -> list[str]:
+        """返回所有工具名。include_retired=True 时也包含 schema_visible=False 的(默认不包含)。"""
+        return sorted(
+            name for name, e in self._tools.items()
+            if include_retired or e.schema_visible
+        )
 
     def get_schema(self, name: str) -> dict[str, Any] | None:
         entry = self._tools.get(name)

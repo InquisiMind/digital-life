@@ -48,25 +48,10 @@ def summarize_tool_call(name: str, args: Dict[str, Any]) -> str:
     if name == "update_scratchpad":
         return "更新笔记"
 
-    if name == "manage_goals":
-        return f"目标{args.get('action', '')}: {args.get('text', '')[:40]}"
-
-    if name == "manage_daily":
-        action = args.get("action", "")
-        if action == "plan":
-            items = args.get("text", "").split("\n")
-            return f"规划今日({len(items)}项)"
-        if action == "complete":
-            return f"完成任务: {args.get('text', '')[:40]}"
-        if action == "add":
-            return f"追加任务: {args.get('text', '')[:40]}"
-        return f"每日计划{action}"
-
-    if name == "manage_plan":
-        return f"计划{args.get('action', '')}: {args.get('goal', '')[:30]}"
-
-    if name == "manage_work":
-        return f"工作{args.get('action', '')}: {args.get('text', '')[:30]}"
+    # 注:manage_goals/manage_plan/manage_daily/manage_work/sense_* 等
+    # 工具已于 2026-07-17 退役(handler 保留可 dispatch, schema 不再注入)。
+    # 这里删除它们的历史 summary 分支, 让它们走通用 fallback——避免后人误以为还在用。
+    # 退役工具的 args 多含 _deprecated_hint,自然在通用字符截断里投机出现。
 
     return f"工具: {name}"
 

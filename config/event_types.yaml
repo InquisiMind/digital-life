@@ -329,7 +329,7 @@ event_types:
       - sense_my_projects
       - sense_todos
       - sense_insights
-      - sense_daily
+      - sense_todos
       - sense_scratchpad
       - sense_lessons
       - sense_context
@@ -340,8 +340,6 @@ event_types:
       - todo
       - todo_note
       - todo_plan
-      - manage_plan
-      - manage_daily
       - add_lesson
       - skill_view
       - rest
@@ -375,7 +373,7 @@ event_types:
     wake_prompt: "{prompt}"
     allowed_tools:
       - sense_self_knowledge
-      - sense_daily
+      - sense_todos
       - sense_scratchpad
       - update_rules
       - write_diary
@@ -402,12 +400,12 @@ event_types:
     debounce_window_s: 0
     merge_policy: latest
     consumption_policy: on_detail
-    wake_prompt: "🌅 第一次醒来。\n\n`sense_self_knowledge` 回忆自己是谁 → `sense_goals` 看长期目标。都了解完后，开始你的新生活。"
+    wake_prompt: "🌅 第一次醒来。\n\n`sense_self_knowledge` 回忆自己是谁 → `sense_todos` 看待办和长期目标。都了解完后，开始你的新生活。"
     allowed_tools:
       - sense_time
       - sense_vitals
       - sense_self_knowledge
-      - sense_goals
+      - sense_todos
       - write_diary
       - rest
     context_policy:
@@ -425,13 +423,13 @@ event_types:
   timer:
     display_name: 闹钟/定时器
     trigger_type: time
-    trigger_description: 任意来源的到点提醒——rest() 设的闹钟、UNTIL 计时器结束、manage_daily plan 里的带时间计划项,统一走这一类
+    trigger_description: 任意来源的到点提醒——rest() 设的闹钟、UNTIL 计时器结束、今日计划里的带时间计划项,统一走这一类
     priority: 5
     payload_schema:
       reason: string?
       mental_context: string?
       updated_mode: string?
-      source: string?           # 来源标记(rest / manage_daily / 其他),不区分事件类型
+      source: string?           # 来源标记(rest / 今日计划 / 其他),不区分事件类型
     description: 所有"到点了告诉你去做某事"的提醒统一走 timer
     debounce_window_s: 0
     merge_policy: latest

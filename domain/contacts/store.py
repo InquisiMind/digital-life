@@ -1,7 +1,9 @@
 """Contacts storage — 用户为单位的多平台 ID 映射 + 黑名单。
 
 Schema:
-  contacts(id PK, name, notes, blocked, block_reason, updated_at)
+  contacts(id PK, name, notes, about, kind, blocked, block_reason, updated_at)
+    -- notes: 短备注；about: 自由文本画像（替代已退役的 HIM.md）
+    -- kind: 'human' / 'bot' / 'system'
   contact_ids(contact_id, platform, platform_id, PRIMARY KEY(compound))
     -- platform: 'feishu' / 'dingtalk' / 'wechat' / ...
     -- platform_id: 该平台下的 user identifier
@@ -44,6 +46,7 @@ def ensure_schema() -> None:
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL DEFAULT '',
                 notes TEXT DEFAULT '',
+                about TEXT DEFAULT '',
                 kind TEXT NOT NULL DEFAULT 'human',
                 blocked INTEGER NOT NULL DEFAULT 0,
                 block_reason TEXT DEFAULT '',
@@ -51,6 +54,14 @@ def ensure_schema() -> None:
             )
             """
         )
+        # 兼容旧 DB:若 contacts 表无 about 列(remember_him 退役前), ADD COLUMN。
+        # about 替代 HIM.md 自由文本画像;非破坏性迁移,老 rows 默认空串。
+        try:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(contacts)").fetchall()]
+            if cols and "about" not in cols:
+                conn.execute("ALTER TABLE contacts ADD COLUMN about TEXT DEFAULT ''")
+        except sqlite3.Error:
+            pass
         # 若列 DEFAULT 是历史 naive localtime 值，全表回填一次 + 切到应用层主动写入。
         # 保持表结构兼容（无需 ALTER DEFAULT），所有 INSERT/UPDATE 在应用层显式传入 clock.now_iso()。
         # 兜底：存量列 DEFAULT 失效时，确保未传入的 INSERT 行也能拿到 UTC ISO（用 AFTER INSERT 触发器代价大，未启用）。
@@ -99,6 +110,7 @@ def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL DEFAULT '',
             notes TEXT DEFAULT '',
+            about TEXT DEFAULT '',
             blocked INTEGER NOT NULL DEFAULT 0,
             block_reason TEXT DEFAULT '',
             updated_at TEXT DEFAULT ''
@@ -174,7 +186,7 @@ def list_contacts(*, include_blocked: bool = True) -> list[dict]:
         conn = sqlite3.connect(str(_state_db_path()))
         conn.row_factory = sqlite3.Row
         try:
-            sql = "SELECT id, name, notes, kind, blocked, block_reason, updated_at FROM contacts"
+            sql = "SELECT id, name, notes, about, kind, blocked, block_reason, updated_at FROM contacts"
             if not include_blocked:
                 sql += " WHERE blocked = 0"
             sql += " ORDER BY name"
@@ -195,7 +207,7 @@ def get_contact(contact_id: str) -> dict | None:
         conn.row_factory = sqlite3.Row
         try:
             row = conn.execute(
-                "SELECT id, name, notes, kind, blocked, block_reason, updated_at FROM contacts WHERE id = ?",
+                "SELECT id, name, notes, about, kind, blocked, block_reason, updated_at FROM contacts WHERE id = ?",
                 (contact_id,),
             ).fetchone()
             if not row:
@@ -214,6 +226,7 @@ def create_contact(
     *,
     name: str,
     notes: str = "",
+    about: str = "",
     kind: str = "human",
     platform_ids: list[dict] | None = None,
 ) -> dict:
@@ -223,6 +236,8 @@ def create_contact(
       - human:  真人用户（默认）
       - bot:    其他实例/机器人（用于 mention auto-detect）
       - system: 系统通知账号
+
+    about: 自由文本画像（替代已退役的 HIM.md）；notes 是短备注，about 是长画像。
 
     跨平台合并：若某个 platform_id 已绑给 stub（name 空），自动合并进新 contact。
     """
@@ -235,8 +250,8 @@ def create_contact(
     try:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
-            "INSERT INTO contacts (id, name, notes, kind, updated_at) VALUES (?, ?, ?, ?, ?)",
-            (cid, name, notes, kind, _now_iso()),
+            "INSERT INTO contacts (id, name, notes, about, kind, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (cid, name, notes, about, kind, _now_iso()),
         )
         for pid in platform_ids or []:
             p = (pid.get("platform") or "").strip()
@@ -272,7 +287,7 @@ def create_contact(
         logger.warning("create_contact failed: %s", exc)
     finally:
         conn.close()
-    result = get_contact(cid) or {"id": cid, "name": name, "notes": notes, "platform_ids": []}
+    result = get_contact(cid) or {"id": cid, "name": name, "notes": notes, "about": about, "platform_ids": []}
 
     # 自动注册联系人到 entity_index——让联想召回能命中
     try:
@@ -299,10 +314,12 @@ def create_contact(
 
 
 def update_contact(contact_id: str, *, name: str | None = None, notes: str | None = None,
+                   about: str | None = None,
                    kind: str | None = None,
                    platform_ids: list[dict] | None = None) -> dict | None:
     """更新 contact 字段。platform_ids 给定时**整体替换**该 contact 的所有 platform_id。
 
+    about: 自由文本画像(替代 HIM.md)。传 None 不动;传空串/非空都按字面更新。
     kind ∈ {"human", "bot", "system"}，可选。
 
     跨平台合并语义：若新 platform_id 已绑给其他 contact（且对方是 stub —— name 空 + 单 ID），
@@ -327,6 +344,9 @@ def update_contact(contact_id: str, *, name: str | None = None, notes: str | Non
         if notes is not None:
             sets.append("notes = ?")
             args.append(notes)
+        if about is not None:
+            sets.append("about = ?")
+            args.append(about)
         if kind is not None:
             sets.append("kind = ?")
             args.append(kind)
@@ -544,7 +564,7 @@ def get_or_create_stub(platform: str, platform_id: str, *, kind: str = "human") 
         ).fetchone()
         if row:
             contact_row = conn.execute(
-                "SELECT id, name, notes, kind, blocked, block_reason, updated_at FROM contacts WHERE id = ?",
+                "SELECT id, name, notes, about, kind, blocked, block_reason, updated_at FROM contacts WHERE id = ?",
                 (row[0],),
             ).fetchone()
             # 升级 kind：旧 human → bot/system。已为 bot/system 不降级回 human。
@@ -614,7 +634,7 @@ def _lookup_contact(platform: str, platform_id: str) -> dict | None:
         conn.row_factory = sqlite3.Row
         try:
             row = conn.execute(
-                "SELECT c.id, c.name, c.notes, c.kind, c.blocked, c.block_reason, c.updated_at "
+                "SELECT c.id, c.name, c.notes, c.about, c.kind, c.blocked, c.block_reason, c.updated_at "
                 "FROM contacts c JOIN contact_ids i ON c.id = i.contact_id "
                 "WHERE i.platform = ? AND i.platform_id = ?",
                 (platform, platform_id),

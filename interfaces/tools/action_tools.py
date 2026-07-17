@@ -1295,29 +1295,50 @@ registry.register(
 # ──────────────────────────────── remember_him ────────────────────────────────
 
 def _handle_remember_him(args: Dict[str, Any], **_) -> str:
+    """[退役中] 记录对主用户/重要联系人的观察。
+
+    原写 HIM.md。HIM.md 已迁移到 contacts.about 字段(自由文本画像)。
+    此 handler 保留作为兼容入口——历史 session 的 tool_call 重放仍可用,
+    但 schema 不再注入(prompt 里看不到), 注释里明确指向推荐路径:
+    用 set_entity_profile 或 record_thought,画像信息走 contacts。
+    """
     text = (args.get("text") or "").strip()
     if not text:
         return registry.tool_error("text is required")
-    _him(text)
-    return _j({"ok": True, "note": "关于他的观察已记下。"})
+    # 找主 contact(优先 zhp/张浩普/蓝先生 关键字, fallback 第一个 human + platform_id)
+    from domain.contacts.store import list_contacts, update_contact
+    KEYWORDS = ("zhp", "zhanghaopu", "张浩普", "蓝先生", "zhang", "haopu")
+    primary = None
+    for c in list_contacts(include_blocked=False):
+        n = (c.get("name") or "").lower()
+        if any(k in n for k in KEYWORDS):
+            primary = c
+            break
+    if primary is None:
+        for c in list_contacts(include_blocked=False):
+            if c.get("kind") == "human" and c.get("platform_ids"):
+                primary = c
+                break
+    if primary is None:
+        # 写入失败兜底:把内容 record_thought(模型仍能在记忆里搜到这次观察)
+        from domain.memory.memory.consciousness.runtime import record_thought as _rt
+        _rt(text, tag="observation")
+        return _j({"ok": True, "_note": "未找到合适的 contact 写入, "
+                    "已先用 record_thought 兜底。建议改用 record_thought 或 set_entity_profile。",
+                    "date": ""})
+    # 追加到 about(若已有内容则加一行)
+    existing = primary.get("about") or ""
+    new_about = (existing + "\n\n" if existing else "") + text
+    update_contact(primary["id"], about=new_about)
+    from domain.lifecycle.clock import now_iso
+    return _j({
+        "ok": True,
+        "note": f"已记录到 contact {primary['id'][:8]} ({primary.get('name')}) 的 about 画像。",
+        "_deprecated_hint": "remember_him 已退役, 改用 set_entity_profile 或 record_thought。"
+                            " 画像自动落 contacts.about。",
+        "date": now_iso(),
+    })
 
-
-registry.register(
-    name="remember_him",
-    toolset="actions",
-    schema={
-        "name": "remember_him",
-        "description": "记录关于用户或重要联系人的观察：习惯、偏好、状态、重要信息。",
-        "parameters": {
-            "type": "object",
-            "properties": {"text": {"type": "string"}},
-            "required": ["text"],
-        },
-    },
-    handler=_handle_remember_him,
-    check_fn=lambda: True,
-    emoji="🌸",
-)
 
 
 # ──────────────────────────────── update_scratchpad ────────────────────────────────
@@ -1432,38 +1453,18 @@ def _handle_manage_work(args: Dict[str, Any], **_) -> str:
                 "_note": f"此工具已统一为 todo(action='{_todo_action_map.get(action)}', todo_id=...)，请改用 todo"})
 
 
-registry.register(
-    name="manage_work",
-    toolset="actions",
-    schema={
-        "name": "manage_work",
-        "description": (
-            "[兼容] 待办看板操作。已统一为 todo 工具，推荐直接用 todo(action='create/list/get/update/start/done/cancel')。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "description": "add | start | complete | remove",
-                    "enum": ["add", "start", "complete", "remove"],
-                },
-                "text": {"type": "string", "description": "待办内容或匹配关键字"},
-                "priority": {"type": "string", "description": "高/中/低，默认中"},
-                "source": {"type": "string", "description": "来源标记，默认用户"},
-            },
-            "required": ["action"],
-        },
-    },
-    handler=_handle_manage_work,
-    check_fn=lambda: True,
-    emoji="📝",
-)
-
 
 # ──────────────────────────────── manage_goals ────────────────────────────────
 
 def _handle_manage_goals(args: Dict[str, Any], **_) -> str:
+    """[退役中] 管理目标列表。原写 GOALS.md, 现转发到 todos 表:type='goal'。
+
+    action 映射:
+      review → sense_todos(type='goal')
+      add    → todo(action='create', type='goal', title=text)
+      complete → todo(action='done')  by 模糊匹配
+      abandon → todo(action='cancel')
+    """
     action = (args.get("action") or "review").strip().lower()
     text = (args.get("text") or "").strip()
     description = (args.get("description") or "").strip()
@@ -1473,46 +1474,53 @@ def _handle_manage_goals(args: Dict[str, Any], **_) -> str:
         return registry.tool_error("action must be add/complete/abandon/review")
 
     snap = vitals.consume_energy(ENERGY_COST_PER_CALL)
-    result = _manage_goal(action, text, description=description, priority=priority)
-    return _j({"ok": True, "result": result, "energy": round(snap.energy, 1)})
+    energy = round(snap.energy, 1)
+    _PRIO = {"高": "high", "中": "medium", "低": "low"}
+    prio = _PRIO.get(priority, "medium")
 
+    from domain.todos.crud import create_task, list_tasks, update_task
 
-registry.register(
-    name="manage_goals",
-    toolset="actions",
-    schema={
-        "name": "manage_goals",
-        "description": (
-            "管理你的目标列表。"
-            "action='add' 新增目标（text=目标名，可选 description 和 priority）；"
-            "action='review' 查看所有目标；"
-            "action='complete' 标记达成；action='abandon' 放弃目标。"
-            "发现新兴趣时设个目标，有大想法时拆成计划。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "description": "add | review | complete | abandon",
-                    "enum": ["add", "review", "complete", "abandon"],
-                },
-                "text": {"type": "string", "description": "目标名称或匹配关键词"},
-                "description": {"type": "string", "description": "目标的详细说明（仅add时用）"},
-                "priority": {"type": "string", "description": "高/中/低，默认中"},
-            },
-            "required": ["action"],
-        },
-    },
-    handler=_handle_manage_goals,
-    check_fn=lambda: True,
-    emoji="🎯",
-)
+    if action == "review":
+        goals = [t for t in list_tasks() if (t.get("type") == "goal")]
+        return _j({"ok": True, "goals": goals,
+                    "_deprecated_hint": "manage_goals 已退役, review 改用 sense_todos(type='goal')",
+                    "energy": energy})
+    if action == "add":
+        if not text:
+            return registry.tool_error("text is required for add")
+        result = create_task(title=text, detail=description, priority=prio,
+                             type="goal", project_id="", status="planned",
+                             source="migrated:GOALS.md")
+        return _j({"ok": result.get("ok", False), "task": result.get("task"),
+                    "todo_id": result.get("task", {}).get("id", ""),
+                    "_deprecated_hint": "manage_goals 已退役, add 改用 todo(action='create', type='goal')",
+                    "energy": energy,
+                    "reason": result.get("reason", "")})
+    # complete / abandon: 模糊匹配 title
+    matching = [t for t in list_tasks()
+                if t.get("type") == "goal" and t.get("status") in ("planned", "in_progress")
+                and text in (t.get("title") or "")]
+    if not matching:
+        return _j({"ok": False, "reason": "未找到匹配的目标", "energy": energy})
+    new_status = "done" if action == "complete" else "cancelled"
+    tid = matching[0]["id"]
+    ok = update_task(tid, status=new_status).get("ok", False)
+    return _j({"ok": ok, "todo_id": tid,
+                "_deprecated_hint": f"manage_goals 已退役, 改用 todo(action='{'done' if action=='complete' else 'cancel'}', todo_id=...)",
+                "energy": energy})
+
 
 
 # ──────────────────────────────── manage_plan ────────────────────────────────
 
 def _handle_manage_plan(args: Dict[str, Any], **_) -> str:
+    """[退役中] 管理计划的里程碑。原写 PLANS.md, 现转发到 todos + todo_plans 表。
+
+    映射:每个 `goal` 对应一个 todo(type='goal'), 里程碑是该 todo 的 plan_item。
+      add_milestone     → 找/建 goal todo, create_plan(task_id, text)
+      complete_milestone → complete_plan(plan_id)
+      remove_milestone  → skip_plan(plan_id)(无硬删, 用 'skipped' 状态)
+    """
     action = (args.get("action") or "").strip().lower()
     goal = (args.get("goal") or "").strip()
     text = (args.get("text") or "").strip()
@@ -1523,38 +1531,52 @@ def _handle_manage_plan(args: Dict[str, Any], **_) -> str:
         return registry.tool_error("goal and text are required")
 
     snap = vitals.consume_energy(ENERGY_COST_PER_CALL)
-    result = _manage_plan(action, goal, text)
-    return _j({"ok": True, "result": result, "energy": round(snap.energy, 1)})
+    energy = round(snap.energy, 1)
 
+    from domain.todos.crud import (list_tasks, create_task, list_plans,
+                                    create_plan, complete_plan, skip_plan)
 
-registry.register(
-    name="manage_plan",
-    toolset="actions",
-    schema={
-        "name": "manage_plan",
-        "description": (
-            "管理长期计划的里程碑。每个目标可以拆成多个里程碑逐步完成。"
-            "action='add_milestone' 添加里程碑；"
-            "action='complete_milestone' 完成；action='remove_milestone' 删除。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "description": "add_milestone | complete_milestone | remove_milestone",
-                    "enum": ["add_milestone", "complete_milestone", "remove_milestone"],
-                },
-                "goal": {"type": "string", "description": "关联的目标名称"},
-                "text": {"type": "string", "description": "里程碑描述"},
-            },
-            "required": ["action", "goal", "text"],
-        },
-    },
-    handler=_handle_manage_plan,
-    check_fn=lambda: True,
-    emoji="📐",
-)
+    # 找该 goal 对应的 task(无则建一个)
+    matching = [t for t in list_tasks()
+                if t.get("type") == "goal" and goal in (t.get("title") or "")]
+    if matching:
+        tid = matching[0]["id"]
+    else:
+        result = create_task(title=goal, type="goal", project_id="",
+                             status="planned", source="migrated:PLANS.md")
+        if not result.get("ok"):
+            return _j({"ok": False, "reason": result.get("reason", ""), "energy": energy})
+        tid = result["task"]["id"]
+
+    if action == "add_milestone":
+        pr = create_plan(tid, text)
+        return _j({"ok": pr.get("ok", False), "task_id": tid,
+                    "plan_id": pr.get("plan_id"),
+                    "_deprecated_hint": "manage_plan 已退役,改用 todo(action='create', type='goal') "
+                                        "建 goal 头 + todo_plan(action='create') 加里程碑",
+                    "energy": energy})
+    # find existing plan by text
+    plans = list_plans(tid)
+    target = None
+    for p in plans:
+        if text in (p.get("content") or ""):
+            target = p
+            break
+    if not target:
+        return _j({"ok": False, "reason": "未找到匹配的里程碑",
+                    "energy": energy})
+    pid = target["id"]
+    if action == "complete_milestone":
+        return _j({"ok": True, "plan_id": pid,
+                    "_deprecated_hint": "manage_plan 已退役,改用 todo_plan(action='done')",
+                    "energy": energy,
+                    **complete_plan(pid)})
+    # remove → skip(safe, 保留历史)
+    return _j({"ok": True, "plan_id": pid,
+                "_deprecated_hint": "manage_plan 已退役,改用 todo_plan(action='skip')",
+                "energy": energy,
+                **skip_plan(pid)})
+
 
 
 def _create_plan_item_alarms(text: str) -> list[dict]:
@@ -1635,72 +1657,104 @@ def _create_plan_item_alarms(text: str) -> list[dict]:
 # ──────────────────────────────── manage_daily ────────────────────────────────
 
 def _handle_manage_daily(args: Dict[str, Any], **_) -> str:
+    """[退役中] 管理每日计划。原写 DAILY.md + 双写 timers, 现全转 tasks/timers。
+
+    映射:
+      plan    → 每行一项:HH:MM 起 → timer 闹钟;其他 → todo(type='daily', deadline=今天)
+      add     → todo(action='create', type='daily', deadline=今天)
+      complete → todo(action='done')(按 title 模糊匹配)
+      check   → sense_todos(type='daily') 范围
+    """
+    import re as _re
     action = (args.get("action") or "check").strip().lower()
     text = (args.get("text") or "").strip()
+
+    if action not in ("plan", "add", "complete", "check"):
+        return registry.tool_error("action must be plan/add/complete/check")
+
+    snap = vitals.consume_energy(ENERGY_COST_PER_CALL)
+    energy = round(snap.energy, 1)
+
+    # 兼容:继续保留 _create_plan_item_alarms(HH:MM → timer 闹钟, 这是真在用)
+    _HHMM_RE = _re.compile(r"\d{1,2}:\d{2}")
 
     if action == "plan":
         if not text:
             return registry.tool_error("text is required for plan（每行一个任务）")
-        snap = vitals.consume_energy(ENERGY_COST_PER_CALL)
-        result = _plan_daily(text)
-        # 为带 HH:MM 的任务项创建 timer 闹钟(到点提醒模型该做这件事)
+        # HH:MM 项仍走 timer(已迁移完毕, 不再走 DAILY.md)
         timers = _create_plan_item_alarms(text)
         timer_info = ""
         if timers:
             lines = [f"- {t['time']} → {t['text']}" for t in timers]
             timer_info = f"\n已设定闹钟（{len(timers)}项）：\n" + "\n".join(lines)
-        return _j({"ok": True, "result": result + timer_info, "timers_created": len(timers), "energy": round(snap.energy, 1)})
+        # 非 HH:MM 文字项 → tasks 表
+        from domain.todos.crud import create_task
+        from domain.lifecycle.clock import now_iso as _now_iso
+        non_timer = [ln.strip() for ln in text.splitlines()
+                     if ln.strip() and ln.strip().startswith("-")
+                     and not _HHMM_RE.search(ln[:8])]
+        created_ids = []
+        for ln in non_timer:
+            clean = ln.lstrip("-").strip()
+            if not clean:
+                continue
+            r = create_task(title=clean, type="daily", deadline=_now_iso()[:10],
+                            project_id="", status="planned",
+                            source="migrated:DAILY.md")
+            if r.get("ok"):
+                created_ids.append(r["task"]["id"])
+        return _j({"ok": True,
+                    "result": f"已写入 tasks 表({len(created_ids)} 项) + "
+                              f" timers 闹钟({len(timers)} 项)" + timer_info,
+                    "timers_created": len(timers),
+                    "tasks_created": created_ids,
+                    "_deprecated_hint": "manage_daily 已退役, plan 改用 todo(action='create', "
+                                        "type='daily'); HH:MM 项用 todo_trigger 或 sense_schedule。",
+                    "energy": energy})
 
     if action == "add":
         if not text:
             return registry.tool_error("text is required for add")
-        snap = vitals.consume_energy(ENERGY_COST_PER_CALL)
-        _add_daily(text)
-        return _j({"ok": True, "result": "已添加到今日计划", "energy": round(snap.energy, 1)})
+        from domain.todos.crud import create_task
+        from domain.lifecycle.clock import now_iso as _now_iso
+        r = create_task(title=text, type="daily", deadline=_now_iso()[:10],
+                        project_id="", status="planned",
+                        source="migrated:DAILY.md")
+        return _j({"ok": r.get("ok", False), "todo_id": r.get("task", {}).get("id", ""),
+                    "result": "已添加到今日计划" if r.get("ok") else r.get("reason", ""),
+                    "_deprecated_hint": "manage_daily 已退役, add 改用 todo(action='create', type='daily')",
+                    "energy": energy})
 
     if action == "complete":
         if not text:
             return registry.tool_error("text is required for complete")
-        snap = vitals.consume_energy(ENERGY_COST_PER_CALL)
-        ok = _complete_daily(text)
-        return _j({"ok": ok, "result": "已完成" if ok else "没找到匹配的任务", "energy": round(snap.energy, 1)})
+        from domain.todos.crud import list_tasks, update_task
+        from domain.lifecycle.clock import now_iso as _now_iso
+        today = _now_iso()[:10]
+        # 当日 type=daily 任务中按 title 模糊匹配
+        matching = [t for t in list_tasks()
+                    if t.get("type") == "daily" and t.get("status") in ("planned", "in_progress")
+                    and (t.get("deadline") or "") == today
+                    and text in (t.get("title") or "")]
+        if not matching:
+            return _j({"ok": False, "result": "没找到匹配的当日任务",
+                        "energy": energy})
+        ok = update_task(matching[0]["id"], status="done").get("ok", False)
+        return _j({"ok": ok, "todo_id": matching[0]["id"],
+                    "result": "已完成" if ok else "更新失败",
+                    "_deprecated_hint": "manage_daily 已退役, complete 改用 todo(action='done')",
+                    "energy": energy})
 
-    if action == "check":
-        result = _check_daily()
-        return _j({"ok": True, "result": result})
+    # check
+    from domain.todos.crud import list_tasks
+    from domain.lifecycle.clock import now_iso as _now_iso
+    today = _now_iso()[:10]
+    items = [t for t in list_tasks()
+             if t.get("type") == "daily" and (t.get("deadline") or "") == today]
+    return _j({"ok": True, "tasks": items,
+                "_deprecated_hint": "manage_daily 已退役, check 改用 sense_todos(type='daily')",
+                "energy": energy})
 
-    return registry.tool_error("action must be plan/add/complete/check")
-
-
-registry.register(
-    name="manage_daily",
-    toolset="actions",
-    schema={
-        "name": "manage_daily",
-        "description": (
-            "管理每日计划。"
-            "action='plan' 设定今天的计划（text 里每行一个任务）；"
-            "action='add' 往今天追加一条；"
-            "action='complete' 标记完成；action='check' 查看今天还剩什么。"
-            "每天醒来第一件事：规划今天要做什么。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "description": "plan | add | complete | check",
-                    "enum": ["plan", "add", "complete", "check"],
-                },
-                "text": {"type": "string", "description": "任务描述（plan时每行一个）"},
-            },
-            "required": ["action"],
-        },
-    },
-    handler=_handle_manage_daily,
-    check_fn=lambda: True,
-    emoji="📅",
-)
 
 
 # ──────────────────────────────── update_rules ────────────────────────────────
@@ -2956,3 +3010,56 @@ def run_async_in_thread(coro_func):
     if exc[0]:
         raise exc[0]
     return result[0]
+
+
+# ──────────────────────────────── 退役工具(handler-only, schema 不暴露) ────────────────────────────────
+# 这些工具的 schema 不再注入 system prompt(模型看不到自然不会主动调), 但 handler 保留:
+#   - 历史 session 的 tool_calls 重放仍能 dispatch
+#   - 模型偶尔幻觉调用时返回 _deprecated_hint, 引导改用新家
+#
+# 迁移目标见 commit 注释和 docs/design/tool-and-storage-rfc.md (待补)
+# 退役时间: 2026-07-17
+
+def _register_retired_handlers() -> None:
+    """把退役工具以 handler-only 模式注册——schema 不暴露但 dispatch 可用。
+
+    包在函数里惰性注册, 避免模块顶部 import 顺序问题。
+    """
+    registry.register_handler_only(
+        name="manage_work",
+        toolset="actions",
+        handler=_handle_manage_work,
+        description="[retired] → todo(action=...)",
+        emoji="📝",
+    )
+    registry.register_handler_only(
+        name="manage_goals",
+        toolset="actions",
+        handler=_handle_manage_goals,
+        description="[retired] → todo(action='create', type='goal')",
+        emoji="🎯",
+    )
+    registry.register_handler_only(
+        name="manage_plan",
+        toolset="actions",
+        handler=_handle_manage_plan,
+        description="[retired] → todo(type='goal') + todo_plan",
+        emoji="📐",
+    )
+    registry.register_handler_only(
+        name="manage_daily",
+        toolset="actions",
+        handler=_handle_manage_daily,
+        description="[retired] → todo(type='daily') + timer 阔钟",
+        emoji="📅",
+    )
+    registry.register_handler_only(
+        name="remember_him",
+        toolset="actions",
+        handler=_handle_remember_him,
+        description="[retired] → set_entity_profile / record_thought, 画像落 contacts.about",
+        emoji="🌸",
+    )
+
+
+_register_retired_handlers()

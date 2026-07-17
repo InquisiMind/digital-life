@@ -100,4 +100,72 @@ def backfill_slice_fields_if_needed(*, force: bool = False) -> int:
         db.close()
 
 
-__all__ = ["backfill_slice_fields_if_needed", "register_normalizer"]
+__all__ = [
+    "backfill_slice_fields_if_needed",
+    "register_normalizer",
+    "backfill_entity_links",
+]
+
+
+def backfill_entity_links(*, force: bool = False, limit: int = 500) -> int:
+    """对 entity_links 为空的 chunk 行做实体填充。
+    用 extract_entities_from_context(text) 扫每条 chunk 的 text,
+    把命中的 entity 名写入 entity_links JSON。
+
+    这是一次性补全工具(适合 scheduler 低频调用 or 手动跑)。
+    幂等: 仅更新 entity_links='[]' 的行 (除非 force=True)。
+    """
+    try:
+        from domain.memory.memory.consciousness.entity_index import (
+            extract_entities_from_context,
+        )
+    except Exception as e:
+        logger.warning("entity_links backfill: entity_index import failed: %s", e)
+        return 0
+
+    try:
+        db = _get_db()
+    except Exception as e:
+        logger.warning("entity_links backfill: db open failed: %s", e)
+        return 0
+
+    updated = 0
+    try:
+        where_clause = (
+            "WHERE entity_links IS NULL OR entity_links = '[]'"
+            if not force
+            else ""
+        )
+        sql_limit = f" LIMIT {limit}" if limit > 0 else ""
+        rows = db.execute(
+            f"SELECT id, text FROM chunks {where_clause}{sql_limit}"
+        ).fetchall()
+
+        for row in rows:
+            text = row["text"] or ""
+            if not text.strip():
+                continue
+            try:
+                entities = extract_entities_from_context(text)
+            except Exception:
+                continue
+            if not entities:
+                continue
+            import json as _json
+            links_json = _json.dumps(entities, ensure_ascii=False)
+            db.execute(
+                "UPDATE chunks SET entity_links=? WHERE id=?",
+                (links_json, row["id"]),
+            )
+            updated += 1
+
+        if updated:
+            db.commit()
+            logger.info("entity_links backfill: %d chunks updated", updated)
+        _backfill_done = True
+        return updated
+    except Exception as e:
+        logger.warning("backfill_entity_links failed: %s", e)
+        return 0
+    finally:
+        db.close()

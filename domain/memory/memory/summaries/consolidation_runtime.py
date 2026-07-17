@@ -1601,13 +1601,25 @@ def _index_single_conversation(
         return False
 
     blob = _embedding_to_blob(embedding)
+    # P1-3 fix: conversation 写入时填 entity_links (之前 1% 填充率 = 导航骨架形同虚设)
+    entity_links_json = "[]"
+    try:
+        from domain.memory.memory.consciousness.entity_index import (
+            extract_entities_from_context,
+        )
+        entities = extract_entities_from_context(content)
+        if entities:
+            import json as _j
+            entity_links_json = _j.dumps(entities, ensure_ascii=False)
+    except Exception:
+        pass
     vec_db.execute(
         "INSERT OR REPLACE INTO chunks "
         "(source, chunk_hash, text, embedding, file_mtime, created_at, "
-        " phase, source_kind, session_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " phase, source_kind, session_id, entity_links) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ("conversation", chunk_hash_val, indexed_text, blob, timestamp, timestamp,
-         "experience", "conversation", session_id),
+         "experience", "conversation", session_id, entity_links_json),
     )
     return True
 
@@ -1736,15 +1748,25 @@ def index_conversations(session_db: Any = None, max_age_hours: float = 1.0) -> i
                     if emb is None:
                         continue
                     blob = _embedding_to_blob(emb)
-                    # P0-1 fix: conversation INSERT 现在写 phase/source_kind/session_id
-                    # 之前只写 6 列导致 session_id 100% 空、时序连边全失效
+                    # P1-3 fix: conversation INSERT 现在写 entity_links
+                    ent_links = "[]"
+                    try:
+                        from domain.memory.memory.consciousness.entity_index import (
+                            extract_entities_from_context,
+                        )
+                        ents = extract_entities_from_context(text)
+                        if ents:
+                            import json as _j
+                            ent_links = _j.dumps(ents, ensure_ascii=False)
+                    except Exception:
+                        pass
                     vec_db.execute(
                         "INSERT OR REPLACE INTO chunks "
                         "(source, chunk_hash, text, embedding, file_mtime, created_at, "
-                        " phase, source_kind, session_id) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        " phase, source_kind, session_id, entity_links) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         ("conversation", h, text, blob, ts, ts,
-                         "experience", "conversation", sid),
+                         "experience", "conversation", sid, ent_links),
                     )
                     count += 1
 
@@ -1842,18 +1864,27 @@ def backfill_conversations(limit: int = 500) -> int:
                     if emb is None:
                         continue
                     blob = _embedding_to_blob(emb)
-                    # P0-1 fix: backfill_conversations 也写 phase/source_kind/session_id
-                    # chunk_hash 形如 'conversation:<session_id>:<timestamp>'
-                    # → 解析出 session_id
+                    # P0-1 + P1-3 fix: backfill_conversations 写 phase/source_kind/session_id + entity_links
                     hash_parts = chunk_hash.split(":", 2)
                     bf_sid = hash_parts[1] if len(hash_parts) >= 3 else ""
+                    ent_links = "[]"
+                    try:
+                        from domain.memory.memory.consciousness.entity_index import (
+                            extract_entities_from_context,
+                        )
+                        ents = extract_entities_from_context(text)
+                        if ents:
+                            import json as _j
+                            ent_links = _j.dumps(ents, ensure_ascii=False)
+                    except Exception:
+                        pass
                     vec_db.execute(
                         "INSERT OR REPLACE INTO chunks "
                         "(source, chunk_hash, text, embedding, file_mtime, created_at, "
-                        " phase, source_kind, session_id) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        " phase, source_kind, session_id, entity_links) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         ("conversation", chunk_hash, text, blob, ts, ts,
-                         "experience", "conversation", bf_sid),
+                         "experience", "conversation", bf_sid, ent_links),
                     )
                     count += 1
 

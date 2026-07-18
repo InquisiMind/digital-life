@@ -59,6 +59,10 @@ platforms: []
 - 有**怀疑** → `record_thought kind=doubt`，写"这个做法对吗？还是该 Z？"
 - 待办推进了 → `todo_note(action="add", todo_id=..., content="做了 X，下一步 Y")`，给下次醒来的自己留进度
 
+**产出物管理**——写了文件/文档/脚本时：
+- 写新文档前，先看 `deliverables_index.md`（项目根或 workspace/docs/ 下）有没有同类。已有就**修订**，不要重写。
+- 产出新文件后，在 `deliverables_index.md` 追加一行 `| filepath | 活跃 | <一句话定位> |`。省掉下次醒来重建索引的成本。
+
 碎片不丢——晚上 self_review 会看到。
 
 ### 3. 转（必要时）

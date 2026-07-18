@@ -32,6 +32,7 @@ platforms: []
 
 - 如果发现产出标准本身不对——回去改待办定义（`todo update`），不要假装完成。
 - 完成后用 `todo_note add` 记一句最终产出，让下次醒来的人（你自己）一眼看到结论。
+- **做不完时**：`todo(action="update", status="paused")`——别让 in_progress 长期挂着。要么 done 要么 paused。过期 in_progress 在提示卡里标 ⚠️，是下次醒来最高优先处理目标。
 
 ## 拆解的判断
 

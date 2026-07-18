@@ -2616,13 +2616,17 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
         except Exception:
             return registry.tool_error("hours must be a number")
 
-    # ─── 路径 C：都没传 → 报错强制让模型做决定 ───
+    # ─── 路径 C：都没传 → 不报错, 直接返回 preview 提示卡 ───
+    # 设计: 第一次 rest() 无参 = 看"睡前提示卡", 模型拿到后处理再调 rest(reuse/until) 真睡。
+    # 之前这里返 tool_error, 模型被迫多走一轮试错 → 压缩为 2 轮 preview→sleep。
     if target_dt is None:
-        # 列出现有 timer 让模型选
+        snap = vitals.consume_energy(0)  # 不消耗精力, 只拿 snapshot
+        energy = round(snap.energy, 1)
         existing_timers = list_pending_alarms("timer")
+        import json as _j_hint
+        timer_lines = []
+        suggested_reuse = None
         if existing_timers:
-            import json as _j_hint
-            timer_lines = []
             for a in existing_timers[:5]:
                 try:
                     p = _j_hint.loads(a.get("payload_json") or "{}") or {}
@@ -2630,18 +2634,17 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
                 except Exception:
                     r = ""
                 timer_lines.append(f"  · id={a.get('id')} {a.get('fire_at')}" + (f" ({r})" if r else ""))
-            return registry.tool_error(
-                "rest 必须传 until（新建闹钟）或 reuse=<alarm_id>（复用现有）。\n"
-                "现有 timer 闹钟：\n" + "\n".join(timer_lines) + "\n"
-                "→ 复用某个 → rest(reuse=<id>, mental_context='...')\n"
-                "→ 新建 → rest(until='2026-06-15T15:00:00+08:00', mental_context='...')"
-            )
-        else:
-            return registry.tool_error(
-                "rest 必须传 until 或 reuse=<alarm_id>，至少选一个。\n"
-                "→ 新建闹钟 → rest(until='2026-06-15T15:00:00+08:00', mental_context='给未来自己的留言')\n"
-                "（当前没有任何未触发的 timer 闹钟可复用）"
-            )
+                if suggested_reuse is None:
+                    suggested_reuse = a.get("id")
+        card = _build_pre_rest_card() or ""
+        return _j({
+            "preview": True,
+            "note": "rest 无参数 = 预览睡前提示卡。看一眼处理完后, 再调 rest(reuse=<id>) 或 rest(until=...) 真睡。" if suggested_reuse else "rest 无参数 = 预览。当前无可复用闹钟, 处理完后调 rest(until=...) 新建闹钟真睡。",
+            "will_reuse_alarm_id": suggested_reuse,
+            "pre_rest_card": card or None,
+            "available_alarms": "\n".join(timer_lines) if timer_lines else "(无未触发 timer)",
+            "energy": energy,
+        })
 
     target_iso = _clock.to_storage_iso(target_dt)
 

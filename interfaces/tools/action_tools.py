@@ -2527,10 +2527,26 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
                 target_alarm = a
                 break
         if not target_alarm:
-            return registry.tool_error(
-                f"reuse={reuse_id} 失败：找不到这个 timer 闹钟。"
-                f"先用 sense_schedule 看现有闹钟 id，或改用 rest(until=...)"
-            )
+            # timer 已触发或不存在 — 不报错, 改为自动列出可用 pending timer 让模型重选。
+            # 之前直接 return tool_error 让模型多走一轮, 且消息"找不到"让模型困惑。
+            pending = list_pending_alarms("timer")
+            snap = vitals.consume_energy(0)
+            import json as _j_reuse_fallback
+            timer_lines = []
+            for a in pending[:5]:
+                try:
+                    p = _j_reuse_fallback.loads(a.get("payload_json") or "{}") or {}
+                    r = p.get("reason", "")
+                except Exception:
+                    r = ""
+                timer_lines.append(f"  · id={a.get('id')} {a.get('fire_at')}" + (f" ({r})" if r else ""))
+            return _j({
+                "preview": True,
+                "note": f"reuse={reuse_id} 对应的 timer 已触发或不存在。以下是当前可用的 pending timer, 请从中选一个 reuse:",
+                "available_alarms": "\n".join(timer_lines) if timer_lines else "(当前没有任何 pending timer, 请用 rest(until=...) 新建)",
+                "pre_rest_card": _build_pre_rest_card() or None,
+                "energy": round(snap.energy, 1),
+            })
 
         target_fire_at = target_alarm.get("fire_at") or ""
         if show_card:

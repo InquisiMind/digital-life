@@ -175,9 +175,9 @@
 
                   <!-- tool_calls (assistant 发起) -->
                   <div v-if="Array.isArray(turn.tool_calls) && turn.tool_calls.length" class="tool-calls">
-                    <div v-for="(tc, i) in turn.tool_calls" :key="i" class="tool-call-card">
-                      <div class="block-label">⚙ tool_call</div>
-                      <strong style="color: var(--neon-pink);">{{ safeToolName(tc) }}</strong>
+                    <div v-for="(tc, i) in turn.tool_calls" :key="i" class="tool-call-card" :class="toolCallClass(tc)">
+                      <div class="block-label">{{ toolCallLabel(tc) }}</div>
+                      <strong :style="{ color: toolCallColor(tc) }">{{ safeToolName(tc) }}</strong>
                       <pre class="mono tool-args">{{ safeToolArgs(tc) }}</pre>
                       <el-button size="small" text @click="copyText(safeToolArgs(tc))">copy args</el-button>
                     </div>
@@ -601,6 +601,29 @@ function safeToolArgs(tc) {
   return String(args)
 }
 
+// tool_call 按工具名精确分类标识, 关键动作高亮:
+// 📤 橙 = express_to_human (模型发消息给人类)
+// 😴 黄 = rest (模型决定休息)
+// ⚙ 默认灰 = 其他工具
+function toolCallClass(tc) {
+  const n = safeToolName(tc)
+  if (n === 'express_to_human') return 'tc-msg'
+  if (n === 'rest') return 'tc-rest'
+  return ''
+}
+function toolCallLabel(tc) {
+  const n = safeToolName(tc)
+  if (n === 'express_to_human') return '📤 发送消息'
+  if (n === 'rest') return '😴 进入休息'
+  return '⚙ tool_call'
+}
+function toolCallColor(tc) {
+  const n = safeToolName(tc)
+  if (n === 'express_to_human') return '#ff9944'
+  if (n === 'rest') return '#ffb300'
+  return 'var(--neon-pink)'  // 默认
+}
+
 function startWakeStream(wakeId) {
   closeWakeStream()
   if (!wakeId) return
@@ -967,6 +990,15 @@ onUnmounted(() => {
   border-left: 2px solid var(--neon-pink);
   padding: 8px 10px;
   border-radius: var(--radius-sm);
+}
+/* 关键动作 tool_call 高亮 */
+.tool-call-card.tc-msg {
+  border-left-color: #ff9944;
+  background: rgba(255, 153, 68, 0.06);
+}
+.tool-call-card.tc-rest {
+  border-left-color: #ffb300;
+  background: rgba(255, 179, 0, 0.06);
 }
 .tool-args {
   margin-top: 4px;

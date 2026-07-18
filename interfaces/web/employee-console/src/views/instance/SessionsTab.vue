@@ -447,27 +447,19 @@ function isInjectionDefaultOpen(inj) {
   // 所有注入默认折叠, 用户主动点开看
   return false
 }
-// 注入块颜色分类 — 按 sys_tool 名精确匹配, 不猜内容(之前用正则 /task|@xxx/
-// 之类匹配 content, 导致 task_board 这种含 task 文本的也被误判为 action)
-const INJ_STYLE_MAP = {
-  // 🔵 蓝色:事件 payload (wake 触发原因 / user 消息 / mid-session 注入)
-  system_context:   'inj-event',
-  // 🟧 橙色: 模型的动作回执和会话中途新消息(其实没有独立 sys_tool, 但 user 看到
-  //          橙色通常想看的就是这些). 不过当前 schema 没有专门的 action 类 sys_tool,
-  //          所以这个 mapping 留着备用, 暂不 hit.
-  // 🟣 紫色(magenta 默认色): persona / 意识流 / 自我认知 — 关于"自我"的
-  consciousness:    'inj-conscience',
-  // 🟡 黄色(amber): 待办面板 / 项目任务树 — 工作记忆
-  task_board:       'inj-work',
-  my_context:       'inj-work',
-  // 🟩 绿色(green): 社交关系(联系人/群组)
-  social_context:   'inj-social',
-  // ⬜ 灰色: session_digest (历史摘要, 用户通常跳过)
-  session_digest:   'inj-digest',
-}
+// 注入块颜色 — 按"用户关心的内容类型"分 3 类:
+// 🔵 蓝 = 事件(mid-session 新消息 / wake 触发原因)
+// 🟧 橙 = rest 提示卡(模型确认睡眠的回执)
+// 🟣 紫 = 其他一切默认(任务板/意识流/教训/历史摘要/上下文/关系 — 同色)
 function injectionStyleClass(inj) {
   const k = String(inj && inj.sys_tool || '').toLowerCase()
-  return INJ_STYLE_MAP[k] || ''   // 默认无 class
+  const c = String(inj && inj.content || '')
+  // rest 提示卡 — 内容含"确认休息""睡前提示卡""早处理完调 rest"
+  if (/睡前提示卡|确认休息|早处理完调\s*r?e?s?t|提示卡列/.test(c)) return 'inj-rest'
+  // 事件 payload — system_context 的内容前 800 chars 含"当下事件""新消息""唤醒原因"
+  if (k === 'system_context' && /当下事件|∩.*新消息|唤醒原因|事件/.test(c.slice(0, 800))) return 'inj-event'
+  // 默认:紫色(任务板 / persona / 意识流 / 历史摘要 / 上下文 / 关系)
+  return 'inj-default'
 }
 
 function toggleCall(callSeq) {
@@ -817,36 +809,25 @@ onUnmounted(() => {
   margin-right: 6px;
   vertical-align: middle;
 }
-/* 颜色扎染 — 按 sys_tool 精确分类, 方便扫读 */
-.inj-event {       /* 🔵 蓝色: 事件/wake 触发原因 */
-  border-left: 3px solid var(--neon-cyan) !important;
-  background: rgba(0, 200, 255, 0.04) !important;
-}
-.inj-event .inj-source { color: var(--neon-cyan); }
-.inj-event .inj-status-dot { background: var(--neon-cyan); box-shadow: 0 0 6px var(--neon-cyan); }
-.inj-work {        /* 🟡 黄色: 待办面板/项目任务树 */
-  border-left: 3px solid #ffb300 !important;
-  background: rgba(255, 179, 0, 0.04) !important;
-}
-.inj-work .inj-source { color: #ffb300; }
-.inj-work .inj-status-dot { background: #ffb300; box-shadow: 0 0 6px #ffb300; }
-.inj-social {      /* 🟩 绿色: 社交关系 */
-  border-left: 3px solid #44cc77 !important;
-  background: rgba(68, 204, 119, 0.04) !important;
-}
-.inj-social .inj-source { color: #44cc77; }
-.inj-social .inj-status-dot { background: #44cc77; box-shadow: 0 0 6px #44cc77; }
-.inj-conscience {  /* 🟣 紫色: 意识流/persona */
+/* 颜色扎染 — 3 类: 事件(蓝) / rest(橙) / 默认(紫) */
+.inj-default {    /* 🟣 紫色: 默认 - 任务板/意识流/教训/上下文/历史摘要 都同色 */
   border-left: 3px solid #aa77ff !important;
   background: rgba(170, 119, 255, 0.04) !important;
 }
-.inj-conscience .inj-source { color: #aa77ff; }
-.inj-conscience .inj-status-dot { background: #aa77ff; box-shadow: 0 0 6px #aa77ff; }
-.inj-digest {      /* ⬜ 灰色: 历史摘要 */
-  border-left: 3px solid var(--text-muted) !important;
-  opacity: 0.85;
+.inj-default .inj-source { color: #aa77ff; }
+.inj-default .inj-status-dot { background: #aa77ff; box-shadow: 0 0 6px #aa77ff; }
+.inj-event {      /* 🔵 蓝色: 事件 / mid-session 新消息 / wake 触发 */
+  border-left: 3px solid var(--neon-cyan) !important;
+  background: rgba(0, 200, 255, 0.06) !important;
 }
-.inj-digest .inj-status-dot { background: var(--text-muted); }
+.inj-event .inj-source { color: var(--neon-cyan); }
+.inj-event .inj-status-dot { background: var(--neon-cyan); box-shadow: 0 0 6px var(--neon-cyan); }
+.inj-rest {       /* 🟧 橙色: rest 提示卡回执 */
+  border-left: 3px solid #ff9944 !important;
+  background: rgba(255, 153, 68, 0.06) !important;
+}
+.inj-rest .inj-source { color: #ff9944; }
+.inj-rest .inj-status-dot { background: #ff9944; box-shadow: 0 0 6px #ff9944; }
 .call-input-actions {
   display: flex;
   gap: 6px;

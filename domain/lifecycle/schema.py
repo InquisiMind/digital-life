@@ -188,6 +188,14 @@ def init_all_schemas() -> None:
         failed.append(f"attachments: {exc}")
         logger.warning("schema init attachments failed: %s", exc)
 
+    # 11) social_feed（社交接管消息持久化, state.db 同库）
+    try:
+        from domain.social.store import ensure_schema as _sf_ensure
+        _sf_ensure()
+    except Exception as exc:
+        failed.append(f"social_feed: {exc}")
+        logger.warning("schema init social_feed failed: %s", exc)
+
     if failed:
         logger.warning("init_all_schemas: %d failures: %s", len(failed), "; ".join(failed))
     else:

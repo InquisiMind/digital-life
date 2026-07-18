@@ -1262,6 +1262,21 @@ def _wake_digital_life_inner_safe(
             except Exception as exc:
                 logger.debug("chat_stream injection failed: %s", exc)
 
+        # social_feed: zhp 的近况(社交接管拉取的消息摘要) — 不触发 wake, 只是上下文
+        try:
+            from domain.social.store import render_social_feed
+            from infrastructure.config import get_app_instance_id
+            _iid_sf = get_app_instance_id() or ""
+            sf_text = render_social_feed(_iid_sf, limit=30) if _iid_sf else ""
+            if sf_text:
+                prev_history.append({
+                    "role": "user",
+                    "content": sf_text,
+                    "_sys_tool": "social_feed",
+                })
+        except Exception as exc:
+            logger.debug("social_feed injection failed: %s", exc)
+
         # Persist continuation history to audit (real prior turns, only those
         # not tagged with _sys_tool — those are captured separately as
         # slow_ctx injections via agent._convert_user_to_tool).

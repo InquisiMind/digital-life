@@ -359,6 +359,16 @@ async def run_instance_gateway(instance_id: str) -> None:
     )
     ck_thread.start()
 
+    # 启动社交接管 daemon（可选 — 需要 OAuth 授权后的 refresh_token）
+    takeover = None
+    try:
+        from interfaces.social.feishu_takeover import start_takeover_daemon
+        takeover = start_takeover_daemon(instance_id)
+        if takeover:
+            logger.info("Instance %s social takeover daemon started", instance_id[:8])
+    except Exception as exc:
+        logger.debug("Instance %s social takeover not started: %s", instance_id[:8], exc)
+
     await stop_event.wait()
     logger.info("Instance %s shutting down...", instance_id[:8])
 
@@ -371,6 +381,8 @@ async def run_instance_gateway(instance_id: str) -> None:
     cron_thread.join(timeout=5)
     ck_stop.set()
     ck_thread.join(timeout=5)
+    if takeover:
+        takeover.stop()
     logger.info("Instance %s stopped", instance_id[:8])
 
 
@@ -772,6 +784,13 @@ async def run_master_gateway() -> None:
     # 系统级路由（跨实例）：/api/system/* + /employee/{iid}/assets/*
     from application.api.system_routes import add_system_routes
     add_system_routes(app)
+
+    # OAuth callback (飞书社交接管授权)
+    try:
+        from application.api.oauth_routes import register_oauth_routes
+        register_oauth_routes(app)
+    except Exception:
+        pass
 
     # 广播 endpoint:接收 peer 实例的 HTTP 广播(去中心化消息总线 Phase 3)
     from application.api.broadcast_routes import add_broadcast_routes

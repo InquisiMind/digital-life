@@ -605,3 +605,43 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: false
       include_vector_recall: false
+
+  social_command:
+    display_name: 社交命令
+    trigger_type: external
+    trigger_description: zhp 在社交渠道(飞书/微信等)中发出命令(/zero /帮忙等),通过社交接管模块拉取到
+    priority: 6
+    payload_schema:
+      text: string
+      chat_name: string?
+      chat_id: string?
+      sender_name: string?
+      source: string?
+    description: zhp 在任意群里给数字生命发了一个命令,数字生命已通过社交接管看到上下文
+    debounce_window_s: 0
+    merge_policy: latest
+    consumption_policy: on_detail
+    wake_prompt: |
+      🔗 {sender_name} 在 {chat_name} 里给你发了一个命令（来源: {source}）:
+      {text}
+
+      这是通过社交接管拉取到的——你有 zhp 在这个群的最近消息上下文。
+      像正常处理事件一样对待它。
+    allowed_tools:
+      - express_to_human
+      - terminal
+      - execute_code
+      - sense_event_detail
+      - record_thought
+      - rest
+    context_policy:
+      include_history: false
+      include_rules: true
+      include_daily: false
+      include_consciousness: true
+      include_session_digests: true
+      include_entity_recall: true
+      include_self_review: false
+      include_proactive_policy: false
+      include_recent_sent: true
+      include_vector_recall: true

@@ -425,20 +425,16 @@ const groupedTurns = computed(() => {
 })
 
 function isInjectionDefaultOpen(inj) {
-  // 只默认展开高价值类型:事件 payload / mid-session 注入 / 给人发消息回执
-  // 其他(记忆 / 待办面板 / persona / skill_index / 近期教训 等)默认折叠, 否则信息密度太低
+  // 只默认展开用户关心的高价值类型:
+  //   - system_context  : wake 事件 payload(wake 触发原因 + user 注入)
+  //   - task_board      : 待办面板(看进度)
+  // 其他历史/架构/persona 类默认折叠, 用户主动点开
   const DEFAULT_OPEN = new Set([
-    'system_context',  // 事件 payload / wake 上下文
-    'mid_session',     // 会话中途新到达的消息
-    'event_inject',
-    'express',         // 模型给人发消息
-    'wake_payload',
+    'system_context',  // 事件 + 当前状态 + 注入的新消息
+    'task_board',      // 待办面板
   ])
   const k = String(inj && inj.sys_tool || '').toLowerCase()
   if (DEFAULT_OPEN.has(k)) return true
-  // 内容里含「新消息」/「表达」/「emit」等关键词也开
-  const c = String(inj && inj.content || '').slice(0, 200)
-  if (/新消息|会话中途|@?[一-龥]+:\s/.test(c)) return true
   return false
 }
 

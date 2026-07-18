@@ -62,7 +62,7 @@
           v-for="(seg, idx) in segments"
           :key="idx"
           class="segment-card"
-          :open="idx < 3"
+          :open="idx < 10"
           :ref="el => segRefs[idx] = el"
         >
           <summary class="segment-head">
@@ -137,10 +137,14 @@ function copyText(text) {
 
 // 把 ## 标题分段:返回 [{title, body}]
 function splitByChapters(content) {
+  // 按 ## 切分章节; 对 INSIGHTS / 草稿 这种「一行一条 append 模式」额外按 - [xxx] 切。
   if (!content) return []
   const lines = String(content).split('\n')
   const out = []
   let current = null
+  // 是否所有内容都是"一行记录"模式(所有行匹配 - [...] 或 - xxxts)
+  // INSIGHTS.md 这种:append 只有两段(header + 一大块 - [kind] ts text)
+  // 把这种一条行单独切成段让折叠/展开更精准
   for (const line of lines) {
     if (/^##\s/.test(line)) {
       if (current) out.push(current)
@@ -152,9 +156,28 @@ function splitByChapters(content) {
     }
   }
   if (current) out.push(current)
-  return out.map(s => ({ ...s, body: s.body.replace(/^\n+/, '').replace(/\n+$/, '') }))
+  let segs = out.map(s => ({ ...s, body: s.body.replace(/^\n+/, '').replace(/\n+$/, '') }))
     .filter(s => s.title || s.body.trim())
-    .reverse()
+  // INSIGHTS 特殊处理: 若只有 1-2 段但 body 里含很多 "- [kind]" 行,
+  // 按每行切成独立段,title 取 kind
+  if (segs.length <= 2 && segs.some(s => /^- \[\w+\]/m.test(s.body))) {
+    const flat = []
+    for (const s of segs) {
+      const bulletLines = s.body.split('\n').filter(l => /^- \[\w+\]/.test(l))
+      if (bulletLines.length >= 2) {
+        // 切成独立段
+        for (const bl of bulletLines) {
+          const m = bl.match(/^-\s*\[(\w+)\]\s*([^\s]+)\s*(.*)$/)
+          const titlePath = m ? `${m[1]} · ${m[2].slice(5, 16)}` : bl.slice(0, 40)
+          flat.push({ title: titlePath, body: bl })
+        }
+      } else {
+        flat.push(s)
+      }
+    }
+    segs = flat
+  }
+  return segs.reverse()
 }
 
 async function loadMemory(kind) {

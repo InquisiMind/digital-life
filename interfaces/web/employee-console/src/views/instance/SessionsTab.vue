@@ -447,14 +447,27 @@ function isInjectionDefaultOpen(inj) {
   // 所有注入默认折叠, 用户主动点开看
   return false
 }
+// 注入块颜色分类 — 按 sys_tool 名精确匹配, 不猜内容(之前用正则 /task|@xxx/
+// 之类匹配 content, 导致 task_board 这种含 task 文本的也被误判为 action)
+const INJ_STYLE_MAP = {
+  // 🔵 蓝色:事件 payload (wake 触发原因 / user 消息 / mid-session 注入)
+  system_context:   'inj-event',
+  // 🟧 橙色: 模型的动作回执和会话中途新消息(其实没有独立 sys_tool, 但 user 看到
+  //          橙色通常想看的就是这些). 不过当前 schema 没有专门的 action 类 sys_tool,
+  //          所以这个 mapping 留着备用, 暂不 hit.
+  // 🟣 紫色(magenta 默认色): persona / 意识流 / 自我认知 — 关于"自我"的
+  consciousness:    'inj-conscience',
+  // 🟡 黄色(amber): 待办面板 / 项目任务树 — 工作记忆
+  task_board:       'inj-work',
+  my_context:       'inj-work',
+  // 🟩 绿色(green): 社交关系(联系人/群组)
+  social_context:   'inj-social',
+  // ⬜ 灰色: session_digest (历史摘要, 用户通常跳过)
+  session_digest:   'inj-digest',
+}
 function injectionStyleClass(inj) {
-  // 颜色扎染 — 方便用户扫读时定位关键注入
   const k = String(inj && inj.sys_tool || '').toLowerCase()
-  if (k === 'system_context') return 'inj-event'        // 蓝色: 事件 payload
-  const c = String(inj && inj.content || '').toLowerCase()
-  if (/rest\(|express_to_human|@alpha|@zero|@张浩普|表达|发送/.test(c)) return 'inj-action'  // 橙色: 发消息/rest
-  if (k === 'session_digest') return 'inj-digest'        // 灰色: 摘要
-  return ''
+  return INJ_STYLE_MAP[k] || ''   // 默认无 class
 }
 
 function toggleCall(callSeq) {
@@ -804,20 +817,32 @@ onUnmounted(() => {
   margin-right: 6px;
   vertical-align: middle;
 }
-/* 颜色扎染 — 让关键注入一眼能找到 */
-.inj-event {
+/* 颜色扎染 — 按 sys_tool 精确分类, 方便扫读 */
+.inj-event {       /* 🔵 蓝色: 事件/wake 触发原因 */
   border-left: 3px solid var(--neon-cyan) !important;
   background: rgba(0, 200, 255, 0.04) !important;
 }
 .inj-event .inj-source { color: var(--neon-cyan); }
 .inj-event .inj-status-dot { background: var(--neon-cyan); box-shadow: 0 0 6px var(--neon-cyan); }
-.inj-action {
-  border-left: 3px solid #ff9944 !important;
-  background: rgba(255, 153, 68, 0.04) !important;
+.inj-work {        /* 🟡 黄色: 待办面板/项目任务树 */
+  border-left: 3px solid #ffb300 !important;
+  background: rgba(255, 179, 0, 0.04) !important;
 }
-.inj-action .inj-source { color: #ff9944; }
-.inj-action .inj-status-dot { background: #ff9944; box-shadow: 0 0 6px #ff9944; }
-.inj-digest {
+.inj-work .inj-source { color: #ffb300; }
+.inj-work .inj-status-dot { background: #ffb300; box-shadow: 0 0 6px #ffb300; }
+.inj-social {      /* 🟩 绿色: 社交关系 */
+  border-left: 3px solid #44cc77 !important;
+  background: rgba(68, 204, 119, 0.04) !important;
+}
+.inj-social .inj-source { color: #44cc77; }
+.inj-social .inj-status-dot { background: #44cc77; box-shadow: 0 0 6px #44cc77; }
+.inj-conscience {  /* 🟣 紫色: 意识流/persona */
+  border-left: 3px solid #aa77ff !important;
+  background: rgba(170, 119, 255, 0.04) !important;
+}
+.inj-conscience .inj-source { color: #aa77ff; }
+.inj-conscience .inj-status-dot { background: #aa77ff; box-shadow: 0 0 6px #aa77ff; }
+.inj-digest {      /* ⬜ 灰色: 历史摘要 */
   border-left: 3px solid var(--text-muted) !important;
   opacity: 0.85;
 }

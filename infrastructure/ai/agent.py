@@ -755,7 +755,7 @@ class AIAgent:
         # slow_ctx: fake tool calls injected as user-role messages by the
         # scheduler. The result list goes into the in-memory prompt; we don't
         # persist these old-style — the audit ctx records them via slow_ctx().
-        slow_ctx_kinds = {"system_context", "session_digest", "consciousness", "task_board", "social_context", "task_skill", "my_context", "chat_stream", "schedule"}
+        slow_ctx_kinds = {"system_context", "session_digest", "consciousness", "task_board", "social_context", "task_skill", "my_context", "chat_stream", "schedule", "workspace"}
         for m in messages:
             role = m.get("role")
             if role != "user":

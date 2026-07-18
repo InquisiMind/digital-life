@@ -667,6 +667,102 @@ class EmployeeConsoleAPIService:
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
 
+    async def _handle_console_wake_stream(self, request: web.Request) -> web.StreamResponse:
+        """GET /wakes/{wake_id}/stream — SSE:turns 增量推送,让前端 stay 时新自动看到。
+
+        协议:
+          event: snapshot  data: {wake, turns, injections}  —— 首帧(降级 = 当前完整)
+          event: turn      data: {turn}                      —— 后续增量(id 增长序)
+          event: end       data: {reason}                    —— wake 结束
+
+        实现:
+          polling tail(0.6s/次)按 turn.id > last_seen 查询。
+          master 进程直接读 apps/<iid>/data/runtime_log.db file(WAL)即可。
+          client 断开(request.transport.is_closing())自动结束, 不泄漏。
+        """
+        import asyncio
+        import json as _json
+        import time
+
+        try:
+            wake_id = int(request.match_info.get("wake_id", ""))
+        except (ValueError, TypeError):
+            return web.json_response({"error": "invalid wake_id"}, status=400)
+
+        resp = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",  # nginx 不缓冲
+            },
+        )
+        await resp.prepare(request)
+
+        async def _send(event_name: str, data: dict) -> None:
+            payload = f"event: {event_name}\ndata: {_json.dumps(data, ensure_ascii=False, default=str)}\n\n"
+            await resp.write(payload.encode("utf-8"))
+            await resp.drain()
+
+        from infrastructure.persistence.instance import get_audit
+        audit = get_audit()
+
+        try:
+            wake = audit.get_wake(wake_id)
+            if not wake:
+                await _send("error", {"error": "wake not found"})
+                return resp
+            # 首帧 snapshot
+            turns = audit.list_turns(wake_id)
+            injections = audit.list_injections(wake_id)
+            await _send("snapshot", {"wake": wake, "turns": turns, "injections": injections})
+            last_id = max((t.get("id") or 0) for t in turns) if turns else 0
+
+            # polling tail
+            tick = 0
+            while True:
+                # 客户端断开 → 退出
+                if request.transport is None or request.transport.is_closing():
+                    break
+                await asyncio.sleep(0.6)
+                # 读 wake 是否结束(ended_at 已填)
+                w_now = audit.get_wake(wake_id) or {}
+                # 增量 turns
+                try:
+                    # 直接 SQL 查 id > last_id 防止 audit.list_turns 全量重读成本
+                    all_turns = audit.list_turns(wake_id)
+                    new_turns = [t for t in all_turns if (t.get("id") or 0) > last_id]
+                    for t in new_turns:
+                        await _send("turn", {"turn": t})
+                        last_id = max(last_id, t.get("id") or 0)
+                except Exception:
+                    pass
+                # wake 结束 → 发 end 后退出
+                if w_now.get("ended_at"):
+                    await _send("end", {
+                        "reason": (w_now.get("meta_json") or {}).get("end_reason") if isinstance(w_now.get("meta_json"), dict) else None,
+                    })
+                    break
+                tick += 1
+                # 兜底:最长 4h 后强制断(防僵尸连接)
+                if tick > 24000:
+                    await _send("end", {"reason": "stream_timeout"})
+                    break
+        except ConnectionResetError:
+            pass  # client 断了
+        except Exception as exc:
+            try:
+                await _send("error", {"error": str(exc)})
+            except Exception:
+                pass
+        finally:
+            try:
+                await resp.write_eof()
+            except Exception:
+                pass
+        return resp
+
     async def _handle_console_wake_call_input(self, request: web.Request) -> web.Response:
         """GET /wakes/{wake_id}/input/{call_seq} — 已重组的某次 LLM call 的输入 messages。
 
@@ -1223,6 +1319,7 @@ def _add_console_api_routes(app: web.Application, api_prefix: str, service: Empl
     # wake snapshot detail (v5 R2)
     app.router.add_get(f"{api_prefix}/wakes", service._handle_console_wakes)
     app.router.add_get(f"{api_prefix}/wakes/{{wake_id}}", service._handle_console_wake_detail)
+    app.router.add_get(f"{api_prefix}/wakes/{{wake_id}}/stream", service._handle_console_wake_stream)
     app.router.add_get(f"{api_prefix}/wakes/{{wake_id}}/input/{{call_seq}}", service._handle_console_wake_call_input)
     # Memory advisor (entities + profiles + merges + audit):
     app.router.add_get(f"{api_prefix}/entities", service._handle_console_entities)

@@ -91,14 +91,15 @@
             ⚠️ <strong>本 wake 报错(非自然结束):</strong> {{ detailError }}
           </div>
 
-          <!-- injections（注入的上下文块）——每条独立折叠,只默认展开高价值类型 -->
+          <!-- injections（注入的上下文块）——每条独立折叠,只默认展开高价值类型。Vue state 控制让 collapseAll 能命中 -->
           <template v-if="injections.length">
             <div class="brand-sub section-label" style="margin-top: 4px;">CONTEXT INJECTIONS ({{ injections.length }})</div>
             <details
               v-for="inj in injections"
               :key="inj.id"
               class="injection-block"
-              :open="isInjectionDefaultOpen(inj)"
+              :open="!!injectionOpen[inj.id]"
+              @toggle.prevent.stop="injectionOpen[inj.id] = !injectionOpen[inj.id]"
             >
               <summary>
                 <span class="inj-source">{{ inj.sys_tool || 'unknown' }}</span>
@@ -230,7 +231,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { Refresh, ArrowDown, ArrowUp, View, Document, Download } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
@@ -253,9 +254,11 @@ const injections = ref([])
 const wakeMeta = ref(null)
 const expandedTurns = reactive({})  // {turnId: bool}
 const expandedCalls = reactive({})  // {callSeq: bool} — 按 LLM call 折叠, 默认全展开
+const injectionOpen = reactive({})  // {injId: bool} injection 块独立折叠(Vue state 控制, 让 collapseAll 能管到)
 const callInputs = reactive({})      // {callKey: messages[]}
 const callInputModels = reactive({})
 const callLoading = reactive({})
+let wakeStream = null                // EventSource — 连接到 /wakes/{id}/stream
 
 // 分页
 const PAGE_SIZE = 30
@@ -354,6 +357,8 @@ async function loadMore() {
 
 async function selectWake(wakeId) {
   selectedId.value = wakeId
+  // 切换 wake 前:关掉老的 SSE
+  closeWakeStream()
   loadingDetail.value = true
   turns.value = []
   injections.value = []
@@ -363,6 +368,7 @@ async function selectWake(wakeId) {
   Object.keys(callInputModels).forEach(k => delete callInputModels[k])
   Object.keys(expandedTurns).forEach(k => delete expandedTurns[k])
   Object.keys(expandedCalls).forEach(k => delete expandedCalls[k])
+  Object.keys(injectionOpen).forEach(k => delete injectionOpen[k])
 
   try {
     const d = await instanceApi(iid.value).wakeDetail(wakeId)
@@ -374,9 +380,17 @@ async function selectWake(wakeId) {
       for (const g of groupedTurns.value) {
         expandedCalls[g.callSeq] = true
       }
+      // init injection 按 isInjectionDefaultOpen 设默认值
+      for (const inj of injections.value) {
+        injectionOpen[inj.id] = isInjectionDefaultOpen(inj)
+      }
     }
   } finally {
     loadingDetail.value = false
+    // 选好 wake 后启动 SSE 实时推送 — 即使当前 wake 还在跑也能自动 append 新 turn
+    if (selectedId.value && wakeMeta.value && !wakeMeta.value.ended_at) {
+      startWakeStream(selectedId.value)
+    }
   }
 }
 
@@ -446,9 +460,11 @@ function toggleTurn(turn) {
 }
 function expandAll() {
   for (const g of groupedTurns.value) expandedCalls[g.callSeq] = true
+  for (const inj of injections.value) injectionOpen[inj.id] = true
 }
 function collapseAll() {
   for (const g of groupedTurns.value) expandedCalls[g.callSeq] = false
+  for (const inj of injections.value) injectionOpen[inj.id] = false
 }
 
 function callKeyForSeq(callSeq) {
@@ -581,7 +597,78 @@ function safeToolArgs(tc) {
   return String(args)
 }
 
+function startWakeStream(wakeId) {
+  closeWakeStream()
+  if (!wakeId) return
+  try {
+    const url = `/api/employee/${iid.value}/wakes/${wakeId}/stream`
+    wakeStream = new EventSource(url)
+    wakeStream.addEventListener('snapshot', (e) => {
+      try {
+        const d = JSON.parse(e.data)
+        if (d.wake) wakeMeta.value = d.wake
+        if (Array.isArray(d.turns)) applyIncomingTurns(d.turns, true)
+        if (Array.isArray(d.injections)) injections.value = d.injections
+        // 默认展开所有 call + 注入块的默认状态
+        for (const g of groupedTurns.value) expandedCalls[g.callSeq] = true
+        for (const inj of injections.value) {
+          injectionOpen[inj.id] = isInjectionDefaultOpen(inj)
+        }
+      } catch (err) { /* ignore parse err */ }
+    })
+    wakeStream.addEventListener('turn', (e) => {
+      try {
+        const d = JSON.parse(e.data)
+        if (d.turn) applyIncomingTurns([d.turn], false)
+      } catch (err) { /* ignore */ }
+    })
+    wakeStream.addEventListener('end', (e) => {
+      try {
+        const d = JSON.parse(e.data)
+        if (d.reason) {
+          ElMessage.info(`本轮 wake 已结束 (${d.reason})`)
+        }
+      } catch (err) { /* ignore */ }
+      closeWakeStream()
+    })
+    wakeStream.addEventListener('error', () => {
+      // EventSource 自带重连, 通常网络抖动; 不主动 close
+    })
+  } catch (err) {
+    console.warn('startWakeStream failed', err)
+  }
+}
+
+function applyIncomingTurns(newTurns, isSnapshot) {
+  // 防御: 去重 by id
+  const existing = new Map(turns.value.map(t => [t.id, t]))
+  let addedCount = 0
+  for (const t of newTurns) {
+    if (!t || existing.has(t.id)) continue
+    existing.set(t.id, t)
+    addedCount += 1
+    if (!isSnapshot) {
+      // 新 turn 进来时: 自动展开它所在的 call
+      const seq = Number(t.llm_call_seq)
+      if (seq != null) expandedCalls[seq] = true
+    }
+  }
+  if (addedCount > 0) {
+    turns.value = Array.from(existing.values()).sort((a, b) => (a.id || 0) - (b.id || 0))
+  }
+}
+
+function closeWakeStream() {
+  if (wakeStream) {
+    try { wakeStream.close() } catch (e) { /* ignore */ }
+    wakeStream = null
+  }
+}
+
 onMounted(load)
+onUnmounted(() => {
+  closeWakeStream()
+})
 </script>
 
 <style scoped>

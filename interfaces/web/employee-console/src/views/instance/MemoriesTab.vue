@@ -8,27 +8,12 @@
       <el-button @click="reloadAll"><el-icon><Refresh /></el-icon></el-button>
     </section>
 
-    <!-- 顶栏 tabs — 分两组:持久化 / 短期暂存 -->
+    <!-- 顶栏 tabs — 当前路由只显示该组的 kinds (持久化 / 短期暂存) -->
     <div class="kind-tabs">
-      <span class="tab-group-label">📦 持久化</span>
       <button
-        v-for="k in persistentKinds"
+        v-for="k in visibleKinds"
         :key="k.key"
         class="kind-tab"
-        :class="{ active: active === k.key }"
-        @click="active = k.key"
-      >
-        <span class="kind-icon">{{ k.icon }}</span>
-        <span>{{ k.label }}</span>
-        <span class="kind-count" v-if="counts[k.key] != null">{{ counts[k.key] }}</span>
-        <span class="kind-empty" v-else-if="loaded[k.key] === true && counts[k.key] === 0">0</span>
-      </button>
-
-      <span class="tab-group-label">⌛ 短期暂存</span>
-      <button
-        v-for="k in ephemeralKinds"
-        :key="k.key"
-        class="kind-tab kind-tab-ephemeral"
         :class="{ active: active === k.key }"
         @click="active = k.key"
       >
@@ -108,8 +93,24 @@ const kinds = [
   { key: 'context',       label: '上下文', icon: '🔗', file: 'CONTEXT.md', group: 'ephemeral' },
   { key: 'insights',      label: '洞察',   icon: '💡', file: 'INSIGHTS.md', group: 'ephemeral' },
 ]
+// 路由 meta.group 决定显示哪组。两个 route(/memories persistent, /scratchpad ephemeral)
+// 共用本组件, 按 meta 滤出对应 kinds。
+const routeGroup = computed(() => String(route.meta?.group || 'persistent'))
 const persistentKinds = computed(() => kinds.filter(k => k.group === 'persistent'))
 const ephemeralKinds = computed(() => kinds.filter(k => k.group === 'ephemeral'))
+// 当前页可见 kinds(persistent 或 ephemeral)
+const visibleKinds = computed(() => routeGroup.value === 'ephemeral' ? ephemeralKinds.value : persistentKinds.value)
+function setDefaultActive() {
+  // 进入页时默认选第一个 tab(按路由组)
+  active.value = visibleKinds.value[0]?.key || 'consciousness'
+}
+// 路由切过来时(同一组件复用)重置 active + reload
+watch(() => route.meta?.group, () => {
+  setDefaultActive()
+  // 清缓存避免读到上一组的 segments
+  segCache.value = {}
+  loaded.value = {}
+}, { immediate: true })
 const active = ref('consciousness')
 
 const loading = ref(false)
@@ -220,8 +221,9 @@ async function reloadAll() {
   // 强制刷新:清 cache 让下次访问必走网络
   segCache.value = {}
   loaded.value = {}
-  // 预加载 consciousness(默认 tab);实体记忆由 MemoryAdvisorTab 自行拉取
-  await loadMemory('consciousness')
+  // 预加载当前路由组的首个 tab; 实体记忆由 MemoryAdvisorTab 自取, 无需父级处理
+  if (active.value === 'assoc') return
+  await loadMemory(active.value || visibleKinds.value[0]?.key || 'consciousness')
 }
 
 watch(active, (v) => {

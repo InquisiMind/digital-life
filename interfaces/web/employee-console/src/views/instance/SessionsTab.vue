@@ -447,12 +447,9 @@ function isInjectionDefaultOpen(inj) {
   // 所有注入默认折叠, 用户主动点开看
   return false
 }
-// 按后端 sys_tool 精确标签分类, 两类:
-// 🔵 蓝 = 事件 / 新消息 (system_context + chat_stream 都是模型收到的外部输入)
-// 🟣 紫 = 默认 (其他: 任务板 / 意识流 / persona / 历史摘要 / 上下文 / 关系)
+// injection 全部同色 — 对用户来说都是"系统背景注入", 没有谁比谁特殊。
+// 真正需要高亮的是 turn 区里的工具调用(发消息/rest 等), 那里有独立配色。
 function injectionStyleClass(inj) {
-  const k = String(inj && inj.sys_tool || '').toLowerCase()
-  if (k === 'system_context' || k === 'chat_stream') return 'inj-event'
   return 'inj-default'
 }
 
@@ -826,19 +823,13 @@ onUnmounted(() => {
   margin-right: 6px;
   vertical-align: middle;
 }
-/* 颜色扎染 — 两类: 事件/消息(蓝) / 其他(紫) */
-.inj-default {    /* 🟣 紫色: 默认 */
+/* 颜色扎染: injection 全部紫色统一(tool_call 在 turn 区按工具名分色) */
+.inj-default {
   border-left: 3px solid #aa77ff !important;
   background: rgba(170, 119, 255, 0.04) !important;
 }
 .inj-default .inj-source { color: #aa77ff; }
 .inj-default .inj-status-dot { background: #aa77ff; box-shadow: 0 0 6px #aa77ff; }
-.inj-event {      /* 🔵 蓝色: 事件/新消息(system_context + chat_stream) */
-  border-left: 3px solid var(--neon-cyan) !important;
-  background: rgba(0, 200, 255, 0.06) !important;
-}
-.inj-event .inj-source { color: var(--neon-cyan); }
-.inj-event .inj-status-dot { background: var(--neon-cyan); box-shadow: 0 0 6px var(--neon-cyan); }
 .call-input-actions {
   display: flex;
   gap: 6px;

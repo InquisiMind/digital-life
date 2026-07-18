@@ -20,12 +20,16 @@
           v-for="w in wakes"
           :key="w.id"
           class="wake-card"
-          :class="{ active: selectedId === w.id }"
+          :class="{ active: selectedId === w.id, error: isWakeError(w) }"
           @click="selectWake(w.id)"
         >
           <div class="wake-card-head">
             <strong class="mono">#{{ shortId(w.id, 6) }}</strong>
-            <span class="brand-sub mono">{{ triggerLabel(metaTrigger(w)) }}</span>
+            <span class="wake-card-tags">
+              <span v-if="metaCallCount(w)" class="tag-callcount mono">🔄 {{ metaCallCount(w) }}</span>
+              <span v-if="isWakeError(w)" class="tag-error mono">Error</span>
+              <span class="brand-sub mono">{{ triggerLabel(metaTrigger(w)) }}</span>
+            </span>
           </div>
           <div class="wake-meta">
             <span class="mono">{{ fmtEpochTime(w.started_at) }}</span>
@@ -61,14 +65,18 @@
           <span>左侧任选一个唤醒查看完整对话 + JSON</span>
         </div>
         <template v-else>
-          <div class="detail-head">
+          <div class="detail-head" :class="{ 'detail-error-header': isCurrentWakeError }">
             <div>
-              <h2 class="page-title" style="font-size: 18px;">Wake #{{ shortId(selectedId, 6) }}</h2>
+              <h2 class="page-title" style="font-size: 18px;">
+                Wake #{{ shortId(selectedId, 6) }}
+                <span v-if="isCurrentWakeError" class="tag-error" style="margin-left: 8px;">Error</span>
+              </h2>
               <div class="brand-sub mono">
                 {{ triggerLabel(detailTrigger) }}
                 · {{ fmtEpoch(detailStarted) }}
                 · {{ fmtDuration(detailStarted, detailEnded) }}
                 · {{ turns.length }} turns
+                · 🔄 {{ detailCallCount }} calls
               </div>
             </div>
             <div class="tag-row">
@@ -76,6 +84,11 @@
                 <el-icon><Document /></el-icon> Raw JSON
               </el-button>
             </div>
+          </div>
+
+          <!-- 错误详情(本 wake 任一 turn 有 error) -->
+          <div v-if="detailError" class="wake-error-banner mono">
+            ⚠️ <strong>本 wake 报错(非自然结束):</strong> {{ detailError }}
           </div>
 
           <!-- injections（注入的上下文块） -->
@@ -95,72 +108,95 @@
             </details>
           </template>
 
-          <!-- turns -->
+          <!-- turns (按 LLM call 分组显示) -->
           <div class="turns-stream">
             <div
-              v-for="turn in turns"
-              :key="turn.id"
-              class="turn"
-              :class="[turnClass(turn), { collapsed: !expandedTurns[turn.id] }]"
+              v-for="group in groupedTurns"
+              :key="group.callSeq"
+              class="call-group"
+              :class="{ collapsed: !expandedCalls[group.callSeq] }"
             >
-              <div class="turn-head" @click="toggleTurn(turn)">
-                <span class="status-dot" :class="turnDotClass(turn)"></span>
-                <strong class="turn-role">{{ roleLabel(turn.role) }}</strong>
-                <span v-if="turn.tool_name" class="tool-tag">{{ turn.tool_name }}</span>
-                <span v-if="turn.llm_call_seq != null" class="call-seq-tag mono">
-                  call #{{ turn.llm_call_seq }}
+              <div class="call-group-head" @click="toggleCall(group.callSeq)">
+                <span class="call-group-badge">🔄 Call #{{ group.callSeq }}</span>
+                <span class="brand-sub mono call-group-summary">
+                  {{ group.summary }}
                 </span>
-                <span class="brand-sub mono" style="margin-left: auto;">
-                  {{ fmtEpochTime(turn.timestamp) }}
+                <span v-if="group.tokenCount" class="brand-sub mono" style="margin-left: auto; color: var(--text-muted);">
+                  {{ group.tokenCount }} tok
                 </span>
                 <el-icon class="expand-icon">
-                  <ArrowDown v-if="!expandedTurns[turn.id]" />
+                  <ArrowDown v-if="!expandedCalls[group.callSeq]" />
                   <ArrowUp v-else />
                 </el-icon>
               </div>
 
-              <!-- 折叠时只显示一行预览 -->
-              <div v-if="!expandedTurns[turn.id]" class="turn-preview mono">
-                {{ previewText(turn) }}
+              <!-- 折叠时只显示 call head + one-line preview -->
+              <div v-if="!expandedCalls[group.callSeq]" class="call-preview mono">
+                {{ group.preview }}
               </div>
 
-              <!-- 展开后：完整内容 -->
+              <!-- 展开时:本 call 的所有 turn(input + output + tool result) -->
               <template v-else>
-                <div v-if="turn.reasoning" class="turn-reasoning mono">
-                  <div class="block-label">💭 reasoning</div>
-                  <div>{{ String(turn.reasoning) }}</div>
-                </div>
-
-                <div v-if="turn.content" class="turn-body">
-                  <div class="block-label" v-if="turn.role === 'user'">⚡ EVENT PAYLOAD</div>
-                  <div v-html="renderMarkdown(turn.content)"></div>
-                </div>
-
-                <!-- tool_calls (assistant 发起) -->
-                <div v-if="Array.isArray(turn.tool_calls) && turn.tool_calls.length" class="tool-calls">
-                  <div v-for="(tc, i) in turn.tool_calls" :key="i" class="tool-call-card">
-                    <div class="block-label">⚙ tool_call</div>
-                    <strong style="color: var(--neon-pink);">{{ safeToolName(tc) }}</strong>
-                    <pre class="mono tool-args">{{ safeToolArgs(tc) }}</pre>
-                    <el-button size="small" text @click="copyText(safeToolArgs(tc))">copy args</el-button>
+                <div
+                  v-for="turn in group.turns"
+                  :key="turn.id"
+                  class="turn"
+                  :class="turnClass(turn)"
+                >
+                  <div class="turn-head">
+                    <span class="status-dot" :class="turnDotClass(turn)"></span>
+                    <strong class="turn-role">{{ roleLabel(turn.role) }}</strong>
+                    <span v-if="turn.tool_name" class="tool-tag">{{ turn.tool_name }}</span>
+                    <span class="brand-sub mono" style="margin-left: auto;">
+                      {{ fmtEpochTime(turn.timestamp) }}
+                    </span>
                   </div>
+
+                  <div v-if="turn.reasoning" class="turn-reasoning mono">
+                    <div class="block-label">💭 reasoning</div>
+                    <details>
+                      <summary class="brand-sub" style="cursor: pointer; font-size: 11px;">展开 ({{ String(turn.reasoning).length }} chars)</summary>
+                      <div>{{ String(turn.reasoning) }}</div>
+                    </details>
+                  </div>
+
+                  <div v-if="turn.content" class="turn-body">
+                    <div class="block-label" v-if="turn.role === 'user'">⚡ EVENT PAYLOAD · 输入</div>
+                    <div class="block-label" v-else-if="turn.role === 'assistant'">🤖 AI 响应 · 输出</div>
+                    <div class="block-label" v-else-if="turn.role === 'tool'">⚙️ 工具结果</div>
+                    <div v-html="renderMarkdown(turn.content)"></div>
+                  </div>
+
+                  <!-- tool_calls (assistant 发起) -->
+                  <div v-if="Array.isArray(turn.tool_calls) && turn.tool_calls.length" class="tool-calls">
+                    <div v-for="(tc, i) in turn.tool_calls" :key="i" class="tool-call-card">
+                      <div class="block-label">⚙ tool_call</div>
+                      <strong style="color: var(--neon-pink);">{{ safeToolName(tc) }}</strong>
+                      <pre class="mono tool-args">{{ safeToolArgs(tc) }}</pre>
+                      <el-button size="small" text @click="copyText(safeToolArgs(tc))">copy args</el-button>
+                    </div>
+                  </div>
+
+                  <div v-if="turn.error" class="turn-error mono">⚠ {{ turn.error }}</div>
                 </div>
 
-                <!-- 每个 call seq 的「完整 LLM input JSON」 -->
-                <div v-if="turn.llm_call_seq != null && (turn.role === 'user' || turn.role === 'assistant')"
-                     class="llm-call-input">
+                <!-- 该 call 完整 LLM input JSON (按需展开) -->
+                <div class="llm-call-input">
                   <el-button
-                    v-if="!callInputs[callKey(turn)]"
+                    v-if="!callInputs[callKeyForSeq(group.callSeq)]"
                     size="small"
-                    :loading="callLoading[callKey(turn)]"
-                    @click="loadCallInput(turn)"
+                    :loading="callLoading[callKeyForSeq(group.callSeq)]"
+                    @click="loadCallInputForSeq(group.callSeq)"
                   >
                     <el-icon><View /></el-icon> 查看完整 LLM 输入 JSON
                   </el-button>
                   <template v-else>
-                    <div class="block-label">📦 LLM Call #{{ turn.llm_call_seq }} input ({{ callInputs[callKey(turn)]?.length || 0 }} messages · model {{ callInputModels[callKey(turn)] || '—' }})</div>
+                    <div class="block-label">
+                      📦 LLM Call #{{ group.callSeq }} input
+                      ({{ callInputs[callKeyForSeq(group.callSeq)]?.length || 0 }} messages · model {{ callInputModels[callKeyForSeq(group.callSeq)] || '—' }})
+                    </div>
                     <div class="call-input-list">
-                      <details v-for="(m, mi) in callInputs[callKey(turn)]" :key="mi" class="call-input-msg">
+                      <details v-for="(m, mi) in callInputs[callKeyForSeq(group.callSeq)]" :key="mi" class="call-input-msg">
                         <summary>
                           <span class="msg-role" :class="'role-' + m.role">{{ m.role }}</span>
                           <span class="brand-sub mono">{{ safeSlice(typeof m.content === 'string' ? m.content : JSON.stringify(m.content), 0, 80) }}</span>
@@ -168,20 +204,11 @@
                         <pre class="mono msg-json">{{ JSON.stringify(m, null, 2) }}</pre>
                       </details>
                     </div>
-                    <el-button size="small" text @click="copyText(JSON.stringify(callInputs[callKey(turn)], null, 2))">
+                    <el-button size="small" text @click="copyText(JSON.stringify(callInputs[callKeyForSeq(group.callSeq)], null, 2))">
                       copy 全部 input JSON
                     </el-button>
                   </template>
                 </div>
-
-                <div v-if="turn.error" class="turn-error mono">⚠ {{ turn.error }}</div>
-
-                <!-- turn raw JSON -->
-                <details class="turn-raw">
-                  <summary>raw turn JSON</summary>
-                  <pre class="mono raw-json">{{ JSON.stringify(turn, null, 2) }}</pre>
-                  <el-button size="small" text @click="copyText(JSON.stringify(turn, null, 2))">copy</el-button>
-                </details>
               </template>
             </div>
           </div>
@@ -214,6 +241,7 @@ const turns = ref([])
 const injections = ref([])
 const wakeMeta = ref(null)
 const expandedTurns = reactive({})  // {turnId: bool}
+const expandedCalls = reactive({})  // {callSeq: bool} — 按 LLM call 折叠, 默认全展开
 const callInputs = reactive({})      // {callKey: messages[]}
 const callInputModels = reactive({})
 const callLoading = reactive({})
@@ -235,6 +263,28 @@ function metaChat(w) {
   if (typeof meta === 'string') { try { return JSON.parse(meta || '{}').trigger_chat_id } catch { return '' } }
   return meta && meta.trigger_chat_id
 }
+function metaCallCount(w) {
+  const meta = w && w.meta_json
+  let m = meta
+  if (typeof m === 'string') { try { m = JSON.parse(m || '{}') } catch { return 0 } }
+  if (!m) return 0
+  return Number(m.llm_call_count) || 0
+}
+function isWakeError(w) {
+  let meta = w && w.meta_json
+  if (typeof meta === 'string') { try { meta = JSON.parse(meta || '{}') } catch { return false } }
+  return meta && meta.end_reason === 'error'
+}
+// 找本 wake 里第一条有 error 字段的 turn, 用于详情头展示详情
+const detailError = computed(() => {
+  if (!Array.isArray(turns.value)) return ''
+  for (const t of turns.value) {
+    if (t && t.error) return String(t.error)
+  }
+  return ''
+})
+const detailCallCount = computed(() => metaCallCount(wakeMeta.value) || turns.value.length || 0)
+const isCurrentWakeError = computed(() => isWakeError(wakeMeta.value))
 
 const detailTrigger = computed(() => metaTrigger(wakeMeta.value) || '—')
 const detailStarted = computed(() => wakeMeta.value?.started_at)
@@ -301,6 +351,7 @@ async function selectWake(wakeId) {
   Object.keys(callInputs).forEach(k => delete callInputs[k])
   Object.keys(callInputModels).forEach(k => delete callInputModels[k])
   Object.keys(expandedTurns).forEach(k => delete expandedTurns[k])
+  Object.keys(expandedCalls).forEach(k => delete expandedCalls[k])
 
   try {
     const d = await instanceApi(iid.value).wakeDetail(wakeId)
@@ -308,9 +359,9 @@ async function selectWake(wakeId) {
       wakeMeta.value = d.wake || null
       turns.value = Array.isArray(d.turns) ? d.turns : []
       injections.value = Array.isArray(d.injections) ? d.injections : []
-      // 默认：user/assistant 展开，tool/system 折叠
-      for (const t of turns.value) {
-        expandedTurns[t.id] = t.role === 'user' || t.role === 'assistant'
+      // 默认:所有 call 展开
+      for (const g of groupedTurns.value) {
+        expandedCalls[g.callSeq] = true
       }
     }
   } finally {
@@ -318,15 +369,80 @@ async function selectWake(wakeId) {
   }
 }
 
+// 按 llm_call_seq 聚合 turns (input = role in [user, system], output = assistant/tool)
+const groupedTurns = computed(() => {
+  if (!Array.isArray(turns.value) || !turns.value.length) return []
+  const map = new Map()
+  for (const t of turns.value) {
+    const seq = t.llm_call_seq != null ? Number(t.llm_call_seq) : null
+    if (seq == null) continue // 没 seq 的 turn(如审计记录)跳过
+    if (!map.has(seq)) {
+      map.set(seq, { callSeq: seq, turns: [], tokenCount: 0, summary: '', preview: '' })
+    }
+    const g = map.get(seq)
+    g.turns.push(t)
+    if (t.token_count) g.tokenCount += Number(t.token_count) || 0
+  }
+  const groups = Array.from(map.values()).sort((a, b) => a.callSeq - b.callSeq)
+  // 给每组算大字 summary + preview(易扫读)
+  for (const g of groups) {
+    // summary: 找 assistant turn 的 tool_calls 名字列表(没就显示 content preview)
+    const asstTurns = g.turns.filter(t => t.role === 'assistant')
+    const toolNames = []
+    for (const at of asstTurns) {
+      if (Array.isArray(at.tool_calls)) {
+        for (const tc of at.tool_calls) {
+          const n = safeToolName(tc)
+          if (n) toolNames.push(n)
+        }
+      }
+    }
+    // 也带上 user 事件触发源(role=user 的 content 头)
+    const userTurn = g.turns.find(t => t.role === 'user')
+    const userHead = userTurn ? String(userTurn.content || '').split('\n')[0].slice(0, 60) : ''
+    if (toolNames.length) {
+      g.summary = `${asstTurns.length} 个决策 → ${toolNames.join(', ')}`
+    } else if (userHead) {
+      g.summary = `事件: ${userHead}${userHead.length >= 60 ? '…' : ''}`
+    } else {
+      g.summary = `${g.turns.length} turns`
+    }
+    // preview = 第一条 user content 80 chars
+    g.preview = userHead ? userHead.slice(0, 100) : (asstTurns[0]?.content || '').slice(0, 100) || ''
+  }
+  return groups
+})
+
+function toggleCall(callSeq) {
+  expandedCalls[callSeq] = !expandedCalls[callSeq]
+}
 function toggleTurn(turn) {
   expandedTurns[turn.id] = !expandedTurns[turn.id]
 }
-
 function expandAll() {
-  for (const t of turns.value) expandedTurns[t.id] = true
+  for (const g of groupedTurns.value) expandedCalls[g.callSeq] = true
 }
 function collapseAll() {
-  for (const t of turns.value) expandedTurns[t.id] = false
+  for (const g of groupedTurns.value) expandedCalls[g.callSeq] = false
+}
+
+function callKeyForSeq(callSeq) {
+  return `${selectedId.value}:${callSeq}`
+}
+async function loadCallInputForSeq(callSeq) {
+  const key = callKeyForSeq(callSeq)
+  callLoading[key] = true
+  try {
+    const d = await instanceApi(iid.value).wakeCallInput(selectedId.value, callSeq)
+    if (d && !d.error) {
+      callInputs[key] = Array.isArray(d.messages) ? d.messages : []
+      callInputModels[key] = d.model || '—'
+    } else if (d && d.error) {
+      ElMessage.error(d.error)
+    }
+  } finally {
+    callLoading[key] = false
+  }
 }
 
 function callKey(turn) {
@@ -439,6 +555,47 @@ onMounted(load)
   background: var(--neon-cyan-soft);
   box-shadow: var(--shadow-glow-cyan);
 }
+.wake-card.error {
+  border-color: #ff5577;
+  background: rgba(255, 85, 119, 0.06);
+}
+.wake-card.error.active {
+  border-color: #ff5577;
+  background: rgba(255, 85, 119, 0.14);
+  box-shadow: 0 0 12px rgba(255, 85, 119, 0.4);
+}
+.wake-card-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.tag-callcount {
+  background: rgba(0, 200, 255, 0.12);
+  color: #6cf;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+.tag-error {
+  background: rgba(255, 85, 119, 0.18);
+  color: #ff5577;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.wake-error-banner {
+  background: rgba(255, 85, 119, 0.1);
+  border-left: 3px solid #ff5577;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #ff7799;
+  word-break: break-all;
+}
+.detail-error-header {
+  border-color: #ff5577;
+}
 .wake-card-head {
   display: flex;
   justify-content: space-between;
@@ -480,6 +637,40 @@ onMounted(load)
 .inj-content { margin-top: 6px; font-size: 12px; color: var(--text-secondary); white-space: pre-wrap; max-height: 240px; overflow-y: auto; }
 
 .turns-stream { display: flex; flex-direction: column; gap: var(--space-3); }
+.call-group {
+  border: 1px solid var(--border-line-strong);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: rgba(0, 200, 255, 0.03);
+  cursor: pointer;
+}
+.call-group:hover { border-color: var(--neon-cyan); }
+.call-group.collapsed { padding: 8px 12px; background: var(--bg-panel); }
+.call-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.call-group-badge {
+  background: var(--neon-cyan-soft);
+  color: var(--neon-cyan);
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+.call-group-summary { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.call-preview {
+  margin-top: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .turn {
   background: var(--bg-panel);
   border: 1px solid var(--border-line);

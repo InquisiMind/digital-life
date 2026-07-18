@@ -94,7 +94,7 @@ _resolve_energy_token_constants()
 
 # 主动探索
 INITIATIVE_ENERGY_THRESHOLD = 50.0  # 精力 > 50 才可以主动探索
-INITIATIVE_IDLE_HOURS = 1.0         # 空闲 > 1 小时触发
+INITIATIVE_IDLE_HOURS = 2.0         # 空闲 > 2 小时触发 (2026-07-18 从 1.0 提到 2.0，减少主动探索打扰)
 
 
 def _find_segment(energy: float):

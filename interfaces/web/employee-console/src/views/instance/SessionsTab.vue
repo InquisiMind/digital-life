@@ -91,20 +91,23 @@
             ⚠️ <strong>本 wake 报错(非自然结束):</strong> {{ detailError }}
           </div>
 
-          <!-- injections（注入的上下文块） -->
+          <!-- injections（注入的上下文块）——每条独立折叠,只默认展开高价值类型 -->
           <template v-if="injections.length">
-            <details class="injection-block" open>
-              <summary>上下文注入 ({{ injections.length }}) · 点击折叠</summary>
-              <div v-for="inj in injections" :key="inj.id" class="injection-item">
-                <div class="inj-head">
-                  <span class="inj-source">{{ inj.sys_tool || 'unknown' }}</span>
-                  <span class="inj-scope" v-if="inj.scope_id && inj.scope_id !== '*'">
-                    @ {{ safeSlice(inj.scope_id, 0, 24) }}
-                  </span>
-                  <el-button size="small" text @click="copyText(JSON.stringify(inj, null, 2))">copy raw</el-button>
-                </div>
-                <div class="inj-content mono" v-html="renderMarkdown(inj.content)"></div>
-              </div>
+            <div class="brand-sub section-label" style="margin-top: 4px;">CONTEXT INJECTIONS ({{ injections.length }})</div>
+            <details
+              v-for="inj in injections"
+              :key="inj.id"
+              class="injection-block"
+              :open="isInjectionDefaultOpen(inj)"
+            >
+              <summary>
+                <span class="inj-source">{{ inj.sys_tool || 'unknown' }}</span>
+                <span class="inj-scope" v-if="inj.scope_id && inj.scope_id !== '*'">
+                  @ {{ safeSlice(inj.scope_id, 0, 24) }}
+                </span>
+                <el-button size="small" text @click.stop="copyText(JSON.stringify(inj, null, 2))">copy raw</el-button>
+              </summary>
+              <div class="inj-content mono" v-html="renderMarkdown(inj.content)"></div>
             </details>
           </template>
 
@@ -180,34 +183,42 @@
                   <div v-if="turn.error" class="turn-error mono">⚠ {{ turn.error }}</div>
                 </div>
 
-                <!-- 该 call 完整 LLM input JSON (按需展开) -->
+                <!-- 该 call 完整 LLM input JSON — 不在页面内渲染所有 messages, 直接下载/打开本地文件 -->
                 <div class="llm-call-input">
-                  <el-button
-                    v-if="!callInputs[callKeyForSeq(group.callSeq)]"
-                    size="small"
-                    :loading="callLoading[callKeyForSeq(group.callSeq)]"
-                    @click="loadCallInputForSeq(group.callSeq)"
-                  >
-                    <el-icon><View /></el-icon> 查看完整 LLM 输入 JSON
-                  </el-button>
-                  <template v-else>
-                    <div class="block-label">
-                      📦 LLM Call #{{ group.callSeq }} input
-                      ({{ callInputs[callKeyForSeq(group.callSeq)]?.length || 0 }} messages · model {{ callInputModels[callKeyForSeq(group.callSeq)] || '—' }})
-                    </div>
-                    <div class="call-input-list">
-                      <details v-for="(m, mi) in callInputs[callKeyForSeq(group.callSeq)]" :key="mi" class="call-input-msg">
-                        <summary>
-                          <span class="msg-role" :class="'role-' + m.role">{{ m.role }}</span>
-                          <span class="brand-sub mono">{{ safeSlice(typeof m.content === 'string' ? m.content : JSON.stringify(m.content), 0, 80) }}</span>
-                        </summary>
-                        <pre class="mono msg-json">{{ JSON.stringify(m, null, 2) }}</pre>
-                      </details>
-                    </div>
-                    <el-button size="small" text @click="copyText(JSON.stringify(callInputs[callKeyForSeq(group.callSeq)], null, 2))">
-                      copy 全部 input JSON
+                  <div class="block-label">
+                    📦 LLM Call #{{ group.callSeq }} input ({{ callInputs[callKeyForSeq(group.callSeq)]?.length || '?' }} messages)
+                  </div>
+                  <div class="call-input-actions">
+                    <el-button size="small" @click="downloadCallInput(group.callSeq)" title="下载完整 LLM 输入 JSON 文件(可用编辑器或新 tab 打开)">
+                      <el-icon><Download /></el-icon> 打开本地 JSON
                     </el-button>
-                  </template>
+                    <el-button
+                      v-if="!callInputs[callKeyForSeq(group.callSeq)]"
+                      size="small" text
+                      :loading="callLoading[callKeyForSeq(group.callSeq)]"
+                      @click="loadCallInputForSeq(group.callSeq)"
+                      title="在面板内分组加载各 message(压栈高,不推荐)"
+                    >
+                      或在面板内展开
+                    </el-button>
+                    <el-button
+                      v-if="callInputs[callKeyForSeq(group.callSeq)]"
+                      size="small" text
+                      @click="copyText(JSON.stringify(callInputs[callKeyForSeq(group.callSeq)], null, 2))"
+                    >
+                      copy 全部
+                    </el-button>
+                  </div>
+                  <!-- 内联展开的 messages 列表(手动点开"在面板内展开"后才有, 默认隐藏) -->
+                  <div v-if="callInputs[callKeyForSeq(group.callSeq)]" class="call-input-list">
+                    <details v-for="(m, mi) in callInputs[callKeyForSeq(group.callSeq)]" :key="mi" class="call-input-msg">
+                      <summary>
+                        <span class="msg-role" :class="'role-' + m.role">{{ m.role }}</span>
+                        <span class="brand-sub mono">{{ safeSlice(typeof m.content === 'string' ? m.content : JSON.stringify(m.content), 0, 80) }}</span>
+                      </summary>
+                      <pre class="mono msg-json">{{ JSON.stringify(m, null, 2) }}</pre>
+                    </details>
+                  </div>
                 </div>
               </template>
             </div>
@@ -221,7 +232,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
-import { Refresh, ArrowDown, ArrowUp, View, Document } from '@element-plus/icons-vue'
+import { Refresh, ArrowDown, ArrowUp, View, Document, Download } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { instanceApi } from '@/api/client'
 import {
@@ -413,6 +424,24 @@ const groupedTurns = computed(() => {
   return groups
 })
 
+function isInjectionDefaultOpen(inj) {
+  // 只默认展开高价值类型:事件 payload / mid-session 注入 / 给人发消息回执
+  // 其他(记忆 / 待办面板 / persona / skill_index / 近期教训 等)默认折叠, 否则信息密度太低
+  const DEFAULT_OPEN = new Set([
+    'system_context',  // 事件 payload / wake 上下文
+    'mid_session',     // 会话中途新到达的消息
+    'event_inject',
+    'express',         // 模型给人发消息
+    'wake_payload',
+  ])
+  const k = String(inj && inj.sys_tool || '').toLowerCase()
+  if (DEFAULT_OPEN.has(k)) return true
+  // 内容里含「新消息」/「表达」/「emit」等关键词也开
+  const c = String(inj && inj.content || '').slice(0, 200)
+  if (/新消息|会话中途|@?[一-龥]+:\s/.test(c)) return true
+  return false
+}
+
 function toggleCall(callSeq) {
   expandedCalls[callSeq] = !expandedCalls[callSeq]
 }
@@ -443,6 +472,34 @@ async function loadCallInputForSeq(callSeq) {
   } finally {
     callLoading[key] = false
   }
+}
+async function downloadCallInput(callSeq) {
+  // 先把 call input 拉到内存(已有 cache 时直接用), 然后浏览器下载
+  const key = callKeyForSeq(callSeq)
+  let msgs = callInputs[key]
+  if (!msgs) {
+    await loadCallInputForSeq(callSeq)
+    msgs = callInputs[key]
+  }
+  if (!msgs || !Array.isArray(msgs)) {
+    ElMessage.warning('未拉取到该 call 的 input data')
+    return
+  }
+  const dump = JSON.stringify({
+    wake_id: selectedId.value,
+    call_seq: callSeq,
+    messages: msgs,
+    model: callInputModels[key] || null,
+  }, null, 2)
+  const blob = new Blob([dump], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `wake-${selectedId.value}__call-${callSeq}__input.json`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
 }
 
 function callKey(turn) {
@@ -633,6 +690,13 @@ onMounted(load)
 }
 .inj-head { display: flex; align-items: center; gap: 8px; }
 .inj-source { color: var(--neon-magenta); font-family: var(--font-mono); font-size: 11px; }
+.call-input-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 4px 0;
+}
 .inj-scope { color: var(--text-muted); font-size: 11px; }
 .inj-content { margin-top: 6px; font-size: 12px; color: var(--text-secondary); white-space: pre-wrap; max-height: 240px; overflow-y: auto; }
 

@@ -379,11 +379,9 @@ async function selectWake(wakeId) {
       turns.value = Array.isArray(d.turns) ? d.turns : []
       injections.value = Array.isArray(d.injections) ? d.injections : []
       // 默认:所有 call 展开
-      // 默认所有 call 折叠, 只第一个展开(让用户直接看到 event + system_context)
-      const callSeqs = groupedTurns.value.map(g => g.callSeq).sort((a, b) => a - b)
-      const firstSeq = callSeqs[0]
+      // 默认所有 call 折叠, 让用户根据按钮提示主动点开
       for (const g of groupedTurns.value) {
-        expandedCalls[g.callSeq] = (g.callSeq === firstSeq)
+        expandedCalls[g.callSeq] = false
       }
       // init injection 按 isInjectionDefaultOpen 设默认值
       for (const inj of injections.value) {
@@ -624,11 +622,9 @@ function startWakeStream(wakeId) {
           turns.value = d.turns
         }
         if (Array.isArray(d.injections)) injections.value = d.injections
-        // 默认所有 call 折叠, 只第一个展开
-        const callSeqs2 = groupedTurns.value.map(g => g.callSeq).sort((a, b) => a - b)
-        const firstSeq2 = callSeqs2[0]
+        // 默认所有 call 折叠, 用户主动点开
         for (const g of groupedTurns.value) {
-          expandedCalls[g.callSeq] = (g.callSeq === firstSeq2)
+          expandedCalls[g.callSeq] = false
         }
         for (const inj of injections.value) {
           injectionOpen[inj.id] = isInjectionDefaultOpen(inj)

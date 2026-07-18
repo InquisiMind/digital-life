@@ -98,10 +98,12 @@
               v-for="inj in injections"
               :key="inj.id"
               class="injection-block"
+              :class="injectionStyleClass(inj)"
               :open="!!injectionOpen[inj.id]"
               @toggle.prevent.stop="injectionOpen[inj.id] = !injectionOpen[inj.id]"
             >
               <summary>
+                <span class="inj-status-dot" :class="injectionStyleClass(inj)"></span>
                 <span class="inj-source">{{ inj.sys_tool || 'unknown' }}</span>
                 <span class="inj-scope" v-if="inj.scope_id && inj.scope_id !== '*'">
                   @ {{ safeSlice(inj.scope_id, 0, 24) }}
@@ -439,17 +441,18 @@ const groupedTurns = computed(() => {
 })
 
 function isInjectionDefaultOpen(inj) {
-  // 只默认展开用户关心的高价值类型:
-  //   - system_context  : wake 事件 payload(wake 触发原因 + user 注入)
-  //   - task_board      : 待办面板(看进度)
-  // 其他历史/架构/persona 类默认折叠, 用户主动点开
-  const DEFAULT_OPEN = new Set([
-    'system_context',  // 事件 + 当前状态 + 注入的新消息
-    'task_board',      // 待办面板
-  ])
+  // 默认全折叠 — 只高优先级的 wake 事件 payload 默认展开
   const k = String(inj && inj.sys_tool || '').toLowerCase()
-  if (DEFAULT_OPEN.has(k)) return true
-  return false
+  return k === 'system_context'
+}
+function injectionStyleClass(inj) {
+  // 颜色扎染 — 方便用户扫读时定位关键注入
+  const k = String(inj && inj.sys_tool || '').toLowerCase()
+  if (k === 'system_context') return 'inj-event'        // 蓝色: 事件 payload
+  const c = String(inj && inj.content || '').toLowerCase()
+  if (/rest\(|express_to_human|@alpha|@zero|@张浩普|表达|发送/.test(c)) return 'inj-action'  // 橙色: 发消息/rest
+  if (k === 'session_digest') return 'inj-digest'        // 灰色: 摘要
+  return ''
 }
 
 function toggleCall(callSeq) {
@@ -773,6 +776,32 @@ onUnmounted(() => {
 }
 .inj-head { display: flex; align-items: center; gap: 8px; }
 .inj-source { color: var(--neon-magenta); font-family: var(--font-mono); font-size: 11px; }
+.inj-status-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  margin-right: 6px;
+  vertical-align: middle;
+}
+/* 颜色扎染 — 让关键注入一眼能找到 */
+.inj-event {
+  border-left: 3px solid var(--neon-cyan) !important;
+  background: rgba(0, 200, 255, 0.04) !important;
+}
+.inj-event .inj-source { color: var(--neon-cyan); }
+.inj-event .inj-status-dot { background: var(--neon-cyan); box-shadow: 0 0 6px var(--neon-cyan); }
+.inj-action {
+  border-left: 3px solid #ff9944 !important;
+  background: rgba(255, 153, 68, 0.04) !important;
+}
+.inj-action .inj-source { color: #ff9944; }
+.inj-action .inj-status-dot { background: #ff9944; box-shadow: 0 0 6px #ff9944; }
+.inj-digest {
+  border-left: 3px solid var(--text-muted) !important;
+  opacity: 0.85;
+}
+.inj-digest .inj-status-dot { background: var(--text-muted); }
 .call-input-actions {
   display: flex;
   gap: 6px;

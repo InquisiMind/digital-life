@@ -307,6 +307,7 @@ class MonitorConsoleWorkflow:
         # 已退役(goals/him)从可选 list 移除,read_goals/read_about_him 改返退役提示。
         return {
             "consciousness": "CONSCIOUSNESS.md",
+            "consciousness_archive": "CONSCIOUSNESS.archive.md",  # 老的意识流归档
             "scratchpad":    "SCRATCHPAD.md",
             "sent_log":      "SENT_LOG.md",
             "plans":         "PLANS.md",

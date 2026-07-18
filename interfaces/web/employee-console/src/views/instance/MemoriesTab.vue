@@ -41,23 +41,34 @@
         <div class="seg-toolbar">
           <el-button size="small" text @click="collapseAll">全部折叠</el-button>
           <el-button size="small" text @click="expandAll">全部展开</el-button>
+          <el-button v-if="visibleDaysCount < totalDaysCount" size="small" text @click="showMoreDays">
+            加载更多日期 ({{ visibleDaysCount }}/{{ totalDaysCount }})
+          </el-button>
         </div>
 
-        <details
-          v-for="(seg, idx) in segments"
-          :key="idx"
-          class="segment-card"
-          :open="idx < 10"
-          :ref="el => segRefs[idx] = el"
-        >
-          <summary class="segment-head">
-            <span class="segment-title mono" v-if="seg.title">{{ seg.title }}</span>
-            <span class="segment-title-untagged" v-else>概览</span>
-            <span class="brand-sub mono segment-size">{{ seg.body.length }} 字</span>
-            <el-button size="small" text @click.prevent.stop="copyText(seg.body)">copy</el-button>
-          </summary>
-          <div class="segment-body" v-html="renderMarkdown(seg.body)"></div>
-        </details>
+        <!-- 按天分组渲染, 每天一个折叠卡 -->
+        <template v-for="group in visibleDayGroupsWithLabel" :key="group.dateKey">
+          <details class="day-group" :open="group.isRecent">
+            <summary>
+              <strong class="mono">📅 {{ group.dateLabel }}</strong>
+              <span class="brand-sub mono" style="margin-left: 8px;">{{ group.segs.length }} 段 · {{ group.totalChars }} 字</span>
+            </summary>
+            <details
+              v-for="(seg, idx) in group.segs"
+              :key="group.dateKey + '-' + idx"
+              class="segment-card"
+              :open="idx < 3"
+            >
+              <summary class="segment-head">
+                <span class="segment-title mono" v-if="seg.title">{{ seg.title }}</span>
+                <span class="segment-title-untagged" v-else>概览</span>
+                <span class="brand-sub mono segment-size">{{ seg.body.length }} 字</span>
+                <el-button size="small" text @click.prevent.stop="copyText(seg.body)">copy</el-button>
+              </summary>
+              <div class="segment-body" v-html="renderMarkdown(seg.body)"></div>
+            </details>
+          </details>
+        </template>
       </div>
     </template>
 
@@ -85,6 +96,7 @@ const iid = computed(() => String(route.params.iid || ''))
 const kinds = [
   // 持久化档案 - 永久保留 / 历史可追溯
   { key: 'consciousness', label: '意识流', icon: '🌀', file: 'CONSCIOUSNESS.md', group: 'persistent' },
+  { key: 'consciousness_archive', label: '意识流·归档', icon: '🗃️', file: 'CONSCIOUSNESS.archive.md', group: 'persistent' },
   { key: 'assoc',         label: '实体',   icon: '👤', file: '/entities (人/项目/概念)', group: 'persistent' },
   { key: 'diary',         label: '日记',   icon: '📔', file: 'diary/', group: 'persistent' },
   { key: 'lessons',       label: '教训',   icon: '⚠️', file: 'LESSONS.md (按主题分节)', group: 'persistent' },
@@ -143,9 +155,6 @@ function splitByChapters(content) {
   const lines = String(content).split('\n')
   const out = []
   let current = null
-  // 是否所有内容都是"一行记录"模式(所有行匹配 - [...] 或 - xxxts)
-  // INSIGHTS.md 这种:append 只有两段(header + 一大块 - [kind] ts text)
-  // 把这种一条行单独切成段让折叠/展开更精准
   for (const line of lines) {
     if (/^##\s/.test(line)) {
       if (current) out.push(current)
@@ -166,7 +175,6 @@ function splitByChapters(content) {
     for (const s of segs) {
       const bulletLines = s.body.split('\n').filter(l => /^- \[\w+\]/.test(l))
       if (bulletLines.length >= 2) {
-        // 切成独立段
         for (const bl of bulletLines) {
           const m = bl.match(/^-\s*\[(\w+)\]\s*([^\s]+)\s*(.*)$/)
           const titlePath = m ? `${m[1]} · ${m[2].slice(5, 16)}` : bl.slice(0, 40)
@@ -178,8 +186,64 @@ function splitByChapters(content) {
     }
     segs = flat
   }
-  return segs.reverse()
+  // 给每段抽 dateKey (YYYY-MM-DD) 给前端按天分组用
+  for (const s of segs) {
+    s.dateKey = extractDateKey(s.title, s.body)
+  }
+  return segs
 }
+
+function extractDateKey(title, body) {
+  // 从 title `## 2026-07-15T10:00:00+08:00 [tag]` 或 body 首行 `- [kind] 2026-07-15T...`
+  const sample = `${title}\n${body}`
+  const m = sample.match(/(\d{4}-\d{2}-\d{2})/)
+  return m ? m[1] : '未知日期'
+}
+
+// 按天分组 + 懒加载(初始显示最近 3 天)
+const dayGroups = computed(() => {
+  // 按 dateKey 分组 (segments 是 reverse 后的, 最近段在前)
+  const map = new Map()  // dateKey -> {dateKey, segs, totalChars, isRecent}
+  for (const s of segments.value) {
+    const dk = s.dateKey || '未知日期'
+    if (!map.has(dk)) map.set(dk, { dateKey: dk, segs: [], totalChars: 0, isRecent: false })
+    const g = map.get(dk)
+    g.segs.push(s)
+    g.totalChars += (s.body || '').length
+  }
+  // 倒序(最近在前)+ 标 isRecent(头 2 篇 recent)
+  const arr = Array.from(map.values())
+  arr.forEach((g, idx) => { g.isRecent = idx < 2 })
+  return arr
+})
+const totalDaysCount = computed(() => dayGroups.value.length)
+const maxVisibleDays = ref(3)  // 默认显示最近 3 天, "加载更多" +5
+const visibleDaysCount = computed(() => Math.min(maxVisibleDays.value, totalDaysCount.value))
+const visibleDayGroups = computed(() => dayGroups.value.slice(0, maxVisibleDays.value))
+function showMoreDays() {
+  maxVisibleDays.value = Math.min(maxVisibleDays.value + 5, totalDaysCount.value)
+}
+// 切 tab 时重置 maxVisibleDays
+watch(active, () => { maxVisibleDays.value = 3 })
+
+const groupDateLabel = computed(() => {  // unused,保留扩展
+  return (dk) => dk
+})
+const dayGroupsWithLabel = computed(() => {
+  // 给每组算 dateLabel (如: "2026-07-15" + weekday)
+  const wk = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+  return visibleDayGroups.value.map(g => {
+    let label = g.dateKey
+    const m = (g.dateKey || '').match(/^(\d{4})-(\d{2})-(\d{2})$/)
+    if (m) {
+      const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+      if (!isNaN(d.getTime())) label = `${g.dateKey} ${wk[d.getDay()] || ''}`
+    }
+    return { ...g, dateLabel: label }
+  })
+})
+// 重新导出 visibleDayGroups 含 label
+const visibleDayGroupsWithLabel = dayGroupsWithLabel
 
 async function loadMemory(kind) {
   // cache hit:segCache[kind] 是 array(可能空 []=空内容文件)→ 直接复用,不延迟
@@ -325,6 +389,24 @@ onMounted(() => {
   justify-content: flex-end;
   gap: 4px;
   margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+
+.day-group {
+  border: 1px solid var(--border-line-strong);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  margin-bottom: var(--space-3);
+  background: rgba(0, 200, 255, 0.02);
+}
+.day-group > summary {
+  cursor: pointer;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--border-line);
+  margin-bottom: 6px;
+}
+.day-group[open] > summary {
+  border-bottom-style: solid;
 }
 
 .segment-card {

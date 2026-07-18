@@ -121,8 +121,9 @@
               :key="group.callSeq"
               class="call-group"
               :class="{ collapsed: !expandedCalls[group.callSeq] }"
+              @click="toggleCall(group.callSeq)"
             >
-              <div class="call-group-head" @click="toggleCall(group.callSeq)">
+              <div class="call-group-head">
                 <span class="call-group-badge">🔄 Call #{{ group.callSeq }}</span>
                 <span class="brand-sub mono call-group-summary">
                   {{ group.summary }}
@@ -137,12 +138,12 @@
               </div>
 
               <!-- 折叠时只显示 call head + one-line preview -->
-              <div v-if="!expandedCalls[group.callSeq]" class="call-preview mono" @click="toggleCall(group.callSeq)">
+              <div v-if="!expandedCalls[group.callSeq]" class="call-preview mono">
                 {{ group.preview }}
               </div>
 
               <!-- 展开时:本 call 的所有 turn(input + output + tool result) -->
-              <template v-else>
+              <div v-else class="call-expanded-body" @click.stop>
                 <div
                   v-for="turn in group.turns"
                   :key="turn.id"
@@ -223,7 +224,7 @@
                     </details>
                   </div>
                 </div>
-              </template>
+              </div>
             </div>
           </div>
         </template>

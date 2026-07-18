@@ -772,7 +772,23 @@ onUnmounted(() => {
   border-radius: var(--radius);
   padding: 10px 12px;
 }
-.injection-block summary { cursor: pointer; color: var(--text-muted); font-family: var(--font-mono); font-size: 12px; }
+.injection-block summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  margin: -6px -8px;
+  /* list-style: \25BE 标记默认在左侧 */
+  user-select: none;
+}
+.injection-block summary:hover {
+  background: var(--bg-overlay);
+  border-radius: var(--radius);
+}
 .injection-item {
   margin-top: 8px;
   padding: 6px 0;
@@ -831,6 +847,11 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   font-size: 13px;
+  padding: 4px 2px;
+  user-select: none;
+}
+.call-group-head:hover {
+  color: var(--neon-cyan);
 }
 .call-group-badge {
   background: var(--neon-cyan-soft);

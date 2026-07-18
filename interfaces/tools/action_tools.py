@@ -1165,7 +1165,7 @@ registry.register(
     toolset="actions",
     schema={
         "name": "write_diary",
-        "description": "写日记。只给自己看，不会发给任何人。消耗精力。",
+        "description": "写日记(diary/YYYY-MM-DD.md, 按天分文件)。只给自己看, 不发给任何人。晚间复盘(self_review)时必写一段: 今天做了什么/学到什么/明天重点。消耗精力。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -2809,13 +2809,13 @@ registry.register(
             "休息 — 设定闹钟 + 结束 session。两步式：\n"
             "\n"
             "## 创建新闹钟(默认)\n"
-            "  rest(until='2026-07-18T21:20:00+08:00')\n"
+            "  rest(until='<ISO8601 时间>')\n"
             "  第一次调 → 返睡前提示卡(待办 / 灵感 / 闹钟清单)，看一眼处理完。\n"
             "  第二次调同样参数 → 真睡，session 结束，BLOCKED。\n"
             "\n"
             "## 复用现有闹钟(overlap 场景)\n"
             "  rest(reuse=<id>)，其中的 id 来自当前 wake 注入的「📅 日程」段里\n"
-            "  标注的 (#{id})。例如 `21:20 → 晚间复盘 (#3926)` 就 reuse=3926。\n"
+            "  标注的 (#{id})。例如 `21:20 → 晚间复盘 (#NNN)` 就 reuse=NNN。\n"
             "  ⚠️ **不要凭记忆传 reuse id** — 上次 wake 看到的 id 可能已触发。\n"
             "  只用本次 wake 注入的日程清单里标注的 id，或先调 sense_schedule\n"
             "  查当前 pending 闹钟。21:00 选择或 reuse 不确定时，直接 rest(until=…) 新建更简单。\n"

@@ -376,7 +376,7 @@ registry.register(
     toolset="senses",
     schema={
         "name": "sense_vitals",
-        "description": "感知当前精力状态。精力>40时无法入睡。",
+        "description": "感知当前精力(数值/趋势/是否可入睡)。精力>40时无法 rest。每次 wake 已自动注入, 一般不用手动调, 除非想看精确数值。",
         "parameters": {"type": "object", "properties": {}},
     },
     handler=_handle_sense_vitals,
@@ -925,7 +925,7 @@ registry.register(
     toolset="senses",
     schema={
         "name": "sense_context",
-        "description": "查看当前的交接上下文——昨晚复盘留给今天的备忘。",
+        "description": "查看交接上下文(CONTEXT.md)——上次复盘留给今天的 jump-in 备忘:今日重点/注意事项/下一步。每次 wake 已自动注入, 不用手动调除非内容被覆盖想看旧版。",
         "parameters": {"type": "object", "properties": {}},
     },
     handler=_handle_sense_context,
@@ -1252,7 +1252,7 @@ registry.register(
     toolset="senses",
     schema={
         "name": "sense_self_knowledge",
-        "description": "读自我认知档案——对自己行为模式的中立观察。",
+        "description": "读自我认知档案(SELF_KNOWLEDGE.md)——自己观察到的行为模式/偏好/倾向。self_review 时看一眼, 看新观察是否需要追加。",
         "parameters": {"type": "object", "properties": {}},
     },
     handler=_handle_sense_self_knowledge,

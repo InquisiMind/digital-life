@@ -100,7 +100,7 @@
               class="injection-block"
               :class="injectionStyleClass(inj)"
               :open="!!injectionOpen[inj.id]"
-              @toggle.prevent.stop="injectionOpen[inj.id] = !injectionOpen[inj.id]"
+              @toggle="injectionOpen[inj.id] = $event.target.open"
             >
               <summary>
                 <span class="inj-status-dot" :class="injectionStyleClass(inj)"></span>

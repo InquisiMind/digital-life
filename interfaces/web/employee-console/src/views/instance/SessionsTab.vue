@@ -389,10 +389,12 @@ async function selectWake(wakeId) {
     }
   } finally {
     loadingDetail.value = false
-    // 选好 wake 后启动 SSE 实时推送 — 即使当前 wake 还在跑也能自动 append 新 turn
-    if (selectedId.value && wakeMeta.value && !wakeMeta.value.ended_at) {
-      startWakeStream(selectedId.value)
-    }
+    // ⚠️ SSE 暂时禁用 — 之前导致页面疯狂抖动
+    // (根因待定位:snapshot/x-polling 引起的 v-for 重渲还是 SSE error 重连)
+    // 改用手动 刷新按钮,等定位后再开。
+    // if (selectedId.value && wakeMeta.value && !wakeMeta.value.ended_at) {
+    //   startWakeStream(selectedId.value)
+    // }
   }
 }
 

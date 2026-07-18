@@ -8,10 +8,11 @@
       <el-button @click="reloadAll"><el-icon><Refresh /></el-icon></el-button>
     </section>
 
-    <!-- 顶栏 tabs — 当前路由只显示该组的 kinds (持久化 / 短期暂存) -->
+    <!-- 顶栏 tabs — 3 大板块: 持久化档案 / 短期暂存 / 切片认知 -->
     <div class="kind-tabs">
+      <span class="tab-group-label">📦 持久化</span>
       <button
-        v-for="k in visibleKinds"
+        v-for="k in persistentKinds"
         :key="k.key"
         class="kind-tab"
         :class="{ active: active === k.key }"
@@ -22,10 +23,34 @@
         <span class="kind-count" v-if="counts[k.key] != null">{{ counts[k.key] }}</span>
         <span class="kind-empty" v-else-if="loaded[k.key] === true && counts[k.key] === 0">0</span>
       </button>
+
+      <span class="tab-group-label">⌛ 短期暂存</span>
+      <button
+        v-for="k in ephemeralKinds"
+        :key="k.key"
+        class="kind-tab kind-tab-ephemeral"
+        :class="{ active: active === k.key }"
+        @click="active = k.key"
+      >
+        <span class="kind-icon">{{ k.icon }}</span>
+        <span>{{ k.label }}</span>
+        <span class="kind-count" v-if="counts[k.key] != null">{{ counts[k.key] }}</span>
+        <span class="kind-empty" v-else-if="loaded[k.key] === true && counts[k.key] === 0">0</span>
+      </button>
+
+      <span class="tab-group-label">🔬 认知层</span>
+      <button
+        class="kind-tab kind-tab-chunks"
+        :class="{ active: active === 'chunks' }"
+        @click="active = 'chunks'"
+      >
+        <span class="kind-icon">📊</span>
+        <span>切片</span>
+      </button>
     </div>
 
     <!-- 文件型记忆 (按 ## 标题拆分, 折叠显示) -->
-    <template v-if="active !== 'assoc'">
+    <template v-if="active !== 'assoc' && active !== 'chunks'">
       <div v-if="loading" class="dev-placeholder"><span class="mono">loading…</span></div>
       <div v-else-if="!segments.length" class="dev-placeholder">
         <span class="mono">// 当前 {{ activeLabel }} 为空</span>
@@ -72,9 +97,14 @@
       </div>
     </template>
 
-    <!-- 联想:实体记忆视图(消费 /entities) -->
-    <template v-else>
+    <!-- 实体联想:实体记忆视图 -->
+    <template v-else-if="active === 'assoc'">
       <MemoryAdvisorTab :api-base="`/api/employee/${iid}`" />
+    </template>
+
+    <!-- 认知层切片:嵌入式引用 ChunksTab -->
+    <template v-else-if="active === 'chunks'">
+      <ChunksTab />
     </template>
   </div>
 </template>
@@ -87,6 +117,7 @@ import { ElMessage } from 'element-plus'
 import { instanceApi } from '@/api/client'
 import { renderMarkdown } from '@/composables/useMarkdown'
 import MemoryAdvisorTab from '@/components/MemoryAdvisorTab.vue'
+import ChunksTab from '@/views/instance/ChunksTab.vue'
 
 const route = useRoute()
 const iid = computed(() => String(route.params.iid || ''))
@@ -95,34 +126,18 @@ const iid = computed(() => String(route.params.iid || ''))
 // 按持久化级别分两组:持久化存储 (人/项目长期沉淀) vs 短期暂存 (工作内存/中间态)
 const kinds = [
   // 持久化档案 - 永久保留 / 历史可追溯
-  { key: 'consciousness', label: '意识流', icon: '🌀', file: 'CONSCIOUSNESS.md', group: 'persistent' },
-  { key: 'consciousness_archive', label: '意识流·归档', icon: '🗃️', file: 'CONSCIOUSNESS.archive.md', group: 'persistent' },
-  { key: 'assoc',         label: '实体',   icon: '👤', file: '/entities (人/项目/概念)', group: 'persistent' },
-  { key: 'diary',         label: '日记',   icon: '📔', file: 'diary/', group: 'persistent' },
-  { key: 'lessons',       label: '教训',   icon: '⚠️', file: 'LESSONS.md (按主题分节)', group: 'persistent' },
+  { key: 'consciousness_archive', label: '意识流·归档', icon: '🗃️', file: 'CONSCIOUSNESS.archive.md', section: 'persistent' },
+  { key: 'consciousness', label: '意识流', icon: '🌀', file: 'CONSCIOUSNESS.md', section: 'persistent' },
+  { key: 'diary',         label: '日记',   icon: '📔', file: 'diary/', section: 'persistent' },
+  { key: 'lessons',       label: '教训',   icon: '⚠️', file: 'LESSONS.md (按主题分节)', section: 'persistent' },
+  { key: 'assoc',         label: '实体联想', icon: '👤', file: '/entities (人/项目/概念)', section: 'persistent' },
   // 短期暂存 - 工作内存 / 等待 self_review 消化 / 每天覆盖
-  { key: 'scratchpad',    label: '草稿',   icon: '📝', file: 'SCRATCHPAD.md', group: 'ephemeral' },
-  { key: 'context',       label: '上下文', icon: '🔗', file: 'CONTEXT.md', group: 'ephemeral' },
-  { key: 'insights',      label: '洞察',   icon: '💡', file: 'INSIGHTS.md', group: 'ephemeral' },
+  { key: 'insights',      label: '洞察',   icon: '💡', file: 'INSIGHTS.md', section: 'ephemeral' },
+  { key: 'scratchpad',    label: '草稿',   icon: '📝', file: 'SCRATCHPAD.md', section: 'ephemeral' },
+  { key: 'context',       label: '上下文', icon: '🔗', file: 'CONTEXT.md', section: 'ephemeral' },
 ]
-// 路由 meta.group 决定显示哪组。两个 route(/memories persistent, /scratchpad ephemeral)
-// 共用本组件, 按 meta 滤出对应 kinds。
-const routeGroup = computed(() => String(route.meta?.group || 'persistent'))
-const persistentKinds = computed(() => kinds.filter(k => k.group === 'persistent'))
-const ephemeralKinds = computed(() => kinds.filter(k => k.group === 'ephemeral'))
-// 当前页可见 kinds(persistent 或 ephemeral)
-const visibleKinds = computed(() => routeGroup.value === 'ephemeral' ? ephemeralKinds.value : persistentKinds.value)
-function setDefaultActive() {
-  // 进入页时默认选第一个 tab(按路由组)
-  active.value = visibleKinds.value[0]?.key || 'consciousness'
-}
-// 路由切过来时(同一组件复用)重置 active + reload
-watch(() => route.meta?.group, () => {
-  setDefaultActive()
-  // 清缓存避免读到上一组的 segments
-  segCache.value = {}
-  loaded.value = {}
-}, { immediate: true })
+const persistentKinds = computed(() => kinds.filter(k => k.section === 'persistent'))
+const ephemeralKinds  = computed(() => kinds.filter(k => k.section === 'ephemeral'))
 const active = ref('consciousness')
 
 const loading = ref(false)
@@ -226,11 +241,8 @@ function showMoreDays() {
 // 切 tab 时重置 maxVisibleDays
 watch(active, () => { maxVisibleDays.value = 3 })
 
-const groupDateLabel = computed(() => {  // unused,保留扩展
-  return (dk) => dk
-})
-const dayGroupsWithLabel = computed(() => {
-  // 给每组算 dateLabel (如: "2026-07-15" + weekday)
+// 给每组算 dateLabel (如: "2026-07-15" + weekday)
+const visibleDayGroupsWithLabel = computed(() => {
   const wk = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
   return visibleDayGroups.value.map(g => {
     let label = g.dateKey
@@ -242,8 +254,6 @@ const dayGroupsWithLabel = computed(() => {
     return { ...g, dateLabel: label }
   })
 })
-// 重新导出 visibleDayGroups 含 label
-const visibleDayGroupsWithLabel = dayGroupsWithLabel
 
 async function loadMemory(kind) {
   // cache hit:segCache[kind] 是 array(可能空 []=空内容文件)→ 直接复用,不延迟
@@ -287,7 +297,7 @@ async function reloadAll() {
   loaded.value = {}
   // 预加载当前路由组的首个 tab; 实体记忆由 MemoryAdvisorTab 自取, 无需父级处理
   if (active.value === 'assoc') return
-  await loadMemory(active.value || visibleKinds.value[0]?.key || 'consciousness')
+  await loadMemory(active.value || persistentKinds.value[0]?.key || 'consciousness')
 }
 
 watch(active, (v) => {

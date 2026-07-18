@@ -606,11 +606,18 @@ function startWakeStream(wakeId) {
   try {
     const url = `/api/employee/${iid.value}/wakes/${wakeId}/stream`
     wakeStream = new EventSource(url)
+    let snapshotReceived = false  // 防止 snapshot 重复刷新
     wakeStream.addEventListener('snapshot', (e) => {
+      // snapshot 只接收一次 = 初始化, 之后只增量接 turn 事件, 避免页面跳动
+      if (snapshotReceived) return
+      snapshotReceived = true
       try {
         const d = JSON.parse(e.data)
         if (d.wake) wakeMeta.value = d.wake
-        if (Array.isArray(d.turns)) applyIncomingTurns(d.turns, true)
+        if (Array.isArray(d.turns)) {
+          // 直接设, 不要每次 sort(SSE 收到的 turns 已经是按 id 排序的)
+          turns.value = d.turns
+        }
         if (Array.isArray(d.injections)) injections.value = d.injections
         // 默认展开所有 call + 注入块的默认状态
         for (const g of groupedTurns.value) expandedCalls[g.callSeq] = true
@@ -622,7 +629,7 @@ function startWakeStream(wakeId) {
     wakeStream.addEventListener('turn', (e) => {
       try {
         const d = JSON.parse(e.data)
-        if (d.turn) applyIncomingTurns([d.turn], false)
+        if (d.turn) appendTurn(d.turn)
       } catch (err) { /* ignore */ }
     })
     wakeStream.addEventListener('end', (e) => {
@@ -642,23 +649,16 @@ function startWakeStream(wakeId) {
   }
 }
 
-function applyIncomingTurns(newTurns, isSnapshot) {
-  // 防御: 去重 by id
-  const existing = new Map(turns.value.map(t => [t.id, t]))
-  let addedCount = 0
-  for (const t of newTurns) {
-    if (!t || existing.has(t.id)) continue
-    existing.set(t.id, t)
-    addedCount += 1
-    if (!isSnapshot) {
-      // 新 turn 进来时: 自动展开它所在的 call
-      const seq = Number(t.llm_call_seq)
-      if (seq != null) expandedCalls[seq] = true
-    }
-  }
-  if (addedCount > 0) {
-    turns.value = Array.from(existing.values()).sort((a, b) => (a.id || 0) - (b.id || 0))
-  }
+function appendTurn(turn) {
+  // 增量追加一条 turn, 不动现有顺序; 去重 by id
+  if (!turn || !turn.id) return
+  const exists = turns.value.find(t => t.id === turn.id)
+  if (exists) return  // 已有 → 忽略, 不动
+  // 追加在末尾(假设后端按 id 顺序推)
+  turns.value.push(turn)
+  // 自动展开它所在的 call
+  const seq = Number(turn.llm_call_seq)
+  if (seq != null && !isNaN(seq)) expandedCalls[seq] = true
 }
 
 function closeWakeStream() {

@@ -55,21 +55,13 @@ L4_LIFECYCLE_PROMPT = r"""
 
 
 def _load_prompt_override() -> None:
-    """从 config/app.yaml 加载 L4_LIFECYCLE_PROMPT 覆盖。"""
-    global L4_LIFECYCLE_PROMPT
-    try:
-        import yaml
-        from infrastructure.config import get_instance_app_config_path
-        cfg_path = get_instance_app_config_path()
-        if not cfg_path.exists():
-            return
-        with open(cfg_path, "r", encoding="utf-8") as f:
-            raw = yaml.safe_load(f) or {}
-        overrides = raw.get("prompts_override", {})
-        if "L4_LIFECYCLE_PROMPT" in overrides:
-            L4_LIFECYCLE_PROMPT = overrides["L4_LIFECYCLE_PROMPT"]
-    except Exception:
-        pass
+    """从 config/app.yaml 加载 prompt 覆盖。
+
+    L4_LIFECYCLE_PROMPT 是全局 prompt(所有实例共享), 不在实例级 override。
+    仅由源码文件 domain/identity/system_prompts/__init__.py 定义 + git 管理。
+    更新方式: 直接改代码 → restart。
+    """
+    pass
 
 
 # 启动时加载覆盖

@@ -46,14 +46,15 @@ class PromptConsoleWorkflow:
             from domain.identity.system_prompts import L4_LIFECYCLE_PROMPT
 
             prompts.append({
-                "name": "L4 生命周期 (L4_LIFECYCLE_PROMPT)",
+                "name": "L4 生命周期 (全局只读)",
                 "key": "L4_LIFECYCLE_PROMPT",
-                "layer": "系统 Prompt",
+                "layer": "全局 Prompt",
                 "trigger": "始终注入 system prompt",
-                "file": "domain/memory/context/system_prompts/__init__.py",
-                "content": get_prompt("L4_LIFECYCLE_PROMPT", L4_LIFECYCLE_PROMPT),
+                "file": "domain/identity/system_prompts/__init__.py",
+                "content": L4_LIFECYCLE_PROMPT,
                 "original": L4_LIFECYCLE_PROMPT,
-                "overridden": "L4_LIFECYCLE_PROMPT" in overrides,
+                "overridden": False,
+                "read_only": True,
             })
         except Exception:
             pass
@@ -88,6 +89,12 @@ class PromptConsoleWorkflow:
                 persona_path.write_text(content.rstrip() + "\n", encoding="utf-8")
                 self._hot_reload(name, content)
                 return UseCaseResult({"ok": True, "name": name, "file": persona_path.as_posix()})
+
+            if name == "L4_LIFECYCLE_PROMPT":
+                # 全局 prompt — 不在实例级维护。更新方式: 改代码 → restart。
+                return UseCaseResult({
+                    "error": "L4_LIFECYCLE_PROMPT 是全局 prompt, 不在实例级维护。请改代码后 restart。"
+                }, 403)
 
             cfg_path = get_runtime_config_path()
             raw = {}

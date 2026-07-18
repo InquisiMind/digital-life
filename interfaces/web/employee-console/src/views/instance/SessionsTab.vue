@@ -137,7 +137,7 @@
               </div>
 
               <!-- 折叠时只显示 call head + one-line preview -->
-              <div v-if="!expandedCalls[group.callSeq]" class="call-preview mono">
+              <div v-if="!expandedCalls[group.callSeq]" class="call-preview mono" @click="toggleCall(group.callSeq)">
                 {{ group.preview }}
               </div>
 
@@ -874,11 +874,12 @@ onUnmounted(() => {
   padding: 4px 8px;
   font-size: 12px;
   color: var(--text-muted);
-  background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
   border-radius: 3px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+.call-preview:hover {
+  color: var(--neon-cyan);
+  background: rgba(0, 200, 255, 0.04);
 }
 .turn {
   background: var(--bg-panel);

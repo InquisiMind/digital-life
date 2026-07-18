@@ -8,12 +8,27 @@
       <el-button @click="reloadAll"><el-icon><Refresh /></el-icon></el-button>
     </section>
 
-    <!-- 顶栏 tabs -->
+    <!-- 顶栏 tabs — 分两组:持久化 / 短期暂存 -->
     <div class="kind-tabs">
+      <span class="tab-group-label">📦 持久化</span>
       <button
-        v-for="k in kinds"
+        v-for="k in persistentKinds"
         :key="k.key"
         class="kind-tab"
+        :class="{ active: active === k.key }"
+        @click="active = k.key"
+      >
+        <span class="kind-icon">{{ k.icon }}</span>
+        <span>{{ k.label }}</span>
+        <span class="kind-count" v-if="counts[k.key] != null">{{ counts[k.key] }}</span>
+        <span class="kind-empty" v-else-if="loaded[k.key] === true && counts[k.key] === 0">0</span>
+      </button>
+
+      <span class="tab-group-label">⌛ 短期暂存</span>
+      <button
+        v-for="k in ephemeralKinds"
+        :key="k.key"
+        class="kind-tab kind-tab-ephemeral"
         :class="{ active: active === k.key }"
         @click="active = k.key"
       >
@@ -80,16 +95,21 @@ import MemoryAdvisorTab from '@/components/MemoryAdvisorTab.vue'
 const route = useRoute()
 const iid = computed(() => String(route.params.iid || ''))
 
-// 7 个 kind:已退役 GOALS / HIM,删了对应 tab
+// 7 类:已退役 GOALS / HIM 删了对应 tab
+// 按持久化级别分两组:持久化存储 (人/项目长期沉淀) vs 短期暂存 (工作内存/中间态)
 const kinds = [
-  { key: 'consciousness', label: '意识流', icon: '🌀', file: 'CONSCIOUSNESS.md' },
-  { key: 'assoc',         label: '实体',   icon: '👤', file: '/entities (人/项目/概念)' },
-  { key: 'diary',         label: '日记',   icon: '📔', file: 'diary/' },
-  { key: 'lessons',       label: '教训',   icon: '⚠️', file: 'LESSONS.md (按主题分节)' },
-  { key: 'scratchpad',    label: '草稿',   icon: '📝', file: 'SCRATCHPAD.md' },
-  { key: 'context',       label: '上下文', icon: '🔗', file: 'CONTEXT.md' },
-  { key: 'insights',      label: '洞察',   icon: '💡', file: 'INSIGHTS.md' },
+  // 持久化档案 - 永久保留 / 历史可追溯
+  { key: 'consciousness', label: '意识流', icon: '🌀', file: 'CONSCIOUSNESS.md', group: 'persistent' },
+  { key: 'assoc',         label: '实体',   icon: '👤', file: '/entities (人/项目/概念)', group: 'persistent' },
+  { key: 'diary',         label: '日记',   icon: '📔', file: 'diary/', group: 'persistent' },
+  { key: 'lessons',       label: '教训',   icon: '⚠️', file: 'LESSONS.md (按主题分节)', group: 'persistent' },
+  // 短期暂存 - 工作内存 / 等待 self_review 消化 / 每天覆盖
+  { key: 'scratchpad',    label: '草稿',   icon: '📝', file: 'SCRATCHPAD.md', group: 'ephemeral' },
+  { key: 'context',       label: '上下文', icon: '🔗', file: 'CONTEXT.md', group: 'ephemeral' },
+  { key: 'insights',      label: '洞察',   icon: '💡', file: 'INSIGHTS.md', group: 'ephemeral' },
 ]
+const persistentKinds = computed(() => kinds.filter(k => k.group === 'persistent'))
+const ephemeralKinds = computed(() => kinds.filter(k => k.group === 'ephemeral'))
 const active = ref('consciousness')
 
 const loading = ref(false)
@@ -206,6 +226,21 @@ onMounted(() => {
   margin-bottom: var(--space-4);
   border-bottom: 1px solid var(--border-line);
   padding-bottom: 8px;
+  align-items: center;
+}
+.tab-group-label {
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  color: var(--text-muted);
+  padding: 0 8px 0 4px;
+  font-family: var(--font-mono);
+  border-left: 1px solid var(--border-line-strong);
+  margin-left: 4px;
+}
+.tab-group-label:first-child {
+  border-left: none;
+  margin-left: 0;
+  padding-left: 0;
 }
 .kind-tab {
   background: transparent;
@@ -227,6 +262,13 @@ onMounted(() => {
   background: var(--neon-cyan-soft);
   box-shadow: var(--shadow-glow-cyan);
 }
+/* 短期暂存类 tab: 视觉略低对比, 让用户一眼区分这是过渡性内容 */
+.kind-tab-ephemeral {
+  opacity: 0.75;
+  font-style: italic;
+}
+.kind-tab-ephemeral:hover { opacity: 1; }
+.kind-tab-ephemeral.active { opacity: 1; font-style: normal; }
 .kind-icon { font-size: 16px; }
 .kind-count {
   background: var(--bg-elevated);

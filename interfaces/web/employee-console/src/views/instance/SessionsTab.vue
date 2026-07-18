@@ -447,18 +447,12 @@ function isInjectionDefaultOpen(inj) {
   // 所有注入默认折叠, 用户主动点开看
   return false
 }
-// 注入块颜色 — 按"用户关心的内容类型"分 3 类:
-// 🔵 蓝 = 事件(mid-session 新消息 / wake 触发原因)
-// 🟧 橙 = rest 提示卡(模型确认睡眠的回执)
-// 🟣 紫 = 其他一切默认(任务板/意识流/教训/历史摘要/上下文/关系 — 同色)
+// 按后端 sys_tool 精确标签分类, 两类:
+// 🔵 蓝 = 事件 / 新消息 (system_context + chat_stream 都是模型收到的外部输入)
+// 🟣 紫 = 默认 (其他: 任务板 / 意识流 / persona / 历史摘要 / 上下文 / 关系)
 function injectionStyleClass(inj) {
   const k = String(inj && inj.sys_tool || '').toLowerCase()
-  const c = String(inj && inj.content || '')
-  // rest 提示卡 — 内容含"确认休息""睡前提示卡""早处理完调 rest"
-  if (/睡前提示卡|确认休息|早处理完调\s*r?e?s?t|提示卡列/.test(c)) return 'inj-rest'
-  // 事件 payload — system_context 的内容前 800 chars 含"当下事件""新消息""唤醒原因"
-  if (k === 'system_context' && /当下事件|∩.*新消息|唤醒原因|事件/.test(c.slice(0, 800))) return 'inj-event'
-  // 默认:紫色(任务板 / persona / 意识流 / 历史摘要 / 上下文 / 关系)
+  if (k === 'system_context' || k === 'chat_stream') return 'inj-event'
   return 'inj-default'
 }
 
@@ -809,25 +803,19 @@ onUnmounted(() => {
   margin-right: 6px;
   vertical-align: middle;
 }
-/* 颜色扎染 — 3 类: 事件(蓝) / rest(橙) / 默认(紫) */
-.inj-default {    /* 🟣 紫色: 默认 - 任务板/意识流/教训/上下文/历史摘要 都同色 */
+/* 颜色扎染 — 两类: 事件/消息(蓝) / 其他(紫) */
+.inj-default {    /* 🟣 紫色: 默认 */
   border-left: 3px solid #aa77ff !important;
   background: rgba(170, 119, 255, 0.04) !important;
 }
 .inj-default .inj-source { color: #aa77ff; }
 .inj-default .inj-status-dot { background: #aa77ff; box-shadow: 0 0 6px #aa77ff; }
-.inj-event {      /* 🔵 蓝色: 事件 / mid-session 新消息 / wake 触发 */
+.inj-event {      /* 🔵 蓝色: 事件/新消息(system_context + chat_stream) */
   border-left: 3px solid var(--neon-cyan) !important;
   background: rgba(0, 200, 255, 0.06) !important;
 }
 .inj-event .inj-source { color: var(--neon-cyan); }
 .inj-event .inj-status-dot { background: var(--neon-cyan); box-shadow: 0 0 6px var(--neon-cyan); }
-.inj-rest {       /* 🟧 橙色: rest 提示卡回执 */
-  border-left: 3px solid #ff9944 !important;
-  background: rgba(255, 153, 68, 0.06) !important;
-}
-.inj-rest .inj-source { color: #ff9944; }
-.inj-rest .inj-status-dot { background: #ff9944; box-shadow: 0 0 6px #ff9944; }
 .call-input-actions {
   display: flex;
   gap: 6px;

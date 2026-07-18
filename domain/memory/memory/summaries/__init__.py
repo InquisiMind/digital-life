@@ -224,9 +224,46 @@ def summarize_tool_call(name: str, args: Dict[str, Any]) -> str:
         # 没文件操作: 不进 digest
         return ""
 
-    # 未识别工具(含已退役的 manage_goals/manage_daily/sense_work 等历史调用):
-    # 返 "" 让它不进 digest——摘要应该只含**有信息密度**的动作,
-    # 而不是 "工具: name" 类纯计数噪音。
+    # ── 已退役但 dispatch 中仍有调用的工具(历史 session 兼容) ──
+    # 这些工具已 schema_visible=False 但 handler 仍工作, 历史 tool_call 重放时会
+    # 走到这。它们的产出含义应该被摘要抓到(不能因为退役就丢信息)。
+    if name == "manage_daily":
+        action = (args.get("action") or "").strip()
+        text = (args.get("text") or "").strip()[:60]
+        if action == "complete" and text:
+            return f"完成任务: {text}"
+        if action == "plan" and text:
+            return f"规划今日: {text[:40]}{'…' if len(text)>40 else ''}"
+        if action == "add" and text:
+            return f"追加今日: {text}"
+        return ""
+    if name == "manage_work":
+        action = (args.get("action") or "").strip()
+        text = (args.get("text") or "").strip()[:60]
+        if action == "complete" and text:
+            return f"完成任务: {text}"
+        if action == "add" and text:
+            return f"创建待办: {text}"
+        return ""
+    if name == "manage_goals":
+        action = (args.get("action") or "").strip()
+        text = (args.get("text") or "").strip()[:60]
+        if action == "add" and text:
+            return f"设定目标: {text}"
+        if action == "complete" and text:
+            return f"达成目标: {text}"
+        return ""
+    if name == "manage_plan":
+        action = (args.get("action") or "").strip()
+        goal = (args.get("goal") or "").strip()[:30]
+        text = (args.get("text") or "").strip()[:40]
+        if action == "add_milestone" and text:
+            return f"加里程碑({goal}): {text}" if goal else f"加里程碑: {text}"
+        if action == "complete_milestone" and text:
+            return f"完成里程碑: {text}"
+        return ""
+
+    # 未识别工具: 返 "" 让它不进 digest
     return ""
 
 

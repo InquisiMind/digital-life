@@ -972,62 +972,12 @@ def _wake_digital_life_inner_safe(
                     partners_block = "  协作者:\n" + "\n".join(partners_lines)
                 roles_lines.append("\n".join([head, detail, partners_block]))
 
-                # ── 项目方向段（仅 PM 或主担岗位才需要看到完整 thesis）──
+                # ── 项目方向段（只留目标一句话; 论断/KPI/节奏按需调 sense_project_detail）──
                 goal = cfg.goal or {}
                 if goal:
-                    dir_parts: list[str] = [f"### 🎯 {cfg.name} 项目方向"]
                     gs = goal.get("statement", "")
                     if gs:
-                        dir_parts.append(f"**目标**：{gs}")
-                    sd = goal.get("started_at", "")
-                    dd = goal.get("deadline", "")
-                    if sd and dd:
-                        dir_parts.append(f"**周期**：{sd} → {dd}")
-                    sc = goal.get("start_capital", "")
-                    tc = goal.get("target_capital", "")
-                    if sc and tc:
-                        dir_parts.append(f"**起止资金**：{sc} → {tc}")
-                    kpis = cfg.kpis or []
-                    if kpis:
-                        kpi_lines = ["**当前 KPI 进度**："]
-                        for kpi in kpis:
-                            name = kpi.get("name", "")
-                            tgt = kpi.get("target") or kpi.get("limit") or kpi.get("constraint") or ""
-                            sv = kpi.get("snapshot_value", "")
-                            sv_at = kpi.get("snapshot_at", "")
-                            if sv and sv_at:
-                                kpi_lines.append(f"  · {name}{('('+tgt+')') if tgt else ''}: {sv} (截至 {sv_at})")
-                            elif tgt:
-                                kpi_lines.append(f"  · {name}: 目标 {tgt}")
-                        dir_parts.append("\n".join(kpi_lines))
-                    thesis_list = cfg.thesis or []
-                    if thesis_list:
-                        t_lines = ["**论断假设**（决定你做什么，可能过期需 review）："]
-                        for idx, t in enumerate(thesis_list, 1):
-                            stmt = t.get("statement", "")
-                            conf = t.get("confidence", "")
-                            ev_count = len(t.get("evidence") or [])
-                            lr = t.get("last_reviewed", "")
-                            t_lines.append(
-                                f"{idx}. _{stmt}_ [{conf}信心]"
-                                f"{f'，{ev_count} 条证据' if ev_count else ''}"
-                                f"{f'，最后review：{lr}' if lr else ''}"
-                            )
-                        dir_parts.append("\n".join(t_lines))
-                    rs = cfg.review_schedule or {}
-                    if rs:
-                        rs_parts = ["**反思节奏**："]
-                        for key in ("daily_review_at", "weekly_review_at", "monthly_milestone_at"):
-                            v = rs.get(key, "")
-                            if v:
-                                label_map = {
-                                    "daily_review_at": "每日晚复盘",
-                                    "weekly_review_at": "每周策略 review",
-                                    "monthly_milestone_at": "每月里程碑",
-                                }
-                                rs_parts.append(f"  · {label_map.get(key, key)} @ {v}")
-                        dir_parts.append("\n".join(rs_parts))
-                    direction_lines.append("\n".join(dir_parts))
+                        direction_lines.append(f"**{cfg.name}**：{gs}")
             if roles_lines:
                 _role_positioning = (
                     "### 你承担的职责\n\n"
@@ -1041,15 +991,13 @@ def _wake_digital_life_inner_safe(
         except Exception:
             pass
 
-        # 工作空间介绍（每次 wake 告诉模型它的"家"在哪、能写到哪里、参考源在哪）
+        # 工作空间介绍 — 不再拼入 _full_system, 改为 slow_ctx 的 sys_tool 注入(见下方)
         _workspace_intro = _render_workspace_intro(instance_id or "")
 
-        # 5 段拼成有机整体：lifecycle（环境） → persona（自我意识） → 职责（自我定位加项目）
-        #                      → 项目方向（目标+论断） → 工作空间（自我迭代环境）
-        #                      → skill_index（方法）
+        # _full_system = L4 + persona + 职责 + 项目方向(只留目标) + skill_index
         _full_system = "\n\n".join(
             p for p in [_l4_lifecycle, _persona, _role_positioning, _project_direction,
-                        _workspace_intro, _skill_index] if p
+                        _skill_index] if p
         )
 
         # L4 需要精简工具集，避免模型被48个工具淹没而只发文字
@@ -1222,6 +1170,14 @@ def _wake_digital_life_inner_safe(
                 "role": "user",
                 "content": task_prompt,
                 "_sys_tool": "task_board",
+            })
+
+        # workspace: 工作空间 + 三层空间 + sandbox 约束 — 从 _full_system 摘出, 改为 sys_tool 注入
+        if _workspace_intro:
+            prev_history.append({
+                "role": "user",
+                "content": _workspace_intro,
+                "_sys_tool": "workspace",
             })
 
         # chat_stream 每次拉近期对话流水（来自 var/conversations/chats.db 聚合库，

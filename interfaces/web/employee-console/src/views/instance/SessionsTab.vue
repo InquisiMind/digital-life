@@ -444,9 +444,8 @@ const groupedTurns = computed(() => {
 })
 
 function isInjectionDefaultOpen(inj) {
-  // 默认全折叠 — 只高优先级的 wake 事件 payload 默认展开
-  const k = String(inj && inj.sys_tool || '').toLowerCase()
-  return k === 'system_context'
+  // 所有注入默认折叠, 用户主动点开看
+  return false
 }
 function injectionStyleClass(inj) {
   // 颜色扎染 — 方便用户扫读时定位关键注入

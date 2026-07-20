@@ -22,9 +22,36 @@ logger = logging.getLogger(__name__)
 FEISHU_BASE = "https://open.feishu.cn/open-apis"
 
 
-def _get_app_creds() -> tuple[str, str]:
+def _get_app_creds(instance_id: str = "") -> tuple[str, str]:
+    """从实例 config 读飞书 app_id + app_secret。
+
+    Master 进程没有实例 context(env 没加载), 所以需要 explicit iid 参数。
+    """
     app_id = os.environ.get("FEISHU_APP_ID", "")
     app_secret = os.environ.get("FEISHU_APP_SECRET", "")
+
+    # fallback: 从实例的 secrets.env / app.yaml 读
+    if (not app_id or not app_secret) and instance_id:
+        from pathlib import Path
+        secrets = Path("apps") / instance_id / "config" / "secrets.env"
+        if secrets.exists():
+            for line in secrets.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith("FEISHU_APP_ID=") and not app_id:
+                    app_id = line.split("=", 1)[1].strip()
+                elif line.startswith("FEISHU_APP_SECRET=") and not app_secret:
+                    app_secret = line.split("=", 1)[1].strip()
+        if not app_id:
+            try:
+                import yaml
+                cfg_path = Path("apps") / instance_id / "config" / "app.yaml"
+                if cfg_path.exists():
+                    raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+                    feishu = (raw.get("channels") or {}).get("feishu") or {}
+                    app_id = app_id or feishu.get("app_id", "")
+            except Exception:
+                pass
+
     return app_id, app_secret
 
 
@@ -38,9 +65,9 @@ async def handle_feishu_oauth_callback(request: web.Request) -> web.Response:
     if not instance_id:
         return web.Response(text="缺少 state(instance_id) 参数", status=400)
 
-    app_id, app_secret = _get_app_creds()
+    app_id, app_secret = _get_app_creds(instance_id)
     if not app_id or not app_secret:
-        return web.Response(text="飞书应用未配置 app_id/app_secret", status=500)
+        return web.Response(text="飞书应用未配置 app_id/app_secret (检查 secrets.env)", status=500)
 
     try:
         # 用 code 换 user_access_token

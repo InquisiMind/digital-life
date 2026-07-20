@@ -19,7 +19,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-POLL_INTERVAL = 30  # 秒
+POLL_INTERVAL = 1800  # 30 分钟拉一轮(只是入库, 不等于触发)
 FEISHU_BASE = "https://open.feishu.cn/open-apis"
 
 

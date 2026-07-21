@@ -139,9 +139,18 @@ class FeishuAdapter(IngressAdapter):
         self._bot_name = self._fetch_bot_name()
         logger.info("FeishuAdapter started (app_id=%s bot_name=%s)", self._app_id[:12], self._bot_name)
 
-        # 群名 cache：chat_id → (name, fetch_ts)；5min TTL
+        self._ws_last_active = time.time()
         self._chat_name_cache: dict[str, tuple[str, float]] = {}
         self._chat_name_cache_ttl = 300.0
+
+        # WS watchdog: lark SDK 重连失败后静默挂着, 需要外部定期检查 + 重建
+        self._ws_watchdog_stop = threading.Event()
+        ws_watchdog = threading.Thread(
+            name=f"feishu-ws-watchdog-{self._app_id[:8]}",
+            target=self._ws_watchdog_loop,
+            daemon=True,
+        )
+        ws_watchdog.start()
 
     async def stop(self) -> None:
         logger.info("FeishuAdapter stopping...")
@@ -152,6 +161,69 @@ class FeishuAdapter(IngressAdapter):
                 self._group_buffer.stop()
             except Exception as exc:
                 logger.warning("group_buffer stop failed: %s", exc)
+        self._ws_watchdog_stop.set()
+
+    def _ws_watchdog_loop(self) -> None:
+        """每 60s 检查 WS 连接健康; 断了且 SDK 没自动恢复则重建。
+
+        lark SDK 的 WSClient 重连逻辑不靠谱 (只试 1 次就静默放弃),
+        这个 watchdog 兜底: 检查最近是否收到过消息 + ws 线程是否活着,
+        如果断太久就重新 start 一份 WSClient。
+        """
+        check_interval = 60
+        reconnect_after = 300  # 5 分钟没动静就重建
+        ws_thread_name = f"feishu-ws-{self._app_id[:8]}"
+
+        while not self._ws_watchdog_stop.wait(check_interval):
+            try:
+                idle = time.time() - self._ws_last_active
+                # 检查 ws_thread 是否还活着
+                ws_alive = False
+                for t in threading.enumerate():
+                    if t.name == ws_thread_name and t.is_alive():
+                        ws_alive = True
+                        break
+
+                if not ws_alive:
+                    logger.warning("feishu WS thread dead, rebuilding...")
+                    self._rebuild_ws()
+                    self._ws_last_active = time.time()
+                    continue
+
+                if idle > reconnect_after:
+                    logger.warning(
+                        "feishu WS idle %ds (> %ds), no messages since %s, rebuilding...",
+                        int(idle), reconnect_after,
+                        time.strftime('%H:%M:%S', time.localtime(self._ws_last_active)),
+                    )
+                    self._rebuild_ws()
+                    self._ws_last_active = time.time()
+            except Exception as exc:
+                logger.warning("feishu WS watchdog error: %s", exc)
+
+    def _rebuild_ws(self) -> None:
+        """杀掉旧 WS 线程 + 创建新 WSClient + restart."""
+        try:
+            self._ws = self._build_ws_client()
+        except Exception as exc:
+            logger.warning("feishu WS rebuild: _build_ws_client failed: %s", exc)
+            return
+
+        def _run_ws() -> None:
+            _per_thread_loops[threading.get_ident()] = asyncio.new_event_loop()
+            asyncio.set_event_loop(_per_thread_loops[threading.get_ident()])
+            try:
+                self._ws.start()
+            except Exception as exc:
+                logger.warning("feishu WS rebuild: ws.start() failed: %s", exc)
+
+        ws_thread = threading.Thread(
+            name=f"feishu-ws-{self._app_id[:8]}",
+            target=_run_ws,
+            daemon=True,
+        )
+        ws_thread.start()
+        logger.info("feishu WS rebuilt (new thread %s)", ws_thread.name)
 
     def _fetch_bot_name(self) -> str:
         try:
@@ -458,6 +530,8 @@ class FeishuAdapter(IngressAdapter):
         def _on_message(
             event: lark.api.im.v1.model.p2_im_message_receive_v1.P2ImMessageReceiveV1,
         ) -> None:
+            # watchdog 活跃信号: 每收到一条消息就刷新
+            self._ws_last_active = time.time()
             try:
                 msg = getattr(event.event, "message", None)
                 mentions = getattr(msg, "mentions", None) or []

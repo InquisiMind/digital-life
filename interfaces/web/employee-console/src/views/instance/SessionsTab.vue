@@ -91,12 +91,12 @@
             ⚠️ <strong>本 wake 报错(非自然结束):</strong> {{ detailError }}
           </div>
 
-          <!-- injections（注入的上下文块）——每条独立折叠,只默认展开高价值类型。Vue state 控制让 collapseAll 能命中 -->
-          <template v-if="injections.length">
-            <div class="brand-sub section-label" style="margin-top: 4px;">CONTEXT INJECTIONS ({{ injections.length }})</div>
+          <!-- 初始注入(所有 call 之前) -->
+          <template v-if="initialInjections.length">
+            <div class="brand-sub section-label" style="margin-top: 4px;">CONTEXT INJECTIONS</div>
             <details
-              v-for="inj in injections"
-              :key="inj.id"
+              v-for="inj in initialInjections"
+              :key="'init-'+inj.id"
               class="injection-block"
               :class="injectionStyleClass(inj)"
               :open="!!injectionOpen[inj.id]"
@@ -105,47 +105,62 @@
               <summary>
                 <span class="inj-status-dot" :class="injectionStyleClass(inj)"></span>
                 <span class="inj-source">{{ inj.sys_tool || 'unknown' }}</span>
-                <span class="inj-scope" v-if="inj.scope_id && inj.scope_id !== '*'">
-                  @ {{ safeSlice(inj.scope_id, 0, 24) }}
-                </span>
                 <el-button size="small" text @click.stop="copyText(JSON.stringify(inj, null, 2))">copy raw</el-button>
               </summary>
               <div class="inj-content mono" v-html="renderMarkdown(inj.content)"></div>
             </details>
           </template>
 
-          <!-- turns (按 LLM call 分组显示) -->
+          <!-- timeline: injections + calls 按实际时间排序 -->
           <div class="turns-stream">
-            <div
-              v-for="group in groupedTurns"
-              :key="group.callSeq"
-              class="call-group"
-              :class="{ collapsed: !expandedCalls[group.callSeq] }"
-              @click="toggleCall(group.callSeq)"
-            >
+            <template v-for="item in timeline" :key="item.type === 'call' ? 'call-'+item.callSeq : 'inj-'+item.inj.id">
+              <!-- injection item -->
+              <details
+                v-if="item.type === 'injection'"
+                class="injection-block injection-mid"
+                :class="injectionStyleClass(item.inj)"
+                :open="!!injectionOpen[item.inj.id]"
+                @toggle="injectionOpen[item.inj.id] = $event.target.open"
+                @click.stop
+              >
+                <summary>
+                  <span class="inj-status-dot" :class="injectionStyleClass(item.inj)"></span>
+                  <span class="inj-source">{{ item.inj.sys_tool || 'unknown' }}</span>
+                  <el-button size="small" text @click.stop="copyText(JSON.stringify(item.inj, null, 2))">copy raw</el-button>
+                </summary>
+                <div class="inj-content mono" v-html="renderMarkdown(item.inj.content)"></div>
+              </details>
+
+              <!-- call item -->
+              <div
+                v-else
+                class="call-group"
+                :class="{ collapsed: !expandedCalls[item.callSeq] }"
+                @click="toggleCall(item.callSeq)"
+              >
               <div class="call-group-head">
-                <span class="call-group-badge">🔄 Call #{{ group.callSeq }}</span>
+                <span class="call-group-badge">🔄 Call #{{ item.callSeq }}</span>
                 <span class="brand-sub mono call-group-summary">
-                  {{ group.summary }}
+                  {{ item.summary }}
                 </span>
-                <span v-if="group.tokenCount" class="brand-sub mono" style="margin-left: auto; color: var(--text-muted);">
-                  {{ group.tokenCount }} tok
+                <span v-if="item.tokenCount" class="brand-sub mono" style="margin-left: auto; color: var(--text-muted);">
+                  {{ item.tokenCount }} tok
                 </span>
                 <el-icon class="expand-icon">
-                  <ArrowDown v-if="!expandedCalls[group.callSeq]" />
+                  <ArrowDown v-if="!expandedCalls[item.callSeq]" />
                   <ArrowUp v-else />
                 </el-icon>
               </div>
 
               <!-- 折叠时只显示 call head + one-line preview -->
-              <div v-if="!expandedCalls[group.callSeq]" class="call-preview mono">
-                {{ group.preview }}
+              <div v-if="!expandedCalls[item.callSeq]" class="call-preview mono">
+                {{ item.preview }}
               </div>
 
               <!-- 展开时:本 call 的所有 turn(input + output + tool result) -->
               <div v-else class="call-expanded-body" @click.stop>
                 <div
-                  v-for="turn in group.turns"
+                  v-for="turn in item.turns"
                   :key="turn.id"
                   class="turn"
                   :class="turnClass(turn)"
@@ -190,32 +205,32 @@
                 <!-- 该 call 完整 LLM input JSON — 不在页面内渲染所有 messages, 直接下载/打开本地文件 -->
                 <div class="llm-call-input">
                   <div class="block-label">
-                    📦 LLM Call #{{ group.callSeq }} input ({{ callInputs[callKeyForSeq(group.callSeq)]?.length || '?' }} messages)
+                    📦 LLM Call #{{ item.callSeq }} input ({{ callInputs[callKeyForSeq(item.callSeq)]?.length || '?' }} messages)
                   </div>
                   <div class="call-input-actions">
-                    <el-button size="small" @click="downloadCallInput(group.callSeq)" title="下载完整 LLM 输入 JSON 文件(可用编辑器或新 tab 打开)">
+                    <el-button size="small" @click="downloadCallInput(item.callSeq)" title="下载完整 LLM 输入 JSON 文件(可用编辑器或新 tab 打开)">
                       <el-icon><Download /></el-icon> 打开本地 JSON
                     </el-button>
                     <el-button
-                      v-if="!callInputs[callKeyForSeq(group.callSeq)]"
+                      v-if="!callInputs[callKeyForSeq(item.callSeq)]"
                       size="small" text
-                      :loading="callLoading[callKeyForSeq(group.callSeq)]"
-                      @click="loadCallInputForSeq(group.callSeq)"
+                      :loading="callLoading[callKeyForSeq(item.callSeq)]"
+                      @click="loadCallInputForSeq(item.callSeq)"
                       title="在面板内分组加载各 message(压栈高,不推荐)"
                     >
                       或在面板内展开
                     </el-button>
                     <el-button
-                      v-if="callInputs[callKeyForSeq(group.callSeq)]"
+                      v-if="callInputs[callKeyForSeq(item.callSeq)]"
                       size="small" text
-                      @click="copyText(JSON.stringify(callInputs[callKeyForSeq(group.callSeq)], null, 2))"
+                      @click="copyText(JSON.stringify(callInputs[callKeyForSeq(item.callSeq)], null, 2))"
                     >
                       copy 全部
                     </el-button>
                   </div>
                   <!-- 内联展开的 messages 列表(手动点开"在面板内展开"后才有, 默认隐藏) -->
-                  <div v-if="callInputs[callKeyForSeq(group.callSeq)]" class="call-input-list">
-                    <details v-for="(m, mi) in callInputs[callKeyForSeq(group.callSeq)]" :key="mi" class="call-input-msg">
+                  <div v-if="callInputs[callKeyForSeq(item.callSeq)]" class="call-input-list">
+                    <details v-for="(m, mi) in callInputs[callKeyForSeq(item.callSeq)]" :key="mi" class="call-input-msg">
                       <summary>
                         <span class="msg-role" :class="'role-' + m.role">{{ m.role }}</span>
                         <span class="brand-sub mono">{{ safeSlice(typeof m.content === 'string' ? m.content : JSON.stringify(m.content), 0, 80) }}</span>
@@ -226,6 +241,7 @@
                 </div>
               </div>
             </div>
+            </template>
           </div>
         </template>
       </main>
@@ -400,24 +416,36 @@ async function selectWake(wakeId) {
   }
 }
 
-// 按 llm_call_seq 聚合 turns (input = role in [user, system], output = assistant/tool)
-const groupedTurns = computed(() => {
+// 把 injections + turns 合并成一条时间线: 按 timestamp 排序。
+// injection 作为独立的 timeline item(类似 call 但 sys_tool 标记),
+// 它出现在哪个 call 之间由 injected_at 跟 turns 的 timestamp 决定。
+// 这样不需要 injected_before_call 硬匹配, 完全按实际顺序渲染。
+
+const timeline = computed(() => {
   if (!Array.isArray(turns.value) || !turns.value.length) return []
-  const map = new Map()
+  // 1. 按 callSeq 聚合 turns (跟之前 groupedTurns 一样)
+  const callMap = new Map()
   for (const t of turns.value) {
     const seq = t.llm_call_seq != null ? Number(t.llm_call_seq) : null
-    if (seq == null) continue // 没 seq 的 turn(如审计记录)跳过
-    if (!map.has(seq)) {
-      map.set(seq, { callSeq: seq, turns: [], tokenCount: 0, summary: '', preview: '' })
+    if (seq == null) continue
+    if (!callMap.has(seq)) {
+      callMap.set(seq, {
+        type: 'call',
+        callSeq: seq,
+        timestamp: Number(t.timestamp) || 0,
+        turns: [], tokenCount: 0, summary: '', preview: '',
+      })
     }
-    const g = map.get(seq)
+    const g = callMap.get(seq)
     g.turns.push(t)
     if (t.token_count) g.tokenCount += Number(t.token_count) || 0
+    // call 的 timestamp = 第一条 turn 的时间
+    const ts = Number(t.timestamp) || 0
+    if (g.timestamp === 0 || ts < g.timestamp) g.timestamp = ts
   }
-  const groups = Array.from(map.values()).sort((a, b) => a.callSeq - b.callSeq)
-  // 给每组算大字 summary + preview(易扫读)
-  for (const g of groups) {
-    // summary: 找 assistant turn 的 tool_calls 名字列表(没就显示 content preview)
+
+  // 给 call 算 summary + preview
+  for (const g of callMap.values()) {
     const asstTurns = g.turns.filter(t => t.role === 'assistant')
     const toolNames = []
     for (const at of asstTurns) {
@@ -428,7 +456,6 @@ const groupedTurns = computed(() => {
         }
       }
     }
-    // 也带上 user 事件触发源(role=user 的 content 头)
     const userTurn = g.turns.find(t => t.role === 'user')
     const userHead = userTurn ? String(userTurn.content || '').split('\n')[0].slice(0, 60) : ''
     if (toolNames.length) {
@@ -438,10 +465,62 @@ const groupedTurns = computed(() => {
     } else {
       g.summary = `${g.turns.length} turns`
     }
-    // preview = 第一条 user content 80 chars
     g.preview = userHead ? userHead.slice(0, 100) : (asstTurns[0]?.content || '').slice(0, 100) || ''
   }
-  return groups
+
+  // 2. injections 去重: agent 的 _convert_user_to_tool 会替换旧版本, 同一 sys_tool 只保留最新。
+  // audit DB 两条都存了, 前端只展示最新的(=injected_at 最大的)那条。
+  const injMap = new Map()
+  for (const inj of (injections.value || [])) {
+    const k = inj.sys_tool || 'unknown'
+    const ts = Number(inj.injected_at) || 0
+    const prev = injMap.get(k)
+    if (!prev || ts > (Number(prev.injected_at) || 0)) {
+      injMap.set(k, inj)
+    }
+  }
+  const injItems = Array.from(injMap.values()).map(inj => ({
+    type: 'injection',
+    timestamp: Number(inj.injected_at) || 0,
+    inj,
+  }))
+
+  // 3. 合并 + 按 timestamp 排序
+  // 注意: 初始注入(injected 在第一个 call 之前)在顶部单独渲染,
+  // timeline 里只放 mid-session 注入(在第一个 call 之后的)
+  const calls = Array.from(callMap.values())
+  const firstCallTs = calls.length ? Math.min(...calls.map(c => c.timestamp || 0)) : 0
+  const midInjItems = injItems.filter(item => item.timestamp > firstCallTs)
+  const all = [...calls, ...midInjItems]
+  all.sort((a, b) => {
+    const ta = a.timestamp || 0
+    const tb = b.timestamp || 0
+    if (ta !== tb) return ta - tb
+    // 同一时刻: injection 放前面(注入在模型看到之前)
+    if (a.type === 'injection' && b.type === 'call') return -1
+    if (a.type === 'call' && b.type === 'injection') return 1
+    return 0
+  })
+
+  return all
+})
+
+// 兼容旧引用(groupedTurns 保留, 从 timeline 提取 call 类型)
+const groupedTurns = computed(() => timeline.value.filter(t => t.type === 'call'))
+
+// 初始注入(injected 在第一个 call 之前) — 从 timeline 去重后的 injections 取
+const initialInjections = computed(() => {
+  const calls = groupedTurns.value
+  const firstCallTs = calls.length ? (calls[0].timestamp || 0) : 0
+  return timeline.value
+    .filter(t => t.type === 'injection' && t.timestamp <= firstCallTs)
+    .map(t => t.inj)
+})
+
+// 是否有 mid-session 注入
+const midSessionInjectionCount = computed(() => {
+  const init = initialInjections.value.length
+  return (injections.value || []).length - init
 })
 
 function isInjectionDefaultOpen(inj) {

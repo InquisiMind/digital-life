@@ -177,6 +177,8 @@ class EmployeeConsoleAPIService:
 
     async def _handle_console_session_detail(self, request: web.Request) -> web.Response:
         data = await self._input(request)
+        employee_id = request.match_info.get("employee_id", "") or ""
+        self.sessions.employee_id = employee_id
         return self._response(self.sessions.session_detail(data.path_params["session_id"]))
 
     async def _handle_console_session_raw(self, request: web.Request) -> web.Response:

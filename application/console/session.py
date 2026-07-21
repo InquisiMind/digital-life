@@ -14,7 +14,7 @@ class SessionConsoleWorkflow:
     """Read session lists/details and attach session memory summaries."""
 
     def __init__(self) -> None:
-        pass
+        self.employee_id: str = ""
 
     @staticmethod
     def _state_db_path():
@@ -120,11 +120,65 @@ class SessionConsoleWorkflow:
             result: dict[str, Any] = {"session_id": session_id, "messages": messages}
             self._attach_session_summary(result, session_id)
             self._attach_consumed_events(db, result, session_id)
+            self._attach_injections(result, session_id)
+            self._attach_events(db, result, session_id)
             return UseCaseResult(result)
         except Exception as exc:
             return UseCaseResult({"error": str(exc)}, 500)
         finally:
             db.close()
+
+    def _attach_injections(self, result: dict, session_id: str) -> None:
+        """从 runtime_log.db 拉 session 的注入(injections)— 初始上下文 + mid-session 注入。"""
+        try:
+            from infrastructure.persistence.instance import get_audit
+            from infrastructure.config import set_current_instance_id
+            eid = getattr(self, "employee_id", "") or ""
+            if eid:
+                set_current_instance_id(eid)
+            audit = get_audit()
+            injections = audit.list_injections_by_session(session_id)
+            result["injections"] = injections or []
+        except Exception:
+            result["injections"] = []
+
+    def _attach_events(self, db: sqlite3.Connection, result: dict, session_id: str) -> None:
+        """从 events 表拉该 session 消费的事件清单(含完整 payload text)。"""
+        try:
+            rows = db.execute(
+                "SELECT event_id, kind, created_at, consumed_at, payload "
+                "FROM events WHERE consumed_by_session_id = ? "
+                "ORDER BY created_at, event_id",
+                (session_id,),
+            ).fetchall()
+            events = []
+            for row in rows:
+                raw_payload = row["payload"] or ""
+                text = ""
+                sender_name = ""
+                kind = row["kind"] or ""
+                try:
+                    payload = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
+                    text = payload.get("text") or payload.get("reason") or payload.get("description") or ""
+                    sender_name = payload.get("sender_name") or ""
+                    # 定时器/self_iteration 等的详情
+                    if not text and kind == "timer":
+                        text = payload.get("mental_context") or payload.get("reason") or ""
+                    elif not text and kind == "initiative":
+                        text = f"精力={payload.get('energy','?')} 空闲={payload.get('hours_idle','?')}h"
+                except Exception:
+                    text = raw_payload[:200] if raw_payload else ""
+                events.append({
+                    "event_id": row["event_id"],
+                    "kind": kind,
+                    "created_at": row["created_at"],
+                    "consumed_at": row["consumed_at"],
+                    "text": text[:300],
+                    "sender": sender_name,
+                })
+            result["events"] = events
+        except Exception:
+            result["events"] = []
 
     @staticmethod
     def _parse_tool_calls(raw: str | None) -> list[dict[str, Any]]:

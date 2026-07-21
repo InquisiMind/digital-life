@@ -166,13 +166,31 @@ platforms: []
 
 ## Phase 6 · 落地
 
-### 6.1 写入待办 + 每日计划
+### 6.1 把今日计划写成待办
+
+对 Phase 5 整合出的每件事，用 `todo` 创建待办：
 
 ```
-# 每件事：
-todo(action="create", title="<动词> <对象>", description="WHY <理由> | EXPECTED <今天能交付什么>", priority="high|medium|low", type="daily", deadline="今天")
-# + 如果有 HH:MM:
-todo_trigger(time="HH:MM", title="<动作> <对象>")  # 到点 timer 自动触发
+todo(action="create",
+     title="<动词> <对象>",           # 清晰到醒来一眼就知道做什么
+     description="<背景 + 上下文>",     # 为什么要做这件事
+     acceptance_criteria="<什么算 done>",  # 完成标准
+     priority="high|medium|low",
+     deadline="2026-MM-DD")           # 今天的日期
+```
+
+**派给别人**：如果某件事该 sibling 做（比如 alpha 执行交易），`assignee_instance` 填对方的实例 ID。
+
+```
+todo(action="create",
+     title="...",
+     assignee_instance="5052c33a-xxxx")   # 分配给另一个实例
+```
+
+**到点提醒**：如果某件事有时间约束（比如 09:30 开盘操作），用 `todo_trigger` 设闹钟：
+
+```
+todo_trigger(action="create", owner_todo_id="<上面创建的 id>", trigger_type="time", due_at="2026-MM-DDT09:30:00+08:00")
 ```
 
 ### 6.2 update_context（给下次醒来的自己留钥匙）
@@ -194,10 +212,9 @@ todo_trigger(time="HH:MM", title="<动作> <对象>")  # 到点 timer 自动触�
   3. 完成 Y 后进 Z
 ```
 
-### 6.3 update_rules / add_lesson / project_memory（如 Phase 3 触发的上层更新）
+### 6.3 update_rules / add_lesson（如 Phase 3 触发的上层更新）
 
 如果 Phase 3 判定 thesis/goal/rules 要更新，**今天就更新**——别拖。
-（manage_goal 工具如果不可用，标 record_thought kind=idea "应该 update goal to ..."，等下次工具齐了）。
 
 ### 6.4 结束
 

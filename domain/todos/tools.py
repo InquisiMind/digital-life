@@ -234,11 +234,8 @@ def register_task_tools(
                     "type": {
                         "type": "string",
                         "description": (
-                            "任务类型——区分这事的属性。常用值："
-                            "daily（每日计划项）、"
-                            "development（开发）、research（调研）、trading（交易）、"
-                            "project_management（项目管理）。空值 = 通用。"
-                            "daily_planner 产出的今日计划用 type='daily'。"
+                            "任务类型——标识这事的属性（暂时只记录不驱动逻辑）。"
+                            "例如 development、research、trading、design 等。"
                         ),
                     },
                     "linked_deliverable_id": {

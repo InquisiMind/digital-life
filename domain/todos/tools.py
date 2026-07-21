@@ -234,10 +234,11 @@ def register_task_tools(
                     "type": {
                         "type": "string",
                         "description": (
-                            "任务类型（绑定 Skill 方法论）。"
-                            "常用值：project_management（项目管理）、project_bootstrap（项目分工）、"
-                            "research（调研）、development（开发）、trading（交易执行）等。"
-                            "空值 = 通用任务"
+                            "任务类型——区分这事的属性。常用值："
+                            "daily（每日计划项）、"
+                            "development（开发）、research（调研）、trading（交易）、"
+                            "project_management（项目管理）。空值 = 通用。"
+                            "daily_planner 产出的今日计划用 type='daily'。"
                         ),
                     },
                     "linked_deliverable_id": {

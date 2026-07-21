@@ -300,13 +300,7 @@ def _build_memory_context(reason: str = "", extra: str = "", events_text: str = 
     parts = []
     policy = policy or {}
 
-    # ── 记忆体检面板(每次 wake 都加,~150 token 上限) ──
-    try:
-        health = _memory_health_snapshot()
-        if health:
-            parts.append(health)
-    except Exception:
-        pass
+    # 记忆体检已移除 — 诊断信息不进 prompt, 模型不需要
 
     # LESSONS.md — 最近 3 条教训，始终注入
     try:
@@ -657,15 +651,8 @@ def build_wake_prompt(
     def _ref(title: str, body: str) -> str:
         return f"## {title}\n\n{body}"
 
-    # 今日目标
-    if _policy_flag(policy, "include_daily"):
-        try:
-            from domain.memory.memory.consciousness.runtime import read_daily
-            daily_text = read_daily()
-            if daily_text and "还没有" not in daily_text:
-                ref_parts.append(_ref("\u4eca\u65e5\u76ee\u6807", daily_text))
-        except Exception:
-            pass
+    # 今日目标已移除 — DAILY.md 已退役(manage_daily → todo type=daily),
+    # 今日计划就是待办面板里 type=daily 的 todo, 不再单独注入
 
     # 自我迭代档案
     if _policy_flag(policy, "include_self_review") and pending_events:

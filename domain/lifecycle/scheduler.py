@@ -399,6 +399,15 @@ def _load_prev_session_summary(session_db, current_session_id: str) -> list:
                 lines.append(f"── {header} ──\n{body}")
 
             if len(lines) > 1:
+                # 把最后一条思绪追加到最近经历末尾(不再单独成段)
+                try:
+                    from domain.memory.memory.consciousness.runtime import read_last_thought
+                    last_thought = read_last_thought()
+                    _STATUS_TAGS = ("trading_wait", "system_wait", "final_status")
+                    if last_thought and not any(f"[{tag}]" in last_thought for tag in _STATUS_TAGS):
+                        lines.append(f"── 临睡前留下的思绪 ──\n{last_thought.strip()}")
+                except Exception as e:
+                    logger.debug("Last thought merge into recent failed: %s", e)
                 lines.append("[/你的最近经历]")
                 result.append({
                     "role": "user",
@@ -408,20 +417,7 @@ def _load_prev_session_summary(session_db, current_session_id: str) -> list:
     except Exception as e:
         logger.debug("Recent experience fallback: %s", e)
 
-    # Layer 2: 上次休息前留给自己的思绪 — CONSCIOUSNESS 最后 1 条，主观"写给自己的"
-    try:
-        from domain.memory.memory.consciousness.runtime import read_last_thought
-        last = read_last_thought()
-        if last:
-            _STATUS_TAGS = ("trading_wait", "system_wait", "final_status")
-            if not any(f"[{tag}]" in last for tag in _STATUS_TAGS):
-                result.append({
-                    "role": "user",
-                    "content": f"[上次休息前留给自己的思绪]\n{last.strip()}\n[/上次休息前留给自己的思绪]",
-                    "_sys_tool": "consciousness",
-                })
-    except Exception as e:
-        logger.debug("Self thought fallback: %s", e)
+    # Layer 2 已合并到 Layer 1 (session_digest) 末尾, 不再单独注入 consciousness
 
     return result
 

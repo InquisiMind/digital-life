@@ -41,6 +41,7 @@ class WakeContext:
     _position: int = 0
     _ended: bool = False
     meta: dict[str, Any] = field(default_factory=dict)
+    session_id: str = ""
 
     # ---- factory ----------------------------------------------------------
 
@@ -50,14 +51,16 @@ class WakeContext:
         audit: RuntimeLogDB,
         *,
         meta: dict[str, Any] | None = None,
+        session_id: str = "",
     ) -> "WakeContext":
-        wake_id = audit.create_wake(meta=meta)
+        wake_id = audit.create_wake(meta=meta, session_id=session_id)
         wake_seq = audit.get_wake(wake_id)["wake_seq"]
         return cls(
             audit=audit,
             wake_id=wake_id,
             wake_seq=wake_seq,
             meta=meta or {},
+            session_id=session_id,
         )
 
     # ---- slow_ctx + injections (before call 0, or between calls) ---------
@@ -83,6 +86,7 @@ class WakeContext:
             scope_id=scope_id,
             injected_before_call=self.llm_call_seq,
             memory_refs=memory_refs,
+            session_id=self.session_id,
         )
 
     def recall(
@@ -121,6 +125,7 @@ class WakeContext:
             scope_id=scope_id,
             injected_before_call=self.llm_call_seq,
             memory_refs=memory_refs,
+            session_id=self.session_id,
         )
 
     # ---- turns -----------------------------------------------------------
@@ -135,6 +140,7 @@ class WakeContext:
             role="user",
             content=content,
             chat_id=chat_id,
+            session_id=self.session_id,
         )
         self._position += 1
         return row
@@ -212,6 +218,7 @@ class WakeContext:
             reasoning=reasoning,
             finish_reason=finish_reason,
             token_count=token_count,
+            session_id=self.session_id,
         )
         self._position += 1
         return row
@@ -234,6 +241,7 @@ class WakeContext:
             tool_call_id=tool_call_id,
             content=content,
             error=error,
+            session_id=self.session_id,
         )
         self._position += 1
         return row

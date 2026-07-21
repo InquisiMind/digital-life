@@ -109,6 +109,24 @@ class RuntimeLogDB(InstanceDB):
             db_path = get_instance_data_dir(instance_id) / "runtime_log.db"
         super().__init__(db_path)
         self.instance_id = instance_id or get_app_instance_id() or ""
+        self._ensure_session_id_columns()
+
+    def _ensure_session_id_columns(self) -> None:
+        """幂등: wake/turn/injection 三表加 session_id 列(向下兼容)。"""
+        try:
+            for table in ("wake", "turn", "injection"):
+                cols = [r[1] for r in self.fetchone(f"PRAGMA table_info({table})")]
+                # fetchall not available via fetchone, use raw
+                rows = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+                col_names = [r[1] for r in rows]
+                if "session_id" not in col_names:
+                    self.execute(f"ALTER TABLE {table} ADD COLUMN session_id TEXT DEFAULT ''")
+                    self.execute(
+                        f"CREATE INDEX IF NOT EXISTS idx_{table}_session ON {table}(session_id)"
+                    )
+            self.commit()
+        except Exception:
+            pass
 
     # ---- wake -------------------------------------------------------------
 
@@ -140,17 +158,19 @@ class RuntimeLogDB(InstanceDB):
         wake_seq: int | None = None,
         meta: dict[str, Any] | None = None,
         started_at: float | None = None,
+        session_id: str = "",
     ) -> int:
         """Start a wake. Variable fields go in ``meta`` (trigger, model, etc.)."""
         seq = wake_seq if wake_seq is not None else self.next_wake_seq()
         cur = self.execute(
-            "INSERT INTO wake (instance_id, wake_seq, meta_json, started_at) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO wake (instance_id, wake_seq, meta_json, started_at, session_id) "
+            "VALUES (?, ?, ?, ?, ?)",
             (
                 self.instance_id,
                 seq,
                 json.dumps(meta or {}, ensure_ascii=False, default=str),
                 started_at if started_at is not None else time.time(),
+                session_id,
             ),
         )
         self.commit()
@@ -283,13 +303,14 @@ class RuntimeLogDB(InstanceDB):
         chat_id: str | None = None,
         error: str | None = None,
         timestamp: float | None = None,
+        session_id: str = "",
     ) -> int:
         cur = self.execute(
             """INSERT INTO turn
             (instance_id, wake_id, wake_seq, llm_call_seq, position_in_call, role,
              content, tool_name, tool_call_id, tool_calls, reasoning, finish_reason,
-             token_count, chat_id, error, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             token_count, chat_id, error, timestamp, session_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 self.instance_id,
                 wake_id,
@@ -307,6 +328,7 @@ class RuntimeLogDB(InstanceDB):
                 chat_id or "",
                 error,
                 timestamp if timestamp is not None else time.time(),
+                session_id,
             ),
         )
         self.commit()
@@ -390,6 +412,7 @@ class RuntimeLogDB(InstanceDB):
         scope_id: str = "*",
         injected_before_call: int = 0,
         memory_refs: list[int] | dict[str, Any] | None = None,
+        session_id: str = "",
     ) -> int:
         if _dedup_strategy(sys_tool) == "latest":
             self.execute(
@@ -405,8 +428,8 @@ class RuntimeLogDB(InstanceDB):
         cur = self.execute(
             """INSERT INTO injection
             (instance_id, wake_id, wake_seq, sys_tool, scope_id, memory_refs,
-             content, injected_before_call, injected_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             content, injected_before_call, injected_at, session_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 self.instance_id,
                 wake_id,
@@ -417,6 +440,7 @@ class RuntimeLogDB(InstanceDB):
                 content,
                 injected_before_call,
                 time.time(),
+                session_id,
             ),
         )
         self.commit()
@@ -443,6 +467,42 @@ class RuntimeLogDB(InstanceDB):
                 except Exception:
                     pass
         return rows
+
+    def list_turns_by_session(self, session_id: str) -> list[dict[str, Any]]:
+        """按 session_id 拉所有 turn(跨 wake)。"""
+        rows = self.fetchall(
+            "SELECT * FROM turn WHERE session_id = ? ORDER BY id",
+            (session_id,),
+        )
+        for r in rows:
+            if r.get("tool_calls"):
+                try:
+                    r["tool_calls"] = json.loads(r["tool_calls"])
+                except Exception:
+                    r["tool_calls"] = []
+        return rows
+
+    def list_injections_by_session(self, session_id: str) -> list[dict[str, Any]]:
+        """按 session_id 拉所有 injection(跨 wake)。"""
+        rows = self.fetchall(
+            "SELECT * FROM injection WHERE session_id = ? ORDER BY injected_at",
+            (session_id,),
+        )
+        for r in rows:
+            refs = r.get("memory_refs")
+            if refs:
+                try:
+                    r["memory_refs"] = json.loads(refs)
+                except Exception:
+                    pass
+        return rows
+
+    def list_wakes_by_session(self, session_id: str) -> list[dict[str, Any]]:
+        """按 session_id 拉所有 wake。"""
+        return self.fetchall(
+            "SELECT * FROM wake WHERE session_id = ? ORDER BY started_at",
+            (session_id,),
+        )
 
     # ---- input reconstruction --------------------------------------------
 

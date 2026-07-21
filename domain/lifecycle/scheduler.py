@@ -1038,7 +1038,7 @@ def _wake_digital_life_inner_safe(
                 "system_prompt_ref": f"instance:{instance_id}",
                 "system_prompt_text": _full_system or "",
             }
-            wake_ctx = WakeContext.start(get_audit(instance_id), meta=audit_meta)
+            wake_ctx = WakeContext.start(get_audit(instance_id), meta=audit_meta, session_id=session_id)
             agent.audit_ctx = wake_ctx
             agent.wake_id = wake_ctx.wake_id
             # 把当前 wake_id 挂到 contextvar —— mid-session 注入靠它精确归属到本 wake，

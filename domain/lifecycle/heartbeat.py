@@ -292,86 +292,50 @@ def _memory_health_snapshot() -> str:
 
 
 def _build_memory_context(reason: str = "", extra: str = "", events_text: str = "", policy: dict | None = None) -> str:
-    """构建记忆上下文 — 记忆体检面板 + 近期教训 + 实体触发记忆。
+    """构建记忆上下文 — 只放「近期教训」。
 
-    RULES / CONTEXT / SCRATCHPAD 不再注入，模型按需通过 sense 工具查询。
+    实体召回功能已从 system_context 移除,完全交给两条独立链路:
+      - memory_recall 工具: 模型主动思考"我需要哪些记忆"时手动调用
+      - 自动 entity_recall (mid-session): 每轮推理后自动联想注入,不依赖 wake 时预抓
+
+    历史问题(2026-07 修复): wake 时塞入 `## 实体触发记忆` 与「每轮自动 entity_recall」
+    功能完全重叠——同一份 unified_recall 召回会在两个地方各跑一次,造成 token 浪费 + 跨路径
+    内容不一致。system_context 应放静态/低频变化的指令类上下文,不放动态记忆召回结果。
+
+    RULES / CONTEXT / SCRATCHPAD 不再注入,模型按需通过 sense 工具查询。
     CONSCIOUSNESS 由 scheduler._load_prev_session_summary() 以 conversation_history 承载。
+
+    V6: LESSONS 注入从 read_lessons(.md 文件) 迁移到 recall_memory(认知库).
+    认知库是唯一真相源, .md 文件只留作人类参考.
     """
     parts = []
-    policy = policy or {}
 
-    # 记忆体检已移除 — 诊断信息不进 prompt, 模型不需要
-
-    # LESSONS.md — 最近 3 条教训，始终注入
+    # 最近 3 条教训 — 从认知库 recall (不再读 LESSONS.md)
     try:
-        from domain.memory.memory.consciousness.runtime import read_lessons
-        lessons = read_lessons(n=3)
-        if lessons and lessons.strip():
-            parts.append(f"## 近期教训\n\n{lessons.strip()}")
+        from domain.memory.memory.recall.vector import recall_structured
+        lessons_hits = recall_structured(
+            "近期教训 经验 反思",
+            max_total_chars=400,
+            sources=["lesson"],
+            include_obsolete=False,
+        )
+        if lessons_hits:
+            lesson_lines = []
+            for h in lessons_hits[:3]:
+                t = (h.get("text") or "").strip().replace("\n", " ")
+                if t:
+                    lesson_lines.append(f"- {t[:150]}")
+            if lesson_lines:
+                parts.append("## 近期教训\n\n" + "\n".join(lesson_lines))
     except Exception:
-        pass
-
-    # Entity-triggered recall: string-match known entities from wake context
-    if _policy_flag(policy, "include_entity_recall"):
-        context_for_entities = f"{reason} {extra} {events_text}".strip()
-        if context_for_entities:
-            try:
-                from domain.memory.memory.consciousness.entity_index import (
-                    extract_entities_from_context,
-                )
-                entities = extract_entities_from_context(context_for_entities)
-
-                # P2 (feature 002 User Story 2): wake 路径统一过 unified_recall facade。
-                #   facade 内部跑 vector + FTS5 + attention 提权,RRF 融合;不再走拼接。
-                #   保留 entity_index 抽取的 entities 作 attention_tokens。
-                #   如 facade 整体不可用(fallback),ui_degrade 到 entity_index 精确结果。
-                from domain.memory.memory.recall.unified import (
-                    unified_recall, render_breadcrumbs,
-                )
-                unified_results = unified_recall(
-                    context_for_entities,
-                    attention_tokens=entities,
-                    budget_kind="passive",
-                )
-                breadcrumb = render_breadcrumbs(
-                    unified_results, new_entities=entities, max_total_chars=800
-                )
-                if breadcrumb:
-                    parts.append(f"## 实体触发记忆\n\n{breadcrumb}")
-
-                # 把 unified recall 返回的 chunk_id 登记为 presented,
-                # mid-session 不重注(spec §6.5 dedup handoff)。
-                # 也登记 entity_index 片段 mid(若有)。
-                for r in unified_results:
-                    cid = r.get("chunk_id")
-                    if isinstance(cid, int) and cid >= 0:
-                        _presented_memory_ids.add(str(cid))
-                # fallback 路径:entity_index 仍可能返回 fragment,登记其 mid。
-                if not unified_results and entities:
-                    from domain.memory.memory.consciousness.entity_index import (
-                        query_entities_ranked,
-                    )
-                    memories = query_entities_ranked(
-                        entities, current_context=context_for_entities, limit=5
-                    )
-                    if memories:
-                        lines = ["## 实体触发记忆\n"]
-                        for m in memories:
-                            mtype = str(m.get("memory_type", "")).upper()
-                            snippet = str(m.get("snippet", ""))[:150]
-                            entity = str(m.get("_matched_entity", ""))
-                            tag = f" [{entity}]" if entity else ""
-                            if mtype == "PROFILE":
-                                lines.insert(1, f"- [{entity} · 概念] {snippet}")
-                            else:
-                                lines.append(f"- [{mtype}]{tag} {snippet}")
-                        parts.append("\n".join(lines))
-                        for m in memories:
-                            mid = str(m.get("memory_id", ""))
-                            if mid:
-                                _presented_memory_ids.add(mid)
-            except Exception:
-                pass
+        # fallback: 如果认知库 recall 失败 (cold start / API down), 读 .md 兜底
+        try:
+            from domain.memory.memory.consciousness.runtime import read_lessons
+            lessons = read_lessons(n=3)
+            if lessons and lessons.strip():
+                parts.append(f"## 近期教训\n\n{lessons.strip()}")
+        except Exception:
+            pass
 
     return "\n\n---\n\n".join(parts) if parts else ""
 from domain.lifecycle.event_registry import get_event_type as _get_event_type  # noqa: E402

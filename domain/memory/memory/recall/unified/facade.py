@@ -31,20 +31,21 @@ from domain.memory.memory.recall.unified import fts
 logger = logging.getLogger("domain.memory.recall.unified")
 
 # RRF 常数 + 预算
-# k 调整 2026-07-16: 从 60 → 20
-# 用户语义场景实测: k=60 时 rank 1 与 rank 5 的 RRF 分差仅 0.002, 主向量命中的
-# 真实相关 chunk 经常被 lexical 低分多条稀释, 挤出 top5。k=20 让前几位权重更
-# 阶梯化, 单路高命中能直接站住 top-K。
-_RRF_K = 20
-_DEFAULT_TIMEOUT = 5.0
+# k=5 让分数阶梯化更强: rank=0 → 0.17, rank=1 → 0.14, rank=2 → 0.11
+# sin valor 0.08 压到很低 → 用户看到的"经历摘要 score=0.08"真的是低相关的
+_RRF_K = 5
+_DEFAULT_TIMEOUT = 12.0  # vector embedding 冷启动需 ~8s, 留足空间避免向量路永远 silent fail
 _MAX_ROUTES = 3  # 向量 / 词法 / 注意力
 
 BudgetKind = Literal["resident", "passive", "on_demand"]
 
 _BUDGET_MAX_CHARS: dict[BudgetKind, int] = {
     "resident": 300,
-    "passive": 600,
-    "on_demand": 1500,
+    # passive (联想自动注入): 提升 600→1500 — 单条复杂规则可能上百字, 600 容易塞 3 条
+    # 残缺面包屑。1500 字符 ≈ 500 tokens, 对 LLM 完全无压力, 但能让完整规则被看到。
+    # review 2026-07-23 #3.
+    "passive": 1500,
+    "on_demand": 2000,
 }
 
 
@@ -73,6 +74,9 @@ def _route_vector(query: str, *, extra_context: str = "", max_chars: int) -> lis
             "source_kind": "",
             "text": h.get("text", ""),
             "meta_phase": h.get("phase", "experience"),
+            "meta_payload": h.get("payload"),  # V3 #3: 透传 payload 给 render_breadcrumbs
+            "meta_created_at": h.get("created_at", 0),  # V6 #6
+            "_route": "vector",
         })
     return out[:20]
 
@@ -98,8 +102,9 @@ def _route_lexical(query: str, *, limit: int) -> list[dict]:
                 # P3+ 改: SELECT 里不再读 activation 列 — 因为 chunks.activation 是
                 # 持久字段不应作为"动态注意力"源(用户文档 §5.1); activation 真值
                 # 由 attention_cache (运行时)提供, 这里读其它静态字段。
+                # V6 #7: 加 created_at 透传给 render_breadcrumbs
                 f"""SELECT id, source, text, phase, freshness,
-                          cognition_state, derived_from, entity_links
+                          cognition_state, derived_from, entity_links, created_at
                    FROM chunks WHERE id IN ({placeholders})""",
                 ids,
             ).fetchall()
@@ -112,6 +117,7 @@ def _route_lexical(query: str, *, limit: int) -> list[dict]:
                     "cognition_state": r["cognition_state"] or None,
                     "derived_from": r["derived_from"] or "[]",
                     "entity_links": r["entity_links"] or "[]",
+                    "created_at": float(r["created_at"] or 0),  # V6 #7
                 }
                 for r in rows
             }
@@ -134,25 +140,27 @@ def _route_lexical(query: str, *, limit: int) -> list[dict]:
 
     out: list[dict] = []
     for cid, score in hits:
+        # BM25 过滤: FTS5 对中文常见词泛匹配
+        # BM25=3.0 是平衡点: 正常 query 关键词 BM25 通常>=3, 泛匹配常见词通常 1-2.5
+        if score < 3.0:
+            continue
         meta = meta_by_id.get(cid, {})
         # E2E 修复: lexical base + 新鲜度/活度 bonus,
         # 让刚写进来的晋升认知/项目/待办能挤进 RRF top(没这个 bonus 时新切片
         # 因 base score 低、被高频老对话挤出)。
         bonus = (0.4 * meta.get("activation", 0.0)
                  + 0.2 * meta.get("freshness", 0.0))
-        # 认知类微 boost(规则/教训/晋升结果应有更高召回权重):
-        # 原本 lexical 这里 +0.5 太重 — 与 vector 路的 +0.5 累加, 实测让所有
-        # cognition 抢占 top-K, 把 user 对话经历压至榜外(实测 "闹钟为什么没按
-        # 时触发" 召回全 rules, 无 conversation)。降到 +0.05 同其它位置。
         if meta.get("phase") == "cognition":
             bonus += 0.05
         out.append({
             "chunk_id": cid,
-            "score": float(score) + bonus,  # 已转正 + 新鲜度/活度 bonus
+            "score": float(score) + bonus,
             "source": meta.get("source", ""),
             "source_kind": "",
             "text": meta.get("text", ""),
             "meta_phase": meta.get("phase", "experience"),
+            "meta_created_at": meta.get("created_at", 0),  # V6 #7
+            "_route": "lexical",
         })
     return out
 
@@ -164,23 +172,78 @@ def _boost_attention(
     boost_delta: float = 0.15,
 ) -> list[dict]:
     """Route E:attention_tokens 命中 → chunk 文本里命中之一 → 提权。
-    (P2 简化版:P3 改用 entity_links JSON 字段提权更准。)
+    P4 扩展: 也检查 chunk 的 entity_links — query 含 entity_link 词时 boost。
+
+    防误伤策略 (review 2026-07-23 #5, 中文子串误伤):
+      · len(token) == 2  → 严格整词匹配 (吃苹果 vs 苹果公司)
+      · len(token) == 3  → 子串允许, 但要求无相邻汉字组成更长的常见词
+      · len(token) >= 4  → 子串匹配 (实体名几乎不会误伤)
+
+    加分档:
+      · 整词命中 (含 token==2/3 边界)  → +0.15
+      · 子串命中 (len>=4)              → +0.15
+      · 子串命中 (len==3 但跨边界)      → +0.10
+      · 不命中                          → 0
     """
     if not attention_tokens:
         return candidates
-    lowered = [t.lower() for t in attention_tokens if t]
-    if not lowered:
+
+    import re as _re
+    # 中文字符匹配 (CJK Unified Ideographs + 常用扩展)
+    _cjk = _re.compile(r"[\u4e00-\u9fff]")
+
+    def _strict_whole_match(token: str, text: str) -> bool:
+        """2-3 字 token, 仅当 token 作为独立词出现在 text 中才匹配。
+        判据: token 从文本起始位置出现, 或前/后 1 字符是非 CJK (空格/半角符号/数字等),
+        或 token 紧邻标点/英文。简单边界规则即可挡 "吃[苹果]" 命中 "[苹果]公司" 这类。
+        """
+        idx = 0
+        while True:
+            pos = text.find(token, idx)
+            if pos < 0:
+                return False
+            before_ok = pos == 0 or not _cjk.match(text[pos - 1])
+            after_ok = (pos + len(token) >= len(text)) or not _cjk.match(text[pos + len(token)])
+            if before_ok and after_ok:
+                return True
+            idx = pos + 1
+
+    lowered_tokens = [(t, t.lower()) for t in attention_tokens if t]
+    if not lowered_tokens:
         return candidates
+
     for c in candidates:
         text = (c.get("text") or "").lower()
-        if any(tok in text for tok in lowered):
-            c["score"] += boost_delta
-            c["matched_attention_token"] = next(
-                (attention_tokens[i] for i, t in enumerate(lowered) if t in text),
-                None,
-            )
-        else:
+        if not text:
             c.setdefault("matched_attention_token", None)
+            continue
+
+        best_score_add = 0.0
+        matched_original = None
+        for orig_tok, tok in lowered_tokens:
+            tlen = len(tok)
+            if tlen < 2:
+                continue
+            if tlen == 2 or tlen == 3:
+                # 短 token 严格整词: 防"吃苹果"vs"苹果公司"
+                if _strict_whole_match(tok, text):
+                    if boost_delta > best_score_add:
+                        best_score_add = boost_delta
+                        matched_original = orig_tok
+                elif tlen == 3 and tok in text:
+                    # 长度 3 的子串匹配可以接受但低 boost
+                    if 0.10 > best_score_add:
+                        best_score_add = 0.10
+                        matched_original = orig_tok
+            else:
+                # 长实体 (>=4): 子串误伤概率极低, 接受
+                if tok in text:
+                    if boost_delta > best_score_add:
+                        best_score_add = boost_delta
+                        matched_original = orig_tok
+
+        c["score"] += best_score_add
+        c["matched_attention_token"] = matched_original
     return candidates
 
 
@@ -213,6 +276,10 @@ def _rrf_fuse(
                     "matched_attention_token": c.get("matched_attention_token"),
                     "max_route_score": c.get("score", 0.0),
                     "meta_phase": c.get("meta_phase", "experience"),
+                    # V3 #3: 透传 payload (premise/rationale) 到 render_breadcrumbs
+                    "payload": c.get("payload") or c.get("meta_payload"),
+                    # V6 #6: 透传 created_at 给 render_breadcrumbs 显示认知年龄
+                    "created_at": c.get("created_at") or c.get("meta_created_at", 0),
                 }
             fused[key]["rrf_score"] += contribution
             fused[key]["routes"].append(route_name)
@@ -277,10 +344,13 @@ def render_breadcrumbs(
     results: list[dict],
     *,
     new_entities: list[str] | None = None,
-    max_total_chars: int = 600,
+    max_total_chars: int = 1500,
 ) -> str:
     """把 unified_recall 结果渲染成面包屑,注入 agent.messages 用。
     语义要兼容既有 _inject_entity_recall 的 🎯/🔍 标注(spec §User Story 2)。
+
+    V3 (2026-07-23 #3): 若该 result 带 payload.premise/rationale, 追加背景条目让
+    model 看到决策推理链路(Zero 反馈"醒来后必须重新推导才能确认前提没变"的修复点).
     """
     if not results:
         return ""
@@ -288,6 +358,7 @@ def render_breadcrumbs(
     lines = ["[联想命中 — 统一召回]"]
     total = 0
     shown = 0
+    import json as _j
     for r in results:
         if total >= max_total_chars:
             break
@@ -303,13 +374,44 @@ def render_breadcrumbs(
         body = (r.get("text") or "")[:200].replace("\n", " ")
         if not body:
             continue
+        # V6 #6: 加 chunk_id + created_at 到每条面包屑
+        # chunk_id 让模型可以直接 supersede_memory / mark_obsolete / delete_cognition
+        # created_at 让模型判断认知新旧
+        cid = r.get("chunk_id", "?")
+        created_raw = r.get("created_at") or r.get("meta_created_at") or 0
+        if isinstance(created_raw, (int, float)) and created_raw > 0:
+            import time as _bt
+            age_days = int((_bt.time() - created_raw) / 86400)
+            age_tag = f"{age_days}d前" if age_days > 0 else "今天"
+        else:
+            age_tag = "?"
         # 命中的 attention token 标注
         match_tag = ""
         if r.get("matched_attention_token"):
             match_tag = f" [命中:{r['matched_attention_token']}]"
-        entry = f"- {icon}[{label} score={score:.2f}]{match_tag} {body}"
+        # V6: 不暴露 score 给模型 — 模型读文本内容自己判断质量, 数字反而干扰
+        entry = f"- {icon}[{label}] #{cid} ({age_tag}){match_tag} {body}"
         lines.append(entry)
         total += len(entry)
+        # V3 #3: 若该 result 带 payload.premise 或 .rationale → 追加背景条目
+        payload = r.get("payload")
+        if not payload and r.get("meta_payload"):
+            # 不同路径的存储 key 不一, 双看
+            try:
+                payload = _j.loads(r["meta_payload"]) if isinstance(r["meta_payload"], str) else r["meta_payload"]
+            except Exception:
+                payload = None
+        if isinstance(payload, dict):
+            premise = payload.get("premise")
+            rationale = payload.get("rationale")
+            if premise:
+                p_line = f"    · 背景: {(str(premise)[:140]).strip()}"
+                lines.append(p_line)
+                total += len(p_line)
+            if rationale:
+                rat_line = f"    · 理由: {(str(rationale)[:140]).strip()}"
+                lines.append(rat_line)
+                total += len(rat_line)
         shown += 1
 
     if shown == 0:
@@ -335,8 +437,14 @@ def unified_recall(
     max_total_chars: int | None = None,
     timeout_seconds: float = _DEFAULT_TIMEOUT,
     scene_hint: str | None = None,
+    cognition_only: bool = False,
 ) -> list[dict]:
     """统一记忆检索入口。详见模块 docstring。
+
+    cognition_only=True (联想路径): 只召回认知(rules/lessons/knowledge/promoted),
+      不召回经历(digest/conversation) → 联想注入的是精华不是噪音。
+    cognition_only=False (recall_memory 工具): 全局检索,包括经历 + 认知 →
+      模型有明确检索意图时深挖。
 
     返回 list[dict]:
       chunk_id, text, source, source_kind, rrf_score, routes[],
@@ -358,13 +466,28 @@ def unified_recall(
     max_chars = max_total_chars or _BUDGET_MAX_CHARS.get(budget_kind, 600)
     exclude = exclude_chunk_ids or set()
 
+    # cognition_only 模式: 联想路径只召回认知, 不召回经历
+    # 认知 source: rule/rule/lesson/lessons/insight/fact/knowledge/project + phase=cognition
+    # 同时支持单复数(历史混存, 2026-07-23 标准化后是单数但兼容老的复数 chunk)
+    _COGNITION_SOURCES = {
+        "rule", "rules", "lesson", "lessons", "insight", "fact",
+        "knowledge", "project",
+    }
+
+    def _filter_cognition(items: list[dict]) -> list[dict]:
+        if not cognition_only:
+            return items
+        return [c for c in items
+                if c.get("source", "") in _COGNITION_SOURCES
+                or c.get("meta_phase", "") == "cognition"]
+
     # 1. 三路并发,各在未来里跑;超时返回已完成部分(检索非阻断点 FR-001/FR-104)
     routes_raw: dict[str, list[dict]] = {}
 
     def _run_vector():
-        return _route_vector(query, extra_context=extra_context, max_chars=max_chars)
+        return _filter_cognition(_route_vector(query, extra_context=extra_context, max_chars=max_chars))
     def _run_lexical():
-        return _route_lexical(query, limit=20)
+        return _filter_cognition(_route_lexical(query, limit=20))
 
     with ThreadPoolExecutor(max_workers=_MAX_ROUTES) as pool:
         futures = {
@@ -395,13 +518,14 @@ def unified_recall(
         pool_candidates, attention_tokens=attention_tokens or []
     )
 
-    # 3. 写回 routes_raw 里(attention boost 已作用),给 RRF 用
-    # 简单做法:把 boost 反映到 score;然后按 (route, score) 重排
+    # 3. 写回 routes_raw — 修复 RRF route 归属 bug
+    # 旧 bug: 用 chunk_id>=0 判 lexical/vector, 但 P2 后两路都返真实 chunk_id → 全归 lexical
+    # 修复: 每个候选带 _route 标记(由 _route_vector / _route_lexical 写入), 按 _route 归
     boosted_routes: dict[str, list[dict]] = {"vector": [], "lexical": []}
     for c in pool_candidates:
-        # 把候选归入它最强的 route(vector > lexical);若一条同时在两路出,RRF 会自然提升它
-        if c.get("chunk_id", -1) >= 0:
-            boosted_routes["lexical"].append(c)
+        route_label = c.pop("_route", "vector")  # 默认 vector
+        if route_label in boosted_routes:
+            boosted_routes[route_label].append(c)
         else:
             boosted_routes["vector"].append(c)
     # 重排
@@ -435,10 +559,13 @@ def unified_recall(
     spread_candidates: list[dict] = []
     if seed_top:
         try:
-            from domain.memory.memory.recall.unified.spread import spread_to_candidates
-            spread_candidates = spread_to_candidates(seed_top, depth=2)
+            # v2 (2026-07-24): spread_with_semantics — 加 semantic 邻居路径
+            # 用 top 3 seeds 做语义扩展 (cost: 3 次 lookup_scan ≈ 60ms, 不需新 embedding
+            # — 直接用 cog chunks 已存的 embedding 做对比).
+            from domain.memory.memory.recall.unified.spread import spread_with_semantics
+            spread_candidates = spread_with_semantics(seed_top, depth=2, semantic_top_k=3)
         except Exception as e:
-            logger.debug("spread_to_candidates failed (will skip spread): %s", e)
+            logger.debug("spread_with_semantics failed (will skip spread): %s", e)
 
     # 给 spread 候选包装成 RRF 兼容形态(标记 route=spread), 并参与终排
     # 终排 score = (rrf_score + cog_bonus) × scene_multiplier + spread_boost
@@ -481,14 +608,21 @@ def unified_recall(
                 seed_source = f.get("source", "")
                 break
         cand_source = s.get("source", "")
+        spread_kind = s.get("spread_kind")  # 'derived' / 'entity' / 'semantic'(V3v2) / None(temporal)
         # 同 source 类(都 digest_session / 都 rules / ...) 才放行;
         # 否则只给 1/4 的弱 boost,保留"跨主题也能想到"的微弱关联。
         if seed_source and cand_source and seed_source == cand_source:
             actual_boost = s.get("spread_score", 0.0)
         elif seed_source and cand_source:
-            # 跨 source 类(比如 derived cognition 把 experience 带进 cognition query)
-            # 只取微弱提示
-            actual_boost = s.get("spread_score", 0.0) * 0.25
+            if spread_kind == "semantic":
+                # V3 v2 (2026-07-24): semantic 邻居是跨 source 的本质价值 —
+                # 同一标的的"事实→教训→规则"分布在不同 source, 必须允许跨.
+                # boost 用 1/2 而不是 1/4 (比常规 cross-source 强, 但仍弱于同类 boost).
+                actual_boost = s.get("spread_score", 0.0) * 0.5
+            else:
+                # 跨 source 类(比如 derived cognition 把 experience 带进 cognition query)
+                # 只取微弱提示
+                actual_boost = s.get("spread_score", 0.0) * 0.25
         else:
             actual_boost = s.get("spread_score", 0.0)
         # spread boost 也走场景权重(否则 conversation noise 仍可能靠 spread 抢位)
@@ -527,8 +661,14 @@ def unified_recall(
         reverse=True,
     )
 
-    # 5. 排除 + 预算
+    # 5. 排除 + 预算 + 最低相似度阈值过滤
     filtered = [r for r in sorted_pool if r.get("chunk_id", -1) not in exclude]
+    # V6 #4: 最低 final_score 阈值 — 不是排完 top-K 就完事,
+    # 而是先过滤掉分值太低的(确保至少有一定相似性), 再做字符预算裁剪.
+    # 阈值 0.10 是 RRF 后的最低门槛: 比纯 RRF 贡献(1/(5+rank)) ~0.05 高,
+    # 留出 boost (entity_links/attention) 的提权空间.
+    MIN_FINAL_SCORE = 0.10
+    filtered = [r for r in filtered if r.get("final_score", 0.0) >= MIN_FINAL_SCORE]
     # 截到预算字符上限
     out: list[dict] = []
     total = 0
@@ -536,10 +676,21 @@ def unified_recall(
         body_len = len(r.get("text", ""))
         if total + body_len > max_chars and out:
             break
-        # 沿用 rrf_score 作对外 score(让消费侧统一口径)
         r["rrf_score"] = r.get("final_score", 0.0)
         out.append(r)
         total += body_len
+
+    # V6: 去掉 access signal 写库 — on_access 只写运行时 cache(热信号),
+    # 调 apply_signal 会触发 _persist_slice + db.commit 空写库.
+    # 想保留热信号 → 直接写 attention_cache 即可, 不走 apply_signal.
+    try:
+        from domain.memory.memory.recall.unified.attention_cache import bump_activation
+        for r in out[:5]:
+            cid = r.get("chunk_id", -1)
+            if cid and cid > 0:
+                bump_activation(cid)
+    except Exception:
+        pass  # 非关键路径
 
     return out
 

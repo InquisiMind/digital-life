@@ -334,12 +334,237 @@ def _generate_session_digest(
         "message_count": len(rows),
     }
 
+    # Meta-review: 评估本轮被联想命中的认知是否起到了价值
+    # 检查 add_cognition 工具调用 → 新写入的认知 计入"沉淀"
+    # 检查 supersede_memory → 认知被覆盖 计入"更新"
+    # 检查 end_reason 含 error → 可能认知有问题 计入"质疑"
+    cognition_assessment = None
+    try:
+        cognition_assessment = _assess_session_cognition(rows, session_id)
+    except Exception:
+        pass
+    if cognition_assessment:
+        digest["cognition_assessment"] = cognition_assessment
+
     return digest
 
 
 def _dedup_tool_summaries(summaries: List[str]) -> List[str]:
     """去重连续相同的摘要，合并计数。"""
     return dedup_tool_summaries(summaries)
+
+
+def _assess_session_cognition(rows: Any, session_id: str) -> Optional[Dict[str, Any]]:
+    """Meta-review: wake 结束自动跑, 给本轮动过的认知打 verified/falsified 信号。
+
+    设计原则 (review 2026-07-24 用户反馈):
+      - 不需要模型主动调 signal_memory — wake 结束系统自动判断
+      - 不调 LLM, 纯结构化分析, 0 开销
+      - 输入: session 的完整工具调用记录
+      - 输出: 实际调 apply_signal 改 evidence/challenge/state
+
+    决策树:
+      · 新增 cognition (add_cognition 写入 chunk_id) → +1 verified (模型自己产出 = 一次自我验证)
+      · supersede_memory 覆盖 (old_id → new_id) → old +1 falsified (被新认知质疑), new +1 verified
+      · delete_cognition → 跳过 (已删, 不需要信号)
+      · session 关键词出现在已被召回的认知 entity_links 中 → 给该认知 +1 verified (真用上了)
+        (粗粒度:扫 assistant 文本出现 entity_links 任一 → 该条被采用)
+      · session 出现错误信号(express_to_human sent=false / 多次延续错误)
+        → 不打 falsified (粗粒度会误打;_D 留给 LLM 后续做)
+    """
+    try:
+        from domain.memory.memory.recall.unified.cognition_store import apply_signal
+    except Exception as e:
+        logger.warning("_assess_session_cognition: cannot import apply_signal: %s", e)
+        return None
+
+    added_chunk_ids: list[int] = []
+    superseded_old_ids: list[int] = []
+    superseded_new_ids: list[int] = []
+    deleted_ids: list[int] = []
+    assistant_action_texts: list[str] = []  # 收集模型实际产出/动作的文本, 用于 entity_links 采纳检测
+    has_error = False
+
+    for m in rows:
+        role = m["role"]
+        content = m["content"] or ""
+        # V6 #6: 只收集"action 文本"做 entity_links 采纳检测
+        # 不再用全部 assistant content (含闲聊/通用推理, 噪音大)
+        # 改为: 只取 tool_call args 里的 text (express_to_human / record_thought / write_diary)
+        if role == "assistant" and m["tool_calls"]:
+            try:
+                calls = json.loads(m["tool_calls"])
+                for call in calls:
+                    fname = call.get("function", {}).get("name", "")
+                    if fname in ("express_to_human", "record_thought", "write_diary",
+                                 "update_context", "add_insight"):
+                        args_str = call.get("function", {}).get("arguments", "{}")
+                        try:
+                            args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                        except Exception:
+                            args = {}
+                        action_text = args.get("text") or args.get("body") or ""
+                        if action_text and len(str(action_text).strip()) > 3:
+                            assistant_action_texts.append(str(action_text))
+            except Exception:
+                pass
+        # 检测错误状态从 tool result 里
+        if role == "tool" and content:
+            c = str(content)
+            if '"ok": false' in c and ('error' in c.lower() or 'reason' in c.lower()):
+                has_error = True
+        # 扫 tool_calls 提取 chunk_id 写入事件
+        if not m["tool_calls"]:
+            continue
+        try:
+            calls = json.loads(m["tool_calls"])
+        except Exception:
+            continue
+        for call in calls:
+            fname = call.get("function", {}).get("name", "")
+            args_str = call.get("function", {}).get("arguments", "{}")
+            try:
+                args = json.loads(args_str) if isinstance(args_str, str) else args_str
+            except Exception:
+                args = {}
+            # match tool result 找创建/覆盖/删除的 chunk_id — 这里只能从后续 tool result 里找
+            # 简单做法: 看 tool result 的 "chunk_id" 字段对应到的 fn name
+            if fname == "add_cognition":
+                # add 不一定知道 chunk_id, 从 tool result JOIN (rows 里的 assistant→tool 配对)
+                # 但这里简单化: 当前行的 tool result 是下一行 (rows 是按时间顺序) 我们等扫到 result 直接抽
+                pass
+            elif fname == "supersede_memory":
+                old_id = args.get("old_chunk_id")
+                if isinstance(old_id, int):
+                    superseded_old_ids.append(old_id)
+            elif fname == "delete_cognition":
+                cid = args.get("chunk_id")
+                if isinstance(cid, int):
+                    deleted_ids.append(cid)
+
+    # 再扫一遍 tool result rows 抽 add_cognition 的 new chunk_id
+    for m in rows:
+        if m["role"] != "tool" or not m["content"]:
+            continue
+        # 没有 tool_name 字段就直接看 JSON 'ok' True + 'chunk_id'
+        if 'add_cognition' in (str(getattr(m, '__tool__', '')) or '') or 'new_chunk_id' in (m["content"] or ""):
+            try:
+                r_json = json.loads(m["content"])
+                cid = r_json.get("chunk_id") or r_json.get("new_chunk_id")
+                if isinstance(cid, int) and cid > 0:
+                    added_chunk_ids.append(cid)
+            except Exception:
+                pass
+        if 'supersede' in (m["content"] or "").lower():
+            try:
+                r_json = json.loads(m["content"])
+                nid = r_json.get("new_id")
+                oid = r_json.get("old_id")
+                if isinstance(nid, int) and nid > 0:
+                    superseded_new_ids.append(nid)
+                if isinstance(oid, int) and oid > 0:
+                    superseded_old_ids.append(oid)
+            except Exception:
+                pass
+
+    # === 实际打信号 ===
+    positive_signals: list[int] = []  # +verified
+    negative_signals: list[int] = []  # +falsified
+
+    # A. add → evidence +1
+    for cid in added_chunk_ids:
+        try:
+            r = apply_signal(cid, "verified", reason=f"session {session_id[:30]}: 模型本轮写入了此认知")
+            if r.get("ok"):
+                positive_signals.append(cid)
+        except Exception as e:
+            logger.debug("auto-verified failed for %s: %s", cid, e)
+
+    # B. supersede → old +falsified, new +verified
+    for old_id in superseded_old_ids:
+        try:
+            r = apply_signal(old_id, "falsified", reason=f"session {session_id[:30]}: 被新认知 #{superseded_new_ids[-1] if superseded_new_ids else '?'} 覆盖")
+            if r.get("ok"):
+                negative_signals.append(old_id)
+        except Exception as e:
+            logger.debug("auto-falsified failed for %s: %s", old_id, e)
+    for new_id in superseded_new_ids:
+        # 避免重复 verified (add_cognition 已经加过, 但 supersede 路径独立, new 不在 added_chunk_ids 里)
+        if new_id in added_chunk_ids:
+            continue
+        try:
+            r = apply_signal(new_id, "verified", reason=f"session {session_id[:30]}: supersede 写入的新认知")
+            if r.get("ok"):
+                positive_signals.append(new_id)
+        except Exception as e:
+            logger.debug("auto-verified failed for %s: %s", new_id, e)
+
+    # C. 启发式 verified: 本轮 assistant 文本含某 entity_links 词 → 该认知被采用
+    # 这一步放在最后, 只对未在本轮动过的 cognition 做 (避免重复 verified)
+    if assistant_action_texts:
+        action_corpus = " ".join(assistant_action_texts).lower()
+        try:
+            from domain.memory.memory.recall.vector import _get_db
+            import json as _json
+            db = _get_db()
+            try:
+                # 拉所有活跃 cognition 的 entity_links, 看哪些词出现在本轮 action_corpus 中
+                active_cogs = db.execute(
+                    "SELECT id, entity_links FROM chunks WHERE phase='cognition' "
+                    "AND (cognition_state IS NULL OR cognition_state NOT IN ('replaced','archived')) "
+                    "AND entity_links IS NOT NULL AND entity_links != '[]' "
+                    "LIMIT 200"
+                ).fetchall()
+                touched_via_links: list[int] = []
+                for r in active_cogs:
+                    try:
+                        links = _json.loads(r["entity_links"])
+                    except Exception:
+                        continue
+                    if not isinstance(links, list):
+                        continue
+                    matched = any(
+                        str(L).lower() in action_corpus
+                        for L in links if str(L) and len(str(L)) >= 2
+                    )
+                    if matched:
+                        touched_via_links.append(r["id"])
+                # 已被 add/supersede 动过的跳过来避免双计; 最多给 5 条打 verified (防风暴)
+                all_done = set(added_chunk_ids) | set(superseded_new_ids) | set(superseded_old_ids) | set(deleted_ids)
+                for cid in touched_via_links:
+                    if cid in all_done:
+                        continue
+                    if len(positive_signals) >= 10:  # 信号总量上限, 防过度计分
+                        break
+                    try:
+                        rr = apply_signal(cid, "verified", reason=f"session {session_id[:30]}: 本轮 assistant 文本含该认知的 entity_links")
+                        if rr.get("ok"):
+                            positive_signals.append(cid)
+                            all_done.add(cid)
+                    except Exception:
+                        pass
+            finally:
+                db.close()
+        except Exception as e:
+            logger.debug("entity_links adoption check failed: %s", e)
+
+    # 0 信号 → return None (不影响 digest, 只是不增加字段)
+    if not positive_signals and not negative_signals and not added_chunk_ids and not superseded_old_ids and not deleted_ids and not has_error:
+        return None
+
+    return {
+        "added": len(added_chunk_ids),
+        "superseded": len(superseded_old_ids),
+        "deleted": len(deleted_ids),
+        "auto_verified": len(positive_signals),
+        "auto_falsified": len(negative_signals),
+        "has_error": has_error,
+        "summary": (
+            f"沉淀{len(added_chunk_ids)} 覆盖{len(superseded_old_ids)} 删除{len(deleted_ids)} "
+            f"自动强化{len(positive_signals)} 自动质疑{len(negative_signals)} "
+            f"{'error信号' if has_error else 'ok'}"
+        ).strip(),
+    }
 
 
 def _format_session_digest(d: Dict[str, Any]) -> str:
@@ -955,10 +1180,11 @@ def _llm_summary_worker(
                 vdb.execute(
                     "INSERT OR REPLACE INTO chunks "
                     "(source, chunk_hash, text, embedding, file_mtime, created_at, "
-                    " phase, source_kind, session_id) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " phase, source_kind, session_id, provenance) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (f"digest_session", chunk_hash, summary, blob, time.time(), time.time(),
-                     "experience", "digest", session_id),
+                     "experience", "digest", session_id,
+                     f"digest_session:{session_id}"),
                 )
                 vdb.commit()
                 vdb.close()
@@ -1276,6 +1502,15 @@ def _index_digest_to_vectors(
         vec_db = _get_vec_db()
         blob = _embedding_to_blob(embedding)
         # P1 T016:顺便写入 phase 字段(P1 不消费,但 schema 已就位 — 见 spec Clarifications Q1)。
+        # 准入门槛: 骨架格式 digest (无 LLM 总结, 只是时间戳+工具列表) 不索引
+        stripped_digest = digest_text.strip()
+        is_skeleton = (
+            (len(stripped_digest) < 150)
+            and ("工具:" in stripped_digest or "结束:" in stripped_digest or stripped_digest.startswith("["))
+        )
+        if is_skeleton:
+            return  # 骨架摘要无知识价值, 跳过索引
+
         # 所有 digest_* 都是 experience(经历摘要),按 data-model.md 相位映射表。
         # P3 T040: session_id + segment_index 填入(用于时序邻居连边 §4 三类连边②)。
         # segment 的 period 形如 "{session_id}#{seg_idx}";session/day 的 period 直接是 session_id/日期。
@@ -1292,10 +1527,11 @@ def _index_digest_to_vectors(
             seg_id = period  # 完整 period 作为 session identifier
         vec_db.execute(
             "INSERT OR REPLACE INTO chunks "
-            "(source, chunk_hash, text, embedding, file_mtime, created_at, phase, session_id, segment_index) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(source, chunk_hash, text, embedding, file_mtime, created_at, phase, session_id, segment_index, provenance) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (f"digest_{layer}", chunk_hash, digest_text, blob, time.time(), time.time(),
-             "experience", seg_id, seg_idx),
+             "experience", seg_id, seg_idx,
+             f"digest_{layer}:{period}:{seg_idx or 0}"),
         )
         vec_db.commit()
         vec_db.close()
@@ -1616,10 +1852,11 @@ def _index_single_conversation(
     vec_db.execute(
         "INSERT OR REPLACE INTO chunks "
         "(source, chunk_hash, text, embedding, file_mtime, created_at, "
-        " phase, source_kind, session_id, entity_links) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " phase, source_kind, session_id, entity_links, provenance) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ("conversation", chunk_hash_val, indexed_text, blob, timestamp, timestamp,
-         "experience", "conversation", session_id, entity_links_json),
+         "experience", "conversation", session_id, entity_links_json,
+         f"conversation:{session_id}:{timestamp}"),
     )
     return True
 
@@ -1673,8 +1910,29 @@ def index_conversations(session_db: Any = None, max_age_hours: float = 1.0) -> i
                 if not content or len(content.strip()) < 5:
                     continue
                 text = content.strip()[:300]
-                if text.startswith("{") or text.startswith("[") or len(text) < 10:
+                if text.startswith("{") or text.startswith("[") or len(text) < 80:
+                    continue  # <80 字不索引(自言自语/碎片拦截)
+                # B 治源(2026-07-17): skip wake_template 等垃圾内容
+                if _is_noise_content(text):
                     continue
+                # 准入门槛: assistant 自言自语(状态汇报/中间思维)不索引
+                # 有价值的 conversation 是: user 的提问/指令 + assistant 的实质结论
+                # 特征: role=assistant 且 text 像"思路过程"不是"结论" → 跳过
+                role = row["role"]
+                if role == "assistant":
+                    stripped = text.strip()
+                    # 明确的结论类标记 保留
+                    has_conclusion = any(stripped.startswith(p) for p in (
+                        "✅", "结论", "总结", "验证", "确认", "修复", "部署", "上线",
+                    ))
+                    # 中间过程短语 → 跳过
+                    is_process = any(p in stripped[:20] for p in (
+                        "现在", "让我", "让我看", "让我尝试", "让我检查", "先看",
+                        "接下来", "再看看", "再试试", "好了，我已经",
+                        "修复方案清晰", "Alpha 回复确认", "精力",
+                    ))
+                    if is_process and not has_conclusion:
+                        continue
                 # B 治源(2026-07-17): skip wake_template 等垃圾内容 -
                 # 否则 system 注入的 wake prompt 会被当 user 对话喂进 chunks,
                 # 跑 audit 时再清效率低。前置过滤更优。
@@ -1763,10 +2021,11 @@ def index_conversations(session_db: Any = None, max_age_hours: float = 1.0) -> i
                     vec_db.execute(
                         "INSERT OR REPLACE INTO chunks "
                         "(source, chunk_hash, text, embedding, file_mtime, created_at, "
-                        " phase, source_kind, session_id, entity_links) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        " phase, source_kind, session_id, entity_links, provenance) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         ("conversation", h, text, blob, ts, ts,
-                         "experience", "conversation", sid, ent_links),
+                         "experience", "conversation", sid, ent_links,
+                         f"conversation:{sid}:{ts}"),
                     )
                     count += 1
 

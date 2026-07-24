@@ -316,6 +316,10 @@ def format_session_digest(digest: Dict[str, Any]) -> str:
     if digest["energy_range"]:
         energy_start, energy_end = digest["energy_range"]
         lines.append(f"  {energy_start:.0f} → {energy_end:.0f}")
+    # Meta-review: 认知沉淀/质疑 信号(零开销, 来自结构化工具调用扫描)
+    cog = digest.get("cognition_assessment")
+    if cog:
+        lines.append(f"  🧠 {cog.get('summary', '')}")
     lines.append(f"  结束: {digest['end_reason']}")
     return "\n".join(lines)
 

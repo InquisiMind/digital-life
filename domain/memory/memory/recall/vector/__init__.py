@@ -54,18 +54,24 @@ _EMBEDDING_DIM = 2048
 _EMBEDDING_API = "https://open.bigmodel.cn/api/paas/v4/embeddings"
 
 # 文件源配置（从 memories 目录读取的静态文件）
+# 阈值基于 GLM embedding-3 实测评测集:
+#   应命中 cosine: 0.88-1.09 | 不应命中 cosine: 0.40-0.55
+#   最佳分界线: 0.55-0.56 → 统一阈值用 0.55
+#   cognitions (rules/lessons/knowledge) 略低 0.50 因为体积小且有 supersede 保护
 _FILE_SOURCES = {
-    "identity": {"path": "CONSCIOUSNESS.md", "max_chars": 600, "weight": 1.5, "threshold": 0.15},
-    "journal": {"path": "DIARY.md", "max_chars": 400, "weight": 1.0, "threshold": 0.20},
-    "notes": {"path": "SCRATCHPAD.md", "max_chars": 500, "weight": 1.2, "threshold": 0.18},
-    "goals": {"path": "GOALS.md", "max_chars": 400, "weight": 1.3, "threshold": 0.15},
-    "plans": {"path": "PLANS.md", "max_chars": 300, "weight": 1.2, "threshold": 0.15},
-    "him": {"path": "HIM.md", "max_chars": 300, "weight": 1.3, "threshold": 0.15},
-    "knowledge": {"path": "MEMORY.md", "max_chars": 800, "weight": 1.4, "threshold": 0.15},
-    "rules": {"path": "RULES.md", "max_chars": 500, "weight": 1.5, "threshold": 0.15},
-    "context": {"path": "CONTEXT.md", "max_chars": 400, "weight": 1.3, "threshold": 0.15},
-    "lessons": {"path": "LESSONS.md", "max_chars": 400, "weight": 1.2, "threshold": 0.15},
-    "work": {"path": "WORK.md", "max_chars": 500, "weight": 0.8, "threshold": 0.20},
+    "identity": {"path": "CONSCIOUSNESS.md", "max_chars": 600, "weight": 1.5, "threshold": 0.55},
+    "journal": {"path": "DIARY.md", "max_chars": 400, "weight": 1.0, "threshold": 0.55},
+    "notes": {"path": "SCRATCHPAD.md", "max_chars": 500, "weight": 1.2, "threshold": 0.55},
+    "goals": {"path": "GOALS.md", "max_chars": 400, "weight": 1.3, "threshold": 0.55},
+    "plans": {"path": "PLANS.md", "max_chars": 300, "weight": 1.2, "threshold": 0.55},
+    "him": {"path": "HIM.md", "max_chars": 300, "weight": 1.3, "threshold": 0.55},
+    "knowledge": {"path": "MEMORY.md", "max_chars": 800, "weight": 1.4, "threshold": 0.50},
+    "context": {"path": "CONTEXT.md", "max_chars": 400, "weight": 1.3, "threshold": 0.55},
+    "work": {"path": "WORK.md", "max_chars": 500, "weight": 0.8, "threshold": 0.60},
+    # V6: rules/lessons 不再从 .md 文件索引 — 认知库是唯一真相源.
+    # RULES.md / LESSONS.md 仍由 update_rules / add_lesson 写入(给人类看),
+    # 但不参与 reindex → 不产生双路径重复.
+    # source='rule'/'lesson' 的认知只通过 add_cognition / add_lesson / update_rules 写入.
 }
 
 # 扩展源配置（动态写入的源，非文件）
@@ -73,15 +79,23 @@ _FILE_SOURCES = {
 # threshold: 最低阈值
 # decay_hours: 时间衰减半衰期（小时），越高越持久
 _DYNAMIC_SOURCES = {
-    "conversation": {"weight": 1.6, "threshold": 0.12, "decay_hours": 72},
-    "digest_session": {"weight": 2.0, "threshold": 0.10, "decay_hours": 168},
-    # P1 T014 新增:segment narrative 摘要需进检索池。
-    # 若无此条目,recall() 的 _ALL_SOURCES.get("digest_segment") 为 None →
-    # 已写入的 segment chunks 也被跳过(recon 已确认:_index_digest_to_vectors 用
-    # source=f"digest_{layer}",代码 L1199 ⇒ segment 写出来的 source 是 'digest_segment')。
-    "digest_segment": {"weight": 2.0, "threshold": 0.10, "decay_hours": 168},
-    "digest_day": {"weight": 1.5, "threshold": 0.12, "decay_hours": 336},
-    "digest_week": {"weight": 1.2, "threshold": 0.14, "decay_hours": 720},
+    # add_cognition 的 source_category 值 — 需要在 _ALL_SOURCES 里注册才能被 recall_structured 查到
+    "fact": {"weight": 1.0, "threshold": 0.55},
+    "lesson": {"weight": 1.2, "threshold": 0.50},
+    "rule": {"weight": 1.5, "threshold": 0.50},
+    "insight": {"weight": 1.0, "threshold": 0.55},
+    # conversation 降权: 太多低价值对话碎片噪声淹没高质量认知。
+    # weight 1.6→0.5, threshold 0.12→0.28 (只召回高度相似的对话)。
+    # decay 72h→48h (老对话更快衰减出候选池)
+    "conversation": {"weight": 0.5, "threshold": 0.55, "decay_hours": 48},
+    # digest 类: 旧 weight=2.0 让所有 digest 都排前面
+    # 但 587/1159 条 digest 是 <150 字的骨架摘要(无 LLM 总结干货),
+    # 高 weight + 低阈值 = 大量低质 digest 占据召回 top → 召回"有结果但没价值"
+    # 调整: 降 weight + 提高阈值, 让高质量长 digest(有 LLM 总结) 排前面
+    "digest_session": {"weight": 1.0, "threshold": 0.50, "decay_hours": 168},
+    "digest_segment": {"weight": 1.0, "threshold": 0.50, "decay_hours": 168},
+    "digest_day": {"weight": 0.8, "threshold": 0.55, "decay_hours": 336},
+    "digest_week": {"weight": 0.6, "threshold": 0.55, "decay_hours": 720},
 }
 
 # 所有源配置合并
@@ -252,6 +266,22 @@ def _get_db() -> sqlite.Connection:
     except Exception:
         pass
 
+    # V2 (2026-07-23): 结构化认知主键 — payload (JSON) + cog_key (text).
+    # 老行为不变(payload/cog_key NULL), 仅当 add_cognition 主动写入时启用精确去重/查询。
+    try:
+        db.execute("ALTER TABLE chunks ADD COLUMN payload TEXT")  # nullable JSON
+    except Exception:
+        pass
+    try:
+        db.execute("ALTER TABLE chunks ADD COLUMN cog_key TEXT")  # nullable text
+    except Exception:
+        pass
+    try:
+        # 仅在 cog_key 非空时建索引(节省空间, 避免老全表索引浪费)
+        db.execute("CREATE INDEX IF NOT EXISTS idx_chunks_cog_key ON chunks(cog_key) WHERE cog_key IS NOT NULL")
+    except Exception:
+        pass
+
     # P3 T035: FTS5 虚拟表 + 触发器(若环境支持)。失败时静默降级(unified.fts 模块
     # 会日志提示,检索不会因此失败 — FR-001 检索非阻断点)。
     try:
@@ -263,8 +293,22 @@ def _get_db() -> sqlite.Connection:
     return db
 
 
+def _normalize_source_label(source: str) -> str:
+    """V3 (2026-07-24): Canonical source name.
+
+    Legacy plural ('rules'/'lessons') normalizes to singular ('rule'/'lesson')
+    so that RULES.md file indexing and add_cognition(category='rule') write
+    the same source column → UNIQUE(source, chunk_hash) dedups naturally,
+    preventing the "duplicate rule chunks" issue resurfacing.
+    """
+    if source in {"rules", "lessons"}:
+        return source[:-1]
+    return source
+
+
 def _chunk_hash(source: str, text: str) -> str:
-    return hashlib.md5(f"{source}:{text}".encode()).hexdigest()
+    canonical_source = _normalize_source_label(source)
+    return hashlib.md5(f"{canonical_source}:{text}".encode()).hexdigest()
 
 
 def _embedding_to_blob(vec: List[float]) -> bytes:
@@ -329,9 +373,17 @@ def _sliding_chunks(text: str, max_chars: int = 300, overlap: int = 50) -> List[
 # ──────────────────── 索引构建 ────────────────────
 
 def _index_source(db: sqlite.Connection, label: str, cfg: dict) -> int:
-    # 先删除该source的所有旧chunks，避免累积
-    db.execute("DELETE FROM chunks WHERE source=?", (label,))
-    
+    # V3 (2026-07-24): canonical source for DB writes — legacy plural
+    # ('rules'/'lessons' from _FILE_SOURCES dict keys) normalizes to singular
+    # so add_cognition rule/lesson chunks 与 file 索引的 rule/lesson 不重复.
+    canonical_label = _normalize_source_label(label)
+    # 删除该 source 的旧 chunks, 但保护 cognition 阶段的 chunk (保留认知演化状态)
+    # 旧 bug: 无条件 DELETE FROM chunks WHERE source=? 会擦掉 supersede_by / verification / evidence_count
+    db.execute(
+        "DELETE FROM chunks WHERE source=? AND (phase IS NULL OR phase != 'cognition')",
+        (canonical_label,),
+    )
+
     fpath = _get_mem_dir() / cfg["path"]
     if not fpath.exists():
         return 0
@@ -349,10 +401,10 @@ def _index_source(db: sqlite.Connection, label: str, cfg: dict) -> int:
         return 0
     new_chunks = []
     for chunk in chunks:
-        ch = _chunk_hash(label, chunk)
+        ch = _chunk_hash(canonical_label, chunk)
         row = db.execute(
             "SELECT chunk_hash, file_mtime FROM chunks WHERE source=? AND chunk_hash=?",
-            (label, ch),
+            (canonical_label, ch),
         ).fetchone()
         if not row or row["file_mtime"] < mtime:
             new_chunks.append((ch, chunk, mtime))
@@ -361,14 +413,14 @@ def _index_source(db: sqlite.Connection, label: str, cfg: dict) -> int:
     texts = [c[1] for c in new_chunks]
     embeddings = _embed_texts(texts)
     if not embeddings:
-        logger.debug("Embedding failed for %s, skipping index", label)
+        logger.debug("Embedding failed for %s, skipping index", canonical_label)
         return 0
     count = 0
     # T037: P3 让 _index_source 在写入时填 phase + source_kind(走 baseline 表)。
     # 其它字段(authority/permanence/...)留靠 backfill_slice_fields_if_needed 懒补,
     # 避免每条 INSERT 都查表(可接受,因为这层调用不频繁)。
     from domain.memory.memory.recall.unified.slice import baselines_for_source
-    baseline = baselines_for_source(label)
+    baseline = baselines_for_source(canonical_label)
     insert_phase = baseline["phase"]
     insert_source_kind = baseline["source_kind"]
     for (ch, text, mt), emb in zip(new_chunks, embeddings):
@@ -379,7 +431,7 @@ def _index_source(db: sqlite.Connection, label: str, cfg: dict) -> int:
             "INSERT OR REPLACE INTO chunks "
             "(source, chunk_hash, text, embedding, file_mtime, created_at, phase, source_kind) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (label, ch, text, blob, mt, time.time(), insert_phase, insert_source_kind),
+            (canonical_label, ch, text, blob, mt, time.time(), insert_phase, insert_source_kind),
         )
         count += 1
     db.commit()
@@ -416,6 +468,102 @@ def _cosine_sim(a: List[float], b: List[float]) -> float:
     if na == 0 or nb == 0:
         return 0.0
     return dot / (na * nb)
+
+
+# ──────────────────── V3 raw cosine dedup helper ────────────────────
+
+
+def lookup_cognition_similarities(
+    query_emb: List[float],
+    *,
+    max_chunk_ids: list[int] | None = None,
+    limit: int = 10,
+) -> list[dict]:
+    """V3 (2026-07-23): 在 cognition phase 里找与 query_emb 最相近的 chunk,
+    返回原始 cosine 而非 weighted score。
+
+    与 recall_structured 区别:
+    - 不应用 weight × cos 的加权 (那是召回场景的 boost)
+    - 不应用 time_decay
+    - 仅 phase='cognition' (不按 source 名单过滤, 避免漏同源认知)
+    - 排除 archived/replaced
+
+    用于 promote_memory 写入时的精准去重 (V3 #1)。
+
+    返回 list[{
+        "chunk_id": int, "source": str, "text": str, "raw_cos": float,
+        "is_catch_all": bool, "payload": dict|None, "cog_key": str|None,
+    }]
+    `is_catch_all` 是 catch-all 多主题规则检测 (length >= 350 且 ≥3 个编号/日期 标记),
+    命中 catch-all 时禁止 promote dedup 拦截 (修 BUG C).
+    """
+    import re as _re
+    if not query_emb:
+        return []
+    db = _get_db()
+    try:
+        if max_chunk_ids:
+            placeholders = ",".join("?" * len(max_chunk_ids))
+            rows = db.execute(
+                f"SELECT id, source, text, embedding, payload, cog_key FROM chunks "
+                f"WHERE phase='cognition' AND id IN ({placeholders}) "
+                f"AND (cognition_state IS NULL OR cognition_state NOT IN ('replaced','archived')) "
+                f"AND embedding IS NOT NULL "
+                f"ORDER BY id DESC LIMIT ?",
+                list(max_chunk_ids) + [limit]
+            ).fetchall()
+        else:
+            rows = db.execute(
+                "SELECT id, source, text, embedding, payload, cog_key FROM chunks "
+                "WHERE phase='cognition' "
+                "AND (cognition_state IS NULL OR cognition_state NOT IN ('replaced','archived')) "
+                "AND embedding IS NOT NULL "
+                "ORDER BY id DESC LIMIT 300"  # 限扫 300 行 (避免大库全扫)
+            ).fetchall()
+        results: list[dict] = []
+        for r in rows:
+            chunk_emb = _blob_to_embedding(r["embedding"])
+            cos = _cosine_sim(query_emb, chunk_emb)
+            text = r["text"] or ""
+            is_ca = _is_catch_all_chunk(text)
+            payload = None
+            if r["payload"]:
+                try:
+                    import json as _j
+                    payload = _j.loads(r["payload"])
+                except Exception:
+                    payload = None
+            results.append({
+                "chunk_id": r["id"],
+                "source": r["source"],
+                "raw_cos": cos,
+                "text": text,
+                "is_catch_all": is_ca,
+                "payload": payload,
+                "cog_key": r["cog_key"],
+            })
+        # 按 cos 降序
+        results.sort(key=lambda x: x["raw_cos"], reverse=True)
+        return results[:limit]
+    finally:
+        db.close()
+
+
+# catch-all chunk 启发式 (见 lookup_cognition_similarities BUG C)
+import re as _catchall_re
+_CATCH_ALL_LEN = 200  # chars; ≥200 + 多主题标记 = catch-all candidate
+_CATCH_ALL_NUM_DATES = 3  # 至少 3 个 `\d+\.` 或 `[YYYY-MM-...]` 标记才视为多主题
+
+
+def _is_catch_all_chunk(text: str) -> bool:
+    """检测 chunk 是否 catch-all 多主题规则 — 这些 chunk 词面宽泛会假阳性匹配很多 query,
+    在 promote dedup 时应该被降权到 weak_link 而非 duplicate。"""
+    if not text or len(text) < _CATCH_ALL_LEN:
+        return False
+    # 多个独立编号或日期标记 → 多主题
+    n_num = len(_catchall_re.findall(r"\n\d+\.|^\d+\.", text))
+    n_date = len(_catchall_re.findall(r"\[\d{4}-\d{2}-\d{2}|7/\d+|8/\d+", text))
+    return (n_num + n_date) >= _CATCH_ALL_NUM_DATES
 
 
 # ──────────────────── 扩散激活 ────────────────────
@@ -570,20 +718,22 @@ def recall(
         if sources:
             placeholders = ",".join("?" * len(sources))
             rows = db.execute(
-                f"SELECT id, source, text, embedding, created_at FROM chunks "
+                f"SELECT id, source, text, embedding, created_at, payload, phase FROM chunks "
                 f"WHERE embedding IS NOT NULL AND source IN ({placeholders})"
                 f"{obsolete_filter}",
                 sources
             ).fetchall()
         else:
             rows = db.execute(
-                f"SELECT id, source, text, embedding, created_at FROM chunks "
+                f"SELECT id, source, text, embedding, created_at, payload, phase FROM chunks "
                 f"WHERE embedding IS NOT NULL{obsolete_filter}"
             ).fetchall()
 
-        now = time.time()
-        chunk_data: Dict[int, Tuple[str, str, List[float]]] = {}  # id → (source, text, emb)
+        # chunk_data 扩到 5 元组 (source, text, emb, payload, phase) — V3 #3 让 payload
+        # 透传到 render_breadcrumbs, premise/rationale 可以被渲染
+        chunk_data: Dict[int, Tuple[str, str, List[float], dict | None, str]] = {}
         base_scores: Dict[int, float] = {}
+        now = time.time()
 
         for row in rows:
             source = row["source"]
@@ -604,7 +754,15 @@ def recall(
             threshold = cfg.get("threshold", 0.15)
             if weighted >= threshold:
                 cid = row["id"]
-                chunk_data[cid] = (source, row["text"], chunk_emb)
+                # V3 #3: 透传 payload + phase 到 render_breadcrumbs (premise/rationale 用)
+                row_payload = None
+                if row["payload"]:
+                    try:
+                        import json as _j_p
+                        row_payload = _j_p.loads(row["payload"])
+                    except Exception:
+                        row_payload = None
+                chunk_data[cid] = (source, row["text"], chunk_emb, row_payload, row["phase"] or "experience")
                 base_scores[cid] = weighted
 
         if not base_scores:
@@ -631,15 +789,16 @@ def recall(
                         chunk_emb = _blob_to_embedding(row["embedding"])
                         sim = _cosine_sim(query_emb, chunk_emb) * cfg["weight"]
                         if sim + boost >= cfg.get("threshold", 0.15):
-                            chunk_data[cid] = (source, row["text"], chunk_emb)
+                            # V3 #3: 关联 chunk 也能透传 payload(查不到的 fallback None/experience)
+                            chunk_data[cid] = (source, row["text"], chunk_emb, None, "experience")
                             final_scores[cid] = sim + boost
 
         # 3. 构建候选列表并按源类型分组，分层 MMR（保证对话类记忆不被摘要淹没）
         candidates = []
         for cid, score in final_scores.items():
             if cid in chunk_data:
-                source, text, emb = chunk_data[cid]
-                candidates.append((cid, score, source, text, emb))
+                source, text, emb, payload_v3, phase_v3 = chunk_data[cid]
+                candidates.append((cid, score, source, text, emb, payload_v3, phase_v3))
 
         candidates.sort(key=lambda x: x[1], reverse=True)
 
@@ -658,9 +817,11 @@ def recall(
 
         group_budgets = {}
         group_candidates = {}
-        for cid, score, source, text, emb in candidates:
+        for cid, score, source, text, emb, payload_v3, phase_v3 in candidates:
             group = _source_group(source)
-            group_candidates.setdefault(group, []).append((cid, score, source, text, emb))
+            group_candidates.setdefault(group, []).append(
+                (cid, score, source, text, emb, payload_v3, phase_v3)
+            )
 
         for group, ratio in _MMR_GROUPS.items():
             group_budgets[group] = int(max_total_chars * ratio)
@@ -750,14 +911,14 @@ def recall_structured(
         if sources:
             placeholders = ",".join("?" * len(sources))
             rows = db.execute(
-                f"SELECT id, source, text, embedding, created_at, phase FROM chunks "
+                f"SELECT id, source, text, embedding, created_at, phase, payload FROM chunks "
                 f"WHERE embedding IS NOT NULL AND source IN ({placeholders})"
                 f"{obsolete_filter}",
                 sources
             ).fetchall()
         else:
             rows = db.execute(
-                f"SELECT id, source, text, embedding, created_at, phase FROM chunks "
+                f"SELECT id, source, text, embedding, created_at, phase, payload FROM chunks "
                 f"WHERE embedding IS NOT NULL{obsolete_filter}"
             ).fetchall()
 
@@ -777,16 +938,13 @@ def recall_structured(
                 age_hours = (now - row["created_at"]) / 3600
                 time_factor = math.exp(-age_hours / decay_hours)
                 sim *= max(time_factor, 0.1)
-            # Cognition 排序优先(设计 §6.6): cognition 排名略高于 experience,
-            # 但实际调参发现 +0.5 过强 → 把 conversation 经历完全挤出 candidate 池
-            # (用户实测 2026-07-16: "用户曾经说的话没被召回" 反映的就是这个)。
-            # 由于 vector cosine 本身在 0.4-1.0 区间稳定, +0.05 就足以做"打破 tie"
-            # 式提权; 真正的 cognition 优先在 facade 终排的 cog_bonus 0.05 那里再做。
+            # Cognition 微提权: +0.05 打破 tie, 不会把 conversation 挤掉
+            # 阈值不再特殊放宽 — cognition 必须真实相似≥ threshold 才入选
             phase = row["phase"] if "phase" in row.keys() else ""
             if phase == "cognition":
                 sim += 0.05
-            if sim >= cfg.get("threshold", 0.15) - (0.5 if phase == "cognition" else 0):
-                # cognition 因 +0.5 后可能本来没过阈的也排得起来, 放宽阈偏移
+            # 统一阈值: 认知类不再 -0.5 放水(旧 bug 让所有认知无条件通过)
+            if sim >= cfg.get("threshold", 0.55):
                 cid = row["id"]
                 chunk_data[cid] = (source, row["text"], chunk_emb, phase)
                 final_scores[cid] = sim
@@ -798,17 +956,36 @@ def recall_structured(
         sorted_cands = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)
         out: List[Dict[str, Any]] = []
         total = 0
+        import json as _recall_json
         for cid, score in sorted_cands:
             if total >= max_total_chars:
                 break
             source, text, _, phase = chunk_data[cid]
             text_slice = text[:200]
+            # V3 #3: 透传 payload (premise/rationale/key/value) 让 render_breadcrumbs 能渲染推论链
+            row_payload = None
+            try:
+                raw_row = next((r for r in rows if r["id"] == cid), None)
+                if raw_row and raw_row["payload"]:
+                    row_payload = _recall_json.loads(raw_row["payload"])
+            except Exception:
+                row_payload = None
+            # V6 #6: 透传 created_at 给 render_breadcrumbs 显示认知年龄
+            row_created = 0
+            try:
+                raw_row = next((r for r in rows if r["id"] == cid), None)
+                if raw_row and raw_row["created_at"]:
+                    row_created = float(raw_row["created_at"])
+            except Exception:
+                pass
             out.append({
                 "chunk_id": int(cid),
                 "source": source,
                 "text": text_slice,
                 "score": float(score),
                 "phase": phase,
+                "payload": row_payload,
+                "created_at": row_created,
             })
             total += len(text_slice)
         return out

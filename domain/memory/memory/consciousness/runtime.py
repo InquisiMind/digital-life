@@ -224,18 +224,17 @@ def record_thought(text: str, tag: str = "", entities: list[str] | None = None) 
 def _write_entities(entities: list[str], *, memory_type: str,
                     memory_id: str, snippet: str = "", tag: str = "",
                     replace_state: bool = False) -> None:
-    if _update_entity_index is None:
-        return
-    try:
-        # linked_entities = 同一批 entities（它们在同一上下文被提及，互相关联）
-        # 这修复了打分公式中 context_overlap 项（25% 权重）长期为 0 的问题——
-        # 之前所有调用点都不传 linked_entities，导致联想退化为纯时间链。
-        _update_entity_index(entities, memory_type=memory_type,
-                             memory_id=memory_id, snippet=snippet, tag=tag,
-                             linked_entities=entities,
-                             replace_existing=replace_state)
-    except Exception:
-        pass
+    """Deprecated: entity_index.json 不再写入新碎片。
+
+    新认知写入走 add_cognition / add_lesson → cognition_store.add_cognition_direct
+    → chunks(phase=cognition, entity_links=[...]) 的统一路径。
+    entity_links 替代了旧 entity_index 的"碎片索引"功能。
+
+    此函数保留为 noop 以兼容旧的 _record / write_diary / add_lesson 等调用路径——
+    它们仍然写 LESSONS.md / CONSCIOUSNESS.md 等 human-readable 文件, 但不再往
+    entity_index.json 落碎片副本(与认知 chunk 重复)。
+    """
+    return  # noop: 不再写入 entity_index.json
 
 
 def _is_duplicate(text: str) -> bool:
@@ -321,27 +320,55 @@ def _today_diary_path() -> Path:
     return _diary_dir_path() / f"{now.strftime('%Y-%m-%d')}.md"
 
 
-def write_diary(text: str, entities: list[str] | None = None) -> Path:
-    """写入日记。自动按天分文件：diary/YYYY-MM-DD.md。晚间(>=21:00)自动触发整合。"""
+def write_diary(
+    text: str,
+    entities: list[str] | None = None,
+    mode: str = "replace",
+) -> Path:
+    """写入今日日记 (diary/YYYY-MM-DD.md, 按天分文件)。
+
+    mode 取值 (默认 replace, 让模型以"编辑一份文件"的方式自然工作):
+      - replace: 用 text 整体替换今日日记的正文部分 (保留标题头), 用于编辑/重写/删除某段。
+                 模型应该: 先 sense_diary 读今日全文 -> 局部改 -> write_diary(mode=replace, text=改后全文)
+      - append:  追加一条带时间戳的碎片段 (兼容旧行为), 用于快速插入而不动既有内容
+
+    设计取舍 (2026-07 重构):
+      原 write_diary 永远 append 一条 `## 时间戳` 段, 导致同一天日记变成多段碎片,
+      违背"一天一篇, 可编辑"的直觉。改为默认 replace, 模型自己负责组织全文。
+      可通过 append mode 保留快速插入语义 (例如临睡前 capture 一句话)。
+
+    晚间(>=21:00)仍然自动触发 consolidate_day_diary (整合碎片 + 意识残留 + session 摘要)。
+    """
     _ensure_files()
     path = _today_diary_path()
-    if not path.exists():
-        now = _now_dt()
-        weekday = _WEEKDAYS[now.weekday()]
-        path.write_text(
-            f"# {now.strftime('%Y-%m-%d')} {weekday}\n\n{now.strftime('%m月%d日')}的日记。\n\n---\n\n",
-            encoding="utf-8",
-        )
-    entry = f"\n## {now_iso()}\n\n{text.strip()}\n"
-    with path.open("a", encoding="utf-8") as f:
-        f.write(entry)
+    now = _now_dt()
+    weekday = _WEEKDAYS[now.weekday()]
+    # 正文头 (保留在文件最前面, 不论 replace 还是 append 都先确保它存在)
+    header = f"# {now.strftime('%Y-%m-%d')} {weekday}\n\n{now.strftime('%m月%d日')}的日记。\n\n---\n\n"
+
+    body = text.strip()
+    if not body:
+        # text 空 + replace mode 视为"用户想清空今日日记的正文" —— 仍然写入, body 留空
+        body = ""
+
+    if mode == "append":
+        # 兼容旧路径: 追加一条 `## 时间戳\n\n<body>`
+        if not path.exists():
+            path.write_text(header, encoding="utf-8")
+        entry = f"\n## {now_iso()}\n\n{body}\n"
+        with path.open("a", encoding="utf-8") as f:
+            f.write(entry)
+    else:
+        # replace mode: 用 header + body 覆写今日整篇 (编辑/重写/删除从模型侧自然实现)
+        # 这让 read-modify-write 像编辑普通文件: 写出去就是文件最终样子
+        path.write_text(header + body + ("\n" if body and not body.endswith("\n") else ""), encoding="utf-8")
 
     if entities:
         _write_entities(entities, memory_type="consciousness",
-                        memory_id=f"diary:{now_iso()}", snippet=text)
+                        memory_id=f"diary:{now_iso()}", snippet=body)
 
     # Auto-trigger consolidation in the evening
-    if _now_dt().hour >= 21:
+    if now.hour >= 21:
         try:
             consolidate_day_diary()
         except Exception:
@@ -408,13 +435,14 @@ def consolidate_day_diary() -> None:
 
     sections = []
 
-    # 1. 今天的碎片日记
+    # 1. 今日日记正文 (write_diary mode=replace 模式下, 整篇正文的最终样子;
+    #    若模型用 append 留过碎片段也在其中)
     if path.exists():
         raw = path.read_text(encoding="utf-8")
-        # 跳过头部，只保留碎片
+        # 跳过头部 (# YYYY-MM-DD 周X  /  MM月DD日的日记), 只取 --- 之后的正文
         entries = [e.strip() for e in raw.split("\n\n---\n\n") if e.strip() and not e.strip().startswith("#")]
         if entries:
-            sections.append("### 碎片日记\n\n" + "\n\n".join(entries))
+            sections.append("### 今日日记\n\n" + "\n\n".join(entries))
 
     # 2. 今天的意识残留
     if _consciousness_path().exists():

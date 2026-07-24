@@ -68,6 +68,13 @@ class Slice:
 
     provenance: str = ""
 
+    # ───── V2 (2026-07-23): 结构化 payload, 可选 ─────
+    # payload: dict | None — 模型可写入的结构化主键, 让系统精确去重/查询/冲突检测。
+    # cog_key: str | None — 从 payload["key"] 抽出的归一化主键 (subject:predicate)。
+    # 都默认 None, 老行/不写 payload 的认知走 V1 路径(emb+cos+entity_links)。
+    payload: dict | None = None
+    cog_key: str | None = None
+
     # ───── 序列化 ─────
     def to_row(self) -> dict[str, Any]:
         """转成适配 chunks 表列的 dict(JSON 字段已序列化)。
@@ -98,6 +105,8 @@ class Slice:
             "entity_links": json.dumps(self.entity_links, ensure_ascii=False),
             "attention_tokens": json.dumps(self.attention_tokens, ensure_ascii=False),
             "provenance": self.provenance,
+            "payload": json.dumps(self.payload, ensure_ascii=False) if self.payload is not None else None,
+            "cog_key": self.cog_key,
         }
 
     @classmethod
@@ -117,6 +126,18 @@ class Slice:
                 return v if isinstance(v, list) else []
             except Exception:
                 return []
+
+        def _jdict(name: str) -> dict | None:
+            raw = _g(name, None)
+            if raw is None:
+                return None
+            if isinstance(raw, dict):
+                return raw
+            try:
+                v = json.loads(raw)
+                return v if isinstance(v, dict) else None
+            except Exception:
+                return None
 
         return cls(
             id=_g("id"),
@@ -142,6 +163,8 @@ class Slice:
             entity_links=_jlist("entity_links"),
             attention_tokens=_jlist("attention_tokens"),
             provenance=_g("provenance", "") or "",
+            payload=_jdict("payload"),
+            cog_key=_g("cog_key", None),
         )
 
 
@@ -200,6 +223,26 @@ _ARCHIVE_FRESHNESS_RATIO = 0.1  # 归档阈值 = max(floor, ratio × permanence)
 _ACTIVATION_DECAY_PER_HOUR = 0.5  # activation 每小时减半(短期热信号)
 _PERHOUR_LAMBDA = 0.005  # freshness 衰减系数:permanence=0 时 720h(30d)衰减到 exp(-3.6)=0.027
 
+# 分层衰减策略 (review 2026-07-23 #3):
+#   - rule/lesson/insight: 长期规则知识, **永不时间衰减**, 只能被 supersede_memory / 证伪消亡
+#   - fact: 短时事实/状态 (如"今天金价x元"), TTL 24h 后过期归档
+#   - experience (其它 phase): 继续按 permanence 时间衰减
+#   - knowledge (项目/通用知识): 视同长期, 不时间衰减
+_NEVER_DECAY_SOURCES = {"rule", "rules", "lesson", "lessons", "insight"}
+_LONG_LIVED_NEVER_DECAY_SOURCES = _NEVER_DECAY_SOURCES | {"knowledge", "project"}
+_FACT_TTL_HOURS = 24.0  # fact 类认知 24h 后归档
+
+
+def _normalize_source(source: str) -> str:
+    """Normalize legacy plural spelling to canonical singular.
+
+    历史 lesson/lesson, rule/rules 数据混存(2026-07-23 standardized)。
+    让系统未来统一用单数, 老行也应规范化以便统一查询/分类。
+    """
+    if source in {"lessons", "rules"}:
+        return source[:-1]  # lessons→lesson, rules→rule
+    return source
+
 
 def _decay_freshness(slice: Slice, *, delta_hours: float) -> None:
     """freshness 按 Δt × (1 - permanence) 衰减(指数, 不是线性)。
@@ -208,6 +251,9 @@ def _decay_freshness(slice: Slice, *, delta_hours: float) -> None:
     公式: freshness *= exp(-delta_hours × (1 - permanence) × _PERHOUR_LAMBDA)
     设计文档 §6.4: 认知 "几乎不衰",permanence 0.95 时 30d 后衰减 < 5%,
     permanence 0.3 时 30d 衰减到接近 0(归档合理)。
+
+    注: rule/lesson/insight 永不时间衰减 (long-lived knowledge),
+        只能通过 supersede_memory / suggested_falsify 消亡, 见 update_slice_dynamics。
     """
     if delta_hours <= 0:
         return
@@ -232,6 +278,15 @@ def update_slice_dynamics(slice: Slice, *, now: float | None = None) -> dict[str
     P3 实现: Δt 衰减(freshness + activation)、归档阈值判定。
     P4 扩展: access/reference/verified/falsified 等信号(模型驱动半边)。
 
+    分层衰减策略 (review 2026-07-23 #3, 避免"阿尔茨海默"):
+      · rule/lesson/insight/knowledge/project (长期规则知识)
+          → freshness **不动**, 只能 supersede_memory / 证伪脱手
+          → activation 仍可热信号衰减(短期, 不影响长期存留)
+      · fact (短时事实/状态)
+          → 24h TTL, 过期自动 archived
+      · 其它 phase=experience (经历/对话/digest)
+          → 继续按 permanence 时间衰减 (行为不变)
+
     返回 {archived: bool, changes: {...}} 供 caller 决定是否 commit。
     """
     if now is None:
@@ -245,8 +300,22 @@ def update_slice_dynamics(slice: Slice, *, now: float | None = None) -> dict[str
         "cognition_state": slice.cognition_state,
     }
 
-    _decay_freshness(slice, delta_hours=delta_hours)
-    _decay_activation(slice, delta_hours=delta_hours)
+    source = (slice.source or "").lower().strip()
+    is_long_lived = source in _LONG_LIVED_NEVER_DECAY_SOURCES
+    is_fact = source == "fact"
+
+    if is_long_lived:
+        # rule/lesson/insight/knowledge/project: 长期知识, freshness 永不时间衰减
+        # activation 仍正常半衰 (短期热信号, 不影响存留)
+        _decay_activation(slice, delta_hours=delta_hours)
+    elif is_fact:
+        # fact: 24h TTL, 过期自动 archived
+        _decay_freshness(slice, delta_hours=delta_hours)
+        _decay_activation(slice, delta_hours=delta_hours)
+    else:
+        # 默认 (经历/对话/digest): 既有 freshness + activation 时间衰减
+        _decay_freshness(slice, delta_hours=delta_hours)
+        _decay_activation(slice, delta_hours=delta_hours)
 
     changes: dict[str, Any] = {}
     if slice.freshness != before["freshness"]:
@@ -254,18 +323,29 @@ def update_slice_dynamics(slice: Slice, *, now: float | None = None) -> dict[str
     if slice.activation != before["activation"]:
         changes["activation"] = slice.activation
 
-    # 归档阈值:认知 slice permanence≈1 → 几乎不可能归档(靠 challenge 失活,P4 处理)
-    archive_floor = max(_FRESHNESS_FLOOR, _ARCHIVE_FRESHNESS_RATIO * slice.permanence)
+    # 归档阈值判定
     archived = False
     if (
         slice.cognition_state not in ("archived", "replaced")
-        and slice.freshness < archive_floor
     ):
-        slice.cognition_state = "archived"
-        changes["cognition_state"] = "archived"
-        archived = True
+        if is_fact and delta_hours >= _FACT_TTL_HOURS:
+            # fact: TTL 到点直接归档, 不等 freshness 跌穿
+            slice.cognition_state = "archived"
+            changes["cognition_state"] = "archived"
+            archived = True
+        elif not is_long_lived and slice.freshness < archive_floor_for(slice.permanence):
+            # 经历类: freshness 跌破归档阈值
+            slice.cognition_state = "archived"
+            changes["cognition_state"] = "archived"
+            archived = True
+        # long-lived: 永不时间归档 (跳过)
 
     return {"archived": archived, "changes": changes}
+
+
+def archive_floor_for(permanence: float) -> float:
+    """归档阈值:认知 slice permanence≈1 → 几乎不可能归档(靠 challenge 失活,P4 处理)"""
+    return max(_FRESHNESS_FLOOR, _ARCHIVE_FRESHNESS_RATIO * permanence)
 
 
 __all__ = [

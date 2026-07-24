@@ -110,6 +110,10 @@ def on_verified(slice: Slice, *, now: float | None = None) -> None:
 
     铁律二: 仅 phase=cognition 才接受结构性强化(authority +Δ)。
     经历类的"正反馈"作为 on_reference 一样的微涨(避免双重计分)。
+
+    V3 (2026-07-23 #5): nascent → active 自动激活.
+    nascent 是新写入认知的初始态(Alpha 反馈"何时晋升"主观判断痛点),
+    通过 evidence_count ≥2 自动转入 active.
     """
     if slice.phase != "cognition":
         # 经历类按 reference 处理(走同一路径,简化)
@@ -119,6 +123,14 @@ def on_verified(slice: Slice, *, now: float | None = None) -> None:
     slice.authority = min(1.0, slice.authority + _DEFAULT_DELTAS["verified_authority_inc"])
     slice.verification += _DEFAULT_DELTAS["verified_verification_inc"]
     slice.evidence_count += 1
+    # V3 #5: nascent 认知 evidence_count >=2 → 自动转 active (no mid-tier manual decision)
+    # 这是 Alpha 反馈"碎片应该晋升而非主观判断"的结构化回答: 同源重新激活 = 升级证据
+    if (
+        slice.cognition_state == CognitionState.NASCENT.value
+        and slice.evidence_count >= 2
+        and slice.challenge_count == 0
+    ):
+        slice.cognition_state = CognitionState.ACTIVE.value
     # 自动跃迁: verification 充足 + 反证少 → REINFORCED
     if (
         slice.cognition_state == CognitionState.ACTIVE.value

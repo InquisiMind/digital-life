@@ -283,6 +283,9 @@ def _build_profile_cards(entity_names: list[str]) -> list[dict[str, Any]]:
     """为命中的实体生成「概念卡」(memory_type=profile),用于联想注入时优先展示。
 
     无 profile 的实体跳过(调用方回退到纯碎片)。
+
+    V3 (2026-07-23 #2): 渲染时 lazy 拉最新 cognition value 覆盖硬编码 derived_fields,
+    避免用户反馈"profile 写完就没人维护,cognition 更新了 profile 不同步".
     """
     if not entity_names:
         return []
@@ -296,9 +299,12 @@ def _build_profile_cards(entity_names: list[str]) -> list[dict[str, Any]]:
         profile = entity.get("profile")
         if not profile:
             continue
-        summary = str(profile.get("summary", "")).strip()
-        facts = profile.get("facts") or []
-        if not summary and not facts:
+        # V3 #2: 先 lazy resolve derived_fields 用最新 cognition value
+        resolved_profile = _resolve_profile_derived_fields(name, profile)
+        summary = str(resolved_profile.get("summary", "")).strip()
+        facts = resolved_profile.get("facts") or []
+        derived_lines = resolved_profile.get("_derived_lines") or []
+        if not summary and not facts and not derived_lines:
             continue
         parts = []
         if summary:
@@ -307,18 +313,98 @@ def _build_profile_cards(entity_names: list[str]) -> list[dict[str, Any]]:
             joined = "; ".join(str(f) for f in facts if str(f).strip())
             if joined:
                 parts.append(f"已知: {joined}")
+        if derived_lines:
+            parts.append("最新值: " + " | ".join(derived_lines))
         snippet = " | ".join(parts) if parts else summary
         cards.append({
             "memory_type": "profile",
             "memory_id": f"profile:{name}",
             "snippet": snippet,
-            "timestamp": profile.get("last_updated"),
+            "timestamp": resolved_profile.get("last_updated"),
             "linked_entities": [],
             "verification_count": 0,
             "_matched_entity": name,
             "_entity_kind": entity.get("type"),
         })
     return cards
+
+
+# ──────────────────── V3 (2026-07-23 #2): profile.derived_fields 衍生字段 ────────────────────
+
+
+def sync_profile_derived_field(
+    subject: str,
+    predicate: str,
+    *,
+    value: Any,
+    cog_key: str,
+    source_chunk_id: int,
+) -> None:
+    """V3 #2: 把 cognition value 写入对应 entity 的 profile.derived_fields.
+
+    被 cognition_store.supersede_one / add_cognition_direct 在 commit 后调用 (post-commit hook).
+    失败不阻塞主路径(包在 try/except).
+
+    实现: 读 entity_index.json → entities[subject].profile.derived_fields[predicate] 覆盖式更新.
+    若 entity 不存在 → 自动空 profile 创建 (profile.summary 留空, 等 model 主动 set).
+    """
+    if not subject or not predicate:
+        return
+    try:
+        data = load_entity_index()
+        entities = data.setdefault("entities", {})
+        ent = entities.get(subject)
+        if not ent:
+            # entity 不存在 → 创建一个空 profile 的占位 entity (summary 留给用户后续填)
+            ent = {"aliases": [], "type": None, "memories": [], "profile": {}}
+            entities[subject] = ent
+        profile = ent.setdefault("profile", {})
+        derived = profile.setdefault("derived_fields", {})
+        # 覆盖式 update — 旧值被标到 history (最多保留 3 个旧值)
+        existing = derived.get(predicate) or {}
+        history = list(existing.get("history") or [])
+        if existing.get("value") is not None:
+            history.insert(0, {
+                "value": existing.get("value"),
+                "from_chunk_id": existing.get("source_chunk_id"),
+                "synced_at": existing.get("synced_at"),
+            })
+            history = history[:3]  # cap history
+        import time as _sync_time
+        derived[predicate] = {
+            "cog_key": cog_key,
+            "value": value,
+            "source_chunk_id": source_chunk_id,
+            "synced_at": _sync_time.time(),
+            "history": history,
+        }
+        save_entity_index(data)
+    except Exception as e:
+        logger.debug("sync_profile_derived_field failed for %s:%s: %s", subject, predicate, e)
+
+
+def _resolve_profile_derived_fields(entity_name: str, profile: dict) -> dict:
+    """V3 #2: 渲染时把 profile.derived_fields 转为可读行 + lazy 验证最新值.
+
+    直接从 profile.derived_fields 取值(已经在 sync_profile_derived_field 写入时存了),
+    生成 `· 最新值: <predicate> = <value>` 行, 让 model 看到最新的认知状态.
+    """
+    derived = profile.get("derived_fields") or {}
+    if not derived:
+        return profile
+    import copy as _copy
+    out = _copy.deepcopy(profile)
+    lines: list[str] = []
+    for predicate, ref in derived.items():
+        if not isinstance(ref, dict):
+            continue
+        value = ref.get("value")
+        if value is None:
+            continue
+        # 用 predicate 直接渲染: stop_loss_line → "止损线=-0.07"
+        lines.append(f"{predicate} = {value}")
+    out["_derived_lines"] = lines
+    return out
 
 
 def extract_entities_from_context(text: str) -> list[str]:
@@ -341,9 +427,20 @@ def extract_entities_from_context(text: str) -> list[str]:
     hits: list[tuple[int, str]] = []  # (position, entity_name)
 
     for entity_name, entity_data in entities_dict.items():
+        # 防污染 (review 2026-07-23):
+        # 跳过纯工具/文件/内部模块名(它们会通过 substring in 在任何含 'rest'/'税'/'...' 的
+        # query 上意外命中,把"工具调用过的页面"误识别为实体)。
+        # - .py / .json 后缀 → 文件名, 跳过
+        # - snake_case 全 ascii 小写且 ≥1 个下划线 → 工具/模块名, 跳过
+        # - 单英文小写词(dream/sleep/rest...) → 通用词, 跳过
+        if _is_pollutant_entity_name(entity_name):
+            continue
         patterns = [entity_name] + list(entity_data.get("aliases", []))
         for pattern in patterns:
             if not pattern:
+                continue
+            # alias 也得防
+            if _is_pollutant_entity_name(pattern):
                 continue
             pos = text_lower.find(pattern.lower())
             if pos >= 0:
@@ -359,6 +456,37 @@ def extract_entities_from_context(text: str) -> list[str]:
             seen.add(name)
             result.append(name)
     return result
+
+
+# 工具/文件/通用词污染 list —— 任何文本里 substring.in 都会命中, 不是真"实体提及"
+_POLLUTANT_LITERALS = {
+    # 工具名 / skill 名 / 内部模块名
+    "dream", "rest", "sleep", "wakeup", "waking", "timer", "cron",
+    "recall", "recall_entity", "self_review", "memory_hygiene",
+    "emotion_engine", "entity_index", "personal_assistant",
+    "circuit_breaker", "old_rule", "social_feed", "user_access_token",
+    # 通用短中文词, 任何会话都高频命中
+    "rest", "凌晨", "中午",
+}
+
+
+def _is_pollutant_entity_name(name: str) -> bool:
+    """检测这个名字是否是不应作为 entity boost 的工具/文件/通用词。
+
+    防止 'rest' / 'dream' / 'execute_xxx.py' 这种字符串在任何 query 上意外命中,
+    把召回结果污染成与场景无关的工具/调试概念。
+    """
+    if not name:
+        return True
+    s = name.strip().lower()
+    if s in _POLLUTANT_LITERALS:
+        return True
+    # snake_case (含 ascii 字母数字+下划线+点)
+    if s.endswith((".py", ".json", ".yaml", ".md")):
+        return True
+    if "_" in s and all(c.isalnum() or c == "_" for c in s) and s.replace("_", "").isascii():
+        return True
+    return False
 
 
 def merge_entities(primary: str, alias: str) -> dict[str, Any]:

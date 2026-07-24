@@ -200,3 +200,112 @@ def init_all_schemas() -> None:
         logger.warning("init_all_schemas: %d failures: %s", len(failed), "; ".join(failed))
     else:
         logger.info("init_all_schemas: all subsystems initialized")
+
+    # 注: personal_assistant 项目不再由 schema 常驻创建。
+    # 解耦设计: 接管(OAuth 成功)→ 创建项目+待办; 取消接管 → 停项目+清待办。
+    # 见 domain/social/bootstrap.py
+
+
+def activate_personal_assistant(instance_id: str) -> None:
+    """接管激活: 创建 personal_assistant 项目 + 日常待办。
+
+    由 OAuth callback 调用(terraform_flamingo 之类)。幂等:
+    项目已存在 → 不重复创建; 待办已存在 → 不重复创建。
+    """
+    if not instance_id:
+        return
+    import pathlib
+
+    # 1. 创建项目目录 + project.yaml(如果不存在)
+    project_dir = pathlib.Path("projects") / "personal_assistant"
+    project_yaml = project_dir / "project.yaml"
+    if not project_yaml.exists():
+        project_dir.mkdir(parents=True, exist_ok=True)
+        (project_dir / "memory").mkdir(exist_ok=True)
+        (project_dir / "docs").mkdir(exist_ok=True)
+        project_yaml.write_text(
+            "project:\n"
+            "  id: personal_assistant\n"
+            "  name: 个人助理\n"
+            "  description: >-\n"
+            "    辅助用户的生活和工作。核心是想用户所想——跟进用户所有收到的消息,\n"
+            "    将需要用户做的事处理掉或提醒。用 sense_social_feed 获取消息,\n"
+            "    silent rule 默认不发言, 真正有 actionable 时建待办或提醒用户。\n"
+            "  status: active\n"
+            f"  manager: {instance_id}\n"
+            "  goal:\n"
+            "    statement: 辅助用户生活和工作——想用户所想, 处理能处理的事, 提醒需要提醒的。\n"
+            "positions:\n"
+            "  - id: real_human_assistant\n"
+            "    name: 真人助理\n"
+            "    responsibilities:\n"
+            "      - 跟进用户所有飞书 IM 消息(用 sense_social_feed)\n"
+            "      - 考虑哪些是用户要做的, 哪些需要提醒他\n"
+            "      - 将需要用户做的事形成 assistance 类待办, 自己能做的直接做\n"
+            "    assignees:\n"
+            f"      - {instance_id}\n",
+            encoding="utf-8",
+        )
+        logger.info("personal_assistant: project.yaml created")
+
+    # 2. 创建日常待办(如果不存在)
+    try:
+        from domain.todos.crud import list_tasks, create_task
+        existing = list_tasks(project_id="personal_assistant", status_filter=None)
+        active_existing = [
+            t for t in existing
+            if (t.get("status", "") if isinstance(t, dict) else getattr(t, "status", "")) != "cancelled"
+        ]
+        if any("偶尔瞅一眼" in (t.get("title", "") if isinstance(t, dict) else getattr(t, "title", "")) for t in active_existing):
+            return  # 已有活跃待办
+        create_task(
+            title="常驻: 偶尔瞅一眼用户新消息 + 想想能帮上什么",
+            description=(
+                "偶尔可以瞅一下是否用户有新的消息来了, 看一下是否有值得关注的——\n"
+                "用户需要处理的、或者需要未来提醒他的。考虑一下如何帮助用户。\n\n"
+                "用 sense_social_feed 获取最新的用户消息(飞书群, daemon 每 30min 拉取)。\n"
+                "拿到消息后按 personal_assistant skill 的方法论执行:\n"
+                "需要做的形成待办, 需要提醒的发 express_to_human, 没什么就跳过。\n\n"
+                "不强制每次有产出。这条是你「持续关注用户」的常驻信号。"
+            ),
+            priority="medium",
+            tags=["social", "assistance"],
+            status="in_progress",
+            source="project:personal_assistant",
+            type="assistance",
+        )
+        logger.info("personal_assistant: seeded daily check todo for %s", instance_id[:8])
+    except Exception as exc:
+        logger.warning("personal_assistant: create todo failed: %s", exc)
+
+
+def deactivate_personal_assistant(instance_id: str) -> None:
+    """接管取消: 停项目 + 清待办。
+
+    由 social/revoke 调用。项目 status 改 inactive, 待办全部 cancel。
+    不删项目文件(保留历史记忆), 只让它从 todos 面板消失。
+    """
+    import pathlib
+    # 1. 项目 status → inactive
+    project_yaml = pathlib.Path("projects") / "personal_assistant" / "project.yaml"
+    if project_yaml.exists():
+        import yaml
+        raw = yaml.safe_load(project_yaml.read_text(encoding="utf-8")) or {}
+        proj = raw.get("project", {})
+        proj["status"] = "inactive"
+        project_yaml.write_text(yaml.dump(raw, allow_unicode=True), encoding="utf-8")
+        logger.info("personal_assistant: project set to inactive")
+
+    # 2. 待办全部 cancel
+    try:
+        from domain.todos.crud import list_tasks, update_task
+        tasks = list_tasks(project_id="personal_assistant", status_filter=None)
+        cancelled = 0
+        for t in tasks:
+            tid = t.get("id") if isinstance(t, dict) else getattr(t, "id", "")
+            if tid:
+                update_task(tid, status="cancelled")
+                cancelled += 1
+        logger.info("personal_assistant: cancelled %d todos", cancelled)
+    except Exception as exc:
+        logger.warning("personal_assistant: cancel todos failed: %s", exc)

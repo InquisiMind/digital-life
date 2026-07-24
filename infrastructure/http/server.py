@@ -201,6 +201,17 @@ async def run_instance_gateway(instance_id: str) -> None:
         else:
             logger.warning("Instance %s schema init failed: %s", instance_id[:8], exc)
 
+    # 显式触发 memory_vectors.db schema migration (V2: payload/cog_key).
+    # _get_db() 是幂等的,首次访问会 ALTER TABLE; 但实例可能早已存在但长期
+    # 不调召回(只写认知),导致 schema 落后。这里启动时主动跑一次,避免跨实例
+    # schema 不一致(2026-07-23 review #1 真实 BUG)。
+    try:
+        from domain.memory.memory.recall.vector import _get_db
+        vdb = _get_db()
+        vdb.close()
+    except Exception as exc:
+        logger.debug("Instance %s memory_vectors migration probe: %s", instance_id[:8], exc)
+
     stop_event = asyncio.Event()
 
     def _signal_handler(sig):
@@ -386,6 +397,85 @@ async def run_instance_gateway(instance_id: str) -> None:
     logger.info("Instance %s stopped", instance_id[:8])
 
 
+def _run_freshness_decay(instance_id: str) -> None:
+    """批量跑 slice freshness decay: 读所有 chunks → update_slice_dynamics → UPDATE 回库。
+
+    让老记忆自然衰减新鲜度, 低 fresh 的自动归档 → 从后续召回候选池中淡出。
+    每 6h 跑一次 (cron loop 内调度)。
+    """
+    import sqlite3 as _sqlite3
+    from infrastructure.config import get_runtime_memories_dir
+    db_path = get_runtime_memories_dir() / "memory_vectors.db"
+    if not db_path.exists():
+        return
+    import time as _time
+    now = _time.time()
+    try:
+        from domain.memory.memory.recall.unified.slice import update_slice_dynamics, Slice
+        conn = _sqlite3.connect(str(db_path), timeout=5.0)
+        conn.row_factory = _sqlite3.Row
+        # 只处理未归档的 chunk(cognition_state IS NULL or NOT IN ('archived','replaced'))
+        rows = conn.execute(
+            "SELECT id, source, text, created_at, phase, authority, permanence, "
+            "freshness, activation, verification, evidence_count, challenge_count, "
+            "cognition_state FROM chunks "
+            "WHERE cognition_state IS NULL OR cognition_state NOT IN ('archived','replaced')"
+        ).fetchall()
+        archived = 0
+        updated = 0
+        for r in rows:
+            s = Slice(
+                id=r["id"],
+                body=r["text"] or "",
+                source=r["source"] or "",
+                chunk_hash="",
+                phase=r["phase"] or "experience",
+                source_kind="",
+                created_at=r["created_at"] or now,
+                session_id="",
+                segment_index=0,
+                derived_from="[]",
+                derive_kind="",
+                authority=r["authority"] or 0.5,
+                permanence=r["permanence"] or 0.3,
+                freshness=r["freshness"] or 1.0,
+                activation=r["activation"] or 0.0,
+                verification=r["verification"] or 0.0,
+                evidence_count=r["evidence_count"] or 0,
+                challenge_count=r["challenge_count"] or 0,
+                cognition_state=r["cognition_state"] or None,
+                supersede_by=None,
+                entity_links="[]",
+                attention_tokens="[]",
+                provenance="",
+            )
+            result = update_slice_dynamics(s, now=now)
+            changes = result.get("changes", {})
+            if changes:
+                set_parts = []
+                params_list = []
+                for col, val in changes.items():
+                    set_parts.append(f"{col} = ?")
+                    params_list.append(val)
+                set_parts.append("freshness = ?")
+                params_list.append(s.freshness)
+                params_list.append(r["id"])
+                conn.execute(
+                    f"UPDATE chunks SET {', '.join(set_parts)} WHERE id = ?",
+                    params_list,
+                )
+                updated += 1
+                if result.get("archived"):
+                    archived += 1
+        conn.commit()
+        conn.close()
+        if updated > 0:
+            logger.info("freshness_decay: %d chunks updated, %d archived (instance=%s)",
+                        updated, archived, instance_id[:8])
+    except Exception as exc:
+        logger.debug("freshness_decay inner failed: %s", exc)
+
+
 def _instance_cron_loop(instance_id: str, stop_event: threading.Event) -> None:
     """每个实例独立的 cron 循环。"""
     import time
@@ -396,12 +486,24 @@ def _instance_cron_loop(instance_id: str, stop_event: threading.Event) -> None:
     interval = int(os.environ.get("L4_CRON_INTERVAL", "60"))
     logger.info("Instance %s cron loop tick interval=%ds", instance_id[:8], interval)
 
+    _last_decay_run = 0.0
+    _DECAY_INTERVAL = 6 * 3600  # 6h 跑一次 freshness decay
+
     while not stop_event.is_set():
         try:
             ctx1 = set_current_instance_id(instance_id)
             ctx2 = set_instance_context(instance_id)
             try:
                 run_l4_tick(instance_id=instance_id)
+
+                # 每 6h 跑一次 slice freshness decay (让老记忆自然衰减)
+                now = time.time()
+                if now - _last_decay_run > _DECAY_INTERVAL:
+                    try:
+                        _run_freshness_decay(instance_id)
+                        _last_decay_run = now
+                    except Exception as exc:
+                        logger.debug("freshness decay failed: %s", exc)
             finally:
                 reset_instance_context(ctx2)
                 reset_current_instance_id(ctx1)

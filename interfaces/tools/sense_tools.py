@@ -174,6 +174,7 @@ registry.register(
     handler=_handle_sense_event_queue,
     check_fn=lambda: True,
     emoji="📋",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -297,6 +298,7 @@ registry.register(
     handler=_handle_sense_event_detail,
     check_fn=lambda: True,
     emoji="🔍",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -350,6 +352,7 @@ registry.register(
     handler=_handle_sense_wake_reason,
     check_fn=lambda: True,
     emoji="🔔",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -382,6 +385,7 @@ registry.register(
     handler=_handle_sense_vitals,
     check_fn=lambda: True,
     emoji="💗",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -439,6 +443,7 @@ registry.register(
     handler=_handle_sense_time,
     check_fn=lambda: True,
     emoji="🕰️",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -536,7 +541,9 @@ def _handle_sense_memory(args: Dict[str, Any], **_) -> str:
     if topic in ("all", "him"):
         out["about_him"] = read_about_him(limit_chars=2000)
     if topic in ("all", "diary"):
-        out["diary"] = read_recent_diary(limit_chars=2000, days_back=days_back)
+        # 默认拉 5000 字符 (write_diary mode=replace 模式下模型需要完整读全文再覆写,
+        # 2000 会截断, 导致模型 replace 后丢失前半段。5000 足够覆盖典型日记 + 整合段)
+        out["diary"] = read_recent_diary(limit_chars=5000, days_back=days_back)
     if topic in ("all", "scratchpad"):
         out["scratchpad"] = read_scratchpad()
     return _j(out)
@@ -566,12 +573,185 @@ registry.register(
     handler=_handle_sense_memory,
     check_fn=lambda: True,
     emoji="📚",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
 def _handle_sense_scratchpad(args: Dict[str, Any], **_) -> str:
     _burn()
     return _j({"scratchpad": read_scratchpad()})
+
+
+def _handle_sense_social_feed(args: Dict[str, Any], **_) -> str:
+    """调取 social_feed 表中的真人 IM 消息。
+
+    三种查看模式:
+      1. 默认 (无参数): 跨群混合, 按时间倒序——快速扫一眼有没有新消息
+      2. chat_id="oc_xxx": 拉指定群的消息流(连贯对话上下文, 像在飞书里点进一个群)
+      3. chat_name="XXX群": 按群名模糊匹配(如果不知道 chat_id)
+      4. category="mention": 只看 @你的消息
+      5. tag="紧急": 按自定义标签筛选
+    """
+    _burn()
+    limit = int(args.get("limit") or 30)
+    only_unread = args.get("only_unread") != False  # 默认只看未读
+    category = (args.get("category") or "").strip()
+    tag_filter = (args.get("tag") or "").strip()
+    chat_id = (args.get("chat_id") or "").strip()
+    chat_name = (args.get("chat_name") or "").strip()
+    try:
+        import sqlite3 as _sqlite3
+        from infrastructure.config import get_app_instance_id, get_runtime_state_db_path
+        iid = get_app_instance_id() or ""
+        conn = _sqlite3.connect(str(get_runtime_state_db_path()))
+        conn.row_factory = _sqlite3.Row
+
+        where_parts: list[str] = []
+        params_list: list = []
+        # 指定 chat_id 时: 不限 only_unread, 拉该群的完整历史上下文
+        if chat_id:
+            where_parts.append("chat_id = ?")
+            params_list.append(chat_id)
+            only_unread = False  # 看群对话时不限制未读
+        elif chat_name:
+            where_parts.append("chat_name LIKE ?")
+            params_list.append(f"%{chat_name}%")
+            only_unread = False
+        else:
+            if only_unread:
+                where_parts.append("scanned = 0 AND reviewed = 0")
+        if iid:
+            where_parts.append("(instance_id = ? OR instance_id = '')")
+            params_list.append(iid)
+        # Time filter: exclude messages older than 7 days to prevent
+        # stale data (e.g. last year's notifications) being mistaken for recent.
+        from datetime import datetime as _dt
+        _cutoff_ts = (_dt.now().timestamp() - 7 * 86400) * 1000  # ms
+        where_parts.append("message_ts > ?")
+        params_list.append(_cutoff_ts)
+        if category:
+            where_parts.append("category = ?")
+            params_list.append(category)
+        if tag_filter:
+            where_parts.append("tags LIKE ?")
+            params_list.append(f"%{tag_filter}%")
+        where_sql = " WHERE " + " AND ".join(where_parts) if where_parts else ""
+
+        # 按 chat 时正序(对话连贯); 默认倒序(最近在前)
+        order = "message_ts ASC" if chat_id or chat_name else "message_ts DESC"
+
+        rows = conn.execute(
+            f"SELECT id, chat_name, sender_name, text, has_command, at_all, at_me, "
+            f"sender_is_app, message_ts, category, tags, message_id, chat_id "
+            f"FROM social_feed{where_sql} "
+            f"ORDER BY {order} LIMIT ?",
+            params_list + [limit],
+        ).fetchall()
+        conn.close()
+        msgs = [dict(r) for r in rows]
+        if not msgs:
+            mode = f"chat_id={chat_id}" if chat_id else f"chat_name={chat_name}" if chat_name else "all"
+            return _j({"messages": [], "note": f"无消息 ({mode}, category={category or 'any'})"})
+
+        # 指定群时 mark_scanned
+        if only_unread and not chat_id and not chat_name:
+            from domain.social.store import mark_scanned
+            mark_scanned([m["id"] for m in msgs])
+
+        # 格式化: 过滤机器人 + 标记
+        from datetime import datetime
+        cat_emoji = {
+            "command": "🔡", "mention": "📌", "work": "💼", "social": "☕",
+            "notification": "📢", "system": "🔧", "default": "·",
+        }
+        lines = ["[社交近况]"]
+        for m in msgs:
+            if m.get("sender_is_app") and not m.get("at_all") and not m.get("has_command"):
+                continue
+            ts_raw = m.get("message_ts") or 0
+            # 飞书 message_ts 是毫秒; fromtimestamp 需要秒
+            from domain.social.store import _format_relative_ts
+            ts = _format_relative_ts(ts_raw)
+            chat = (m.get("chat_name") or "?")[:15]
+            sender = (m.get("sender_name") or "?")[:8]
+            text = (m.get("text") or "").replace("\n", " ").strip()[:120]
+            cat = m.get("category", "default")
+            cat_icon = cat_emoji.get(cat, "·")
+            msg_tags = m.get("tags", "")
+            tag_str = f" #{msg_tags}" if msg_tags else ""
+            lines.append(f"  · {ts} {cat_icon} {chat} | {sender}{tag_str}: {text}")
+        lines.append(f"[/社交近况 · {len(msgs)} 条]")
+        return _j({"messages": lines, "count": len(msgs)})
+    except Exception as exc:
+        return _j({"error": str(exc)})
+
+
+registry.register(
+    name="sense_social_feed",
+    toolset="senses",
+    schema={
+        "name": "sense_social_feed",
+        "description": (
+            "查看真人飞书消息。三种方式:\n"
+            "1. 不传参数: 跨群扫一眼最新消息(最近在前)\n"
+            "2. chat_id/chat_name: 拉指定群的完整对话流(正序, 像在飞书里点进群看上下文)\n"
+            "3. category/tag: 按分类/标签筛选\n"
+            "建议: 先无参数扫一眼→看到感兴趣的群→再 chat_name 进去拉完整上下文。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "拉多少条(默认30)"},
+                "only_unread": {"type": "boolean", "description": "只看未读(默认true; 指定chat_id时自动false)"},
+                "category": {"type": "string", "description": "分类: command/mention/work/social/notification/system/default"},
+                "tag": {"type": "string", "description": "自定义标签筛选(模糊匹配 tags 字段)"},
+                "chat_id": {"type": "string", "description": "指定群的 chat_id(oc_xxx), 拉该群完整对话流"},
+                "chat_name": {"type": "string", "description": "按群名模糊匹配(不知道 chat_id 时用)"},
+            },
+            "required": [],
+        },
+    },
+    handler=_handle_sense_social_feed,
+    check_fn=lambda: True,
+    emoji="📬",
+)
+
+
+def _handle_tag_social_message(args: Dict[str, Any], **_) -> str:
+    """给一条 social_feed 消息打自定义标签。"""
+    _burn()
+    message_id = (args.get("message_id") or "").strip()
+    tags = (args.get("tags") or "").strip()
+    if not message_id or not tags:
+        return _j({"ok": False, "error": "message_id 和 tags 都必填"})
+    try:
+        from domain.social.store import add_tags
+        ok = add_tags(message_id, tags)
+        return _j({"ok": ok, "note": f"已给 {message_id} 添加标签: {tags}"})
+    except Exception as exc:
+        return _j({"error": str(exc)})
+
+
+registry.register(
+    name="tag_social_message",
+    toolset="senses",
+    schema={
+        "name": "tag_social_message",
+        "description": "给一条 social_feed 消息打自定义标签(逗号分隔)。用于分类/标记值得追踪的消息。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message_id": {"type": "string", "description": "消息 ID(从 sense_social_feed 获取)"},
+                "tags": {"type": "string", "description": "标签(逗号分隔), 如: 紧急,股票,zhp关心的"},
+            },
+            "required": ["message_id", "tags"],
+        },
+    },
+    handler=_handle_tag_social_message,
+    check_fn=lambda: True,
+    emoji="🏷️",
+    schema_visible=False,  # V6 工具精简: 降级
+)
 
 
 registry.register(
@@ -585,6 +765,7 @@ registry.register(
     handler=_handle_sense_scratchpad,
     check_fn=lambda: True,
     emoji="📋",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -737,6 +918,7 @@ registry.register(
     handler=_handle_sense_contacts,
     check_fn=lambda: True,
     emoji="👥",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -862,6 +1044,7 @@ registry.register(
     handler=_handle_sense_nurture_log,
     check_fn=lambda: True,
     emoji="🥣",
+    schema_visible=False,  # V6 工具精简: 降级
     max_result_size_chars=8000,
 )
 
@@ -884,6 +1067,7 @@ registry.register(
     handler=_handle_sense_rules,
     check_fn=lambda: True,
     emoji="📜",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -931,6 +1115,7 @@ registry.register(
     handler=_handle_sense_context,
     check_fn=lambda: True,
     emoji="📋",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -958,6 +1143,7 @@ registry.register(
     handler=_handle_sense_lessons,
     check_fn=lambda: True,
     emoji="💡",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -1024,6 +1210,7 @@ registry.register(
     handler=_handle_sense_insights,
     check_fn=lambda: True,
     emoji="🔍",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -1144,6 +1331,7 @@ registry.register(
     handler=_handle_sense_entity,
     check_fn=lambda: True,
     emoji="🔗",
+    schema_visible=False,  # V6: 合并到 recall_cognition_by_key
 )
 
 
@@ -1182,6 +1370,7 @@ registry.register(
     handler=_handle_merge_entities,
     check_fn=lambda: True,
     emoji="🔀",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -1207,6 +1396,7 @@ registry.register(
     handler=_handle_dedup_lessons,
     check_fn=lambda: True,
     emoji="🔍",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -1232,6 +1422,7 @@ registry.register(
     handler=_handle_check_memory_health,
     check_fn=lambda: True,
     emoji="🏥",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -1258,6 +1449,7 @@ registry.register(
     handler=_handle_sense_self_knowledge,
     check_fn=lambda: True,
     emoji="🪞",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -1291,6 +1483,7 @@ registry.register(
     handler=_handle_sense_entity_index_health,
     check_fn=lambda: True,
     emoji="🩻",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -1348,6 +1541,7 @@ registry.register(
     handler=_handle_set_entity_profile,
     check_fn=lambda: True,
     emoji="🧠",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -1387,6 +1581,7 @@ registry.register(
     handler=_handle_prune_fragments,
     check_fn=lambda: True,
     emoji="✂️",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -1456,6 +1651,7 @@ registry.register(
     handler=_handle_recall_entity,
     check_fn=lambda: True,
     emoji="🔗",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -1518,6 +1714,7 @@ registry.register(
     handler=_handle_sense_project_detail,
     check_fn=lambda: True,
     emoji="📊",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -1560,3 +1757,193 @@ def _register_retired_handlers() -> None:
 
 
 _register_retired_handlers()
+
+
+# ════════════════════════════════════════════════════════════════
+# V6 通用动词 sense 工具 — 合并多个细分 sense_*
+# ════════════════════════════════════════════════════════════════
+
+
+def _handle_sense_file(args: Dict[str, Any], **_) -> str:
+    """通用文件读: 读 memories/ 下的 .md 文件 (rules/lessons/context/insights/scratchpad/self_knowledge)."""
+    name = str(args.get("name") or "").strip().lower()
+    n = int(args.get("n") or 10)
+    # name → file 映射
+    FILE_MAP = {
+        "rules": ("RULES.md", "read_rules"),
+        "lessons": ("LESSONS.md", "read_lessons"),
+        "context": ("CONTEXT.md", "read_context"),
+        "insights": ("INSIGHTS.md", "read_insights"),
+        "scratchpad": ("SCRATCHPAD.md", "read_scratchpad"),
+        "self_knowledge": ("SELF_KNOWLEDGE.md", "read_self_knowledge"),
+        "consciousness": ("CONSCIOUSNESS.md", None),
+    }
+    if name not in FILE_MAP:
+        return _j({"ok": False, "reason": f"name 必须是 {list(FILE_MAP.keys())} 之一"})
+    fname, reader = FILE_MAP[name]
+    try:
+        from domain.memory.memory.consciousness.runtime import _get_runtime_home
+        fpath = _get_runtime_home() / "memories" / fname
+        if not fpath.exists():
+            return _j({"ok": True, name: "", "note": f"{fname} 不存在"})
+        if reader:
+            import importlib
+            mod = importlib.import_module("domain.memory.memory.consciousness.runtime")
+            fn = getattr(mod, reader)
+            if reader == "read_lessons":
+                content = fn(n=n)
+            elif reader == "read_insights":
+                days = int(args.get("days_back") or 7)
+                kinds = args.get("kinds")
+                content = fn(days_back=days, kinds=kinds)
+            else:
+                content = fn()
+        else:
+            content = fpath.read_text(encoding="utf-8")
+        return _j({"ok": True, name: content[:4000]})
+    except Exception as e:
+        return _j({"ok": False, "reason": f"{type(e).__name__}: {e}"})
+
+
+registry.register(
+    name="sense_file",
+    toolset="senses",
+    schema={
+        "name": "sense_file",
+        "description": (
+            "读取记忆文件内容。可选: rules(规则), lessons(教训), context(交接上下文), "
+            "insights(灵感碎片), scratchpad(草稿), self_knowledge(自我认知), consciousness(意识流)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "enum": ["rules", "lessons", "context", "insights", "scratchpad", "self_knowledge", "consciousness"],
+                    "description": "要读的文件名",
+                },
+                "n": {"type": "integer", "description": "返回条数 (lessons 用), 默认 10"},
+                "days_back": {"type": "integer", "description": "insights 回溯天数, 默认 7"},
+            },
+            "required": ["name"],
+        },
+    },
+    handler=_handle_sense_file,
+    check_fn=lambda: True,
+    emoji="📄",
+)
+
+
+def _handle_sense_status(args: Dict[str, Any], **_) -> str:
+    """合并 sense_time + sense_vitals + sense_wake_reason → 一次返回全部状态."""
+    parts = {}
+    try:
+        from domain.lifecycle.event_registry import get_event_type
+        parts["time"] = {"now": __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    except Exception:
+        pass
+    try:
+        from domain.vitals import api as vapi
+        snap = vapi.snapshot()
+        parts["vitals"] = {"energy": snap.energy, "mood": getattr(snap, 'mood', None)}
+    except Exception:
+        pass
+    try:
+        from infrastructure.config import get_runtime_state_db_path
+        import sqlite3
+        db = sqlite3.connect(str(get_runtime_state_db_path()))
+        db.row_factory = sqlite3.Row
+        row = db.execute("SELECT reason FROM affairs WHERE status='RUNNING' LIMIT 1").fetchone()
+        parts["wake_reason"] = row["reason"] if row else "idle"
+        # next alarm
+        import time as _t
+        rows = db.execute(
+            "SELECT fire_at FROM timers WHERE status='pending' AND fire_at > ? ORDER BY fire_at LIMIT 3",
+            (_t.time(),)
+        ).fetchall()
+        parts["next_alarms"] = [r["fire_at"] for r in rows]
+        db.close()
+    except Exception:
+        pass
+    return _j({"ok": True, **parts})
+
+
+registry.register(
+    name="sense_status",
+    toolset="senses",
+    schema={
+        "name": "sense_status",
+        "description": "查看当前状态: 时间 + 精力 + 唤醒原因 + 下几个闹钟。一次调用拿全部。",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    handler=_handle_sense_status,
+    check_fn=lambda: True,
+    emoji="⚡",
+)
+
+
+def _handle_write_file(args: Dict[str, Any], **_) -> str:
+    """通用文件写: 合并 manage_daily/goals/plan/work + update_context/scratchpad/self_knowledge + remember_him."""
+    name = str(args.get("name") or "").strip().lower()
+    mode = str(args.get("mode") or "append").strip().lower()
+    text = str(args.get("text") or "")
+    FILE_MAP = {
+        "context": "CONTEXT.md",
+        "scratchpad": "SCRATCHPAD.md",
+        "self_knowledge": "SELF_KNOWLEDGE.md",
+        "diary": "DIARY.md",
+        "him": "HIM.md",
+    }
+    if name not in FILE_MAP:
+        return _j({"ok": False, "reason": f"name 必须是 {list(FILE_MAP.keys())} 之一"})
+    if not text and mode != "read":
+        return _j({"ok": False, "reason": "text 必填 (除非 mode=read)"})
+    try:
+        from domain.memory.memory.consciousness.runtime import _get_runtime_home
+        fpath = _get_runtime_home() / "memories" / FILE_MAP[name]
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        if mode == "read":
+            content = fpath.read_text(encoding="utf-8") if fpath.exists() else ""
+            return _j({"ok": True, name: content[:4000]})
+        elif mode == "replace":
+            fpath.write_text(text, encoding="utf-8")
+        else:  # append
+            existing = fpath.read_text(encoding="utf-8") if fpath.exists() else ""
+            fpath.write_text(existing + "\n" + text, encoding="utf-8")
+        return _j({"ok": True, "written": FILE_MAP[name], "mode": mode, "chars": len(text)})
+    except Exception as e:
+        return _j({"ok": False, "reason": f"{type(e).__name__}: {e}"})
+
+
+registry.register(
+    name="write_file",
+    toolset="actions",
+    schema={
+        "name": "write_file",
+        "description": (
+            "读写记忆文件。name 选: context(交接上下文), scratchpad(草稿), "
+            "self_knowledge(自我认知), diary(日记), him(用户记忆). "
+            "mode: append(追加) / replace(覆盖) / read(只读)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "enum": ["context", "scratchpad", "self_knowledge", "diary", "him"],
+                    "description": "目标文件",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["append", "replace", "read"],
+                    "description": "写入模式, 默认 append",
+                },
+                "text": {"type": "string", "description": "要写的内容 (read 模式可省)"},
+            },
+            "required": ["name"],
+        },
+    },
+    handler=_handle_write_file,
+    check_fn=lambda: True,
+    emoji="📝",
+)

@@ -74,8 +74,14 @@ class AIAgent:
         self._recall_injection_indices: list[int] = []
         # Mid-session event injection tracking
         self._injected_signal_event_ids: set[int] = set()
+        # V6: 条件暴露工具 — rest preview 后动态暴露 record_thought
+        self._conditionally_revealed_tools: set[str] = set()
         # Counter for synthetic tool_call IDs (system context injection)
         self._sys_tool_counter: int = 0
+        # 模型在本 session 没 pending 事件仍不调任何工具(空转) 的次数。
+        # 用于"rest 兜底"——首次空转注入 user 提示让模型告别空想直接 rest；
+        # 仍空转则放行不再纠缠(强行 rest 会破坏模型自主性)。
+        self._noop_warn_count: int = 0
         # Audit dual-write bookkeeping (populated when audit_ctx attached)
         self._audit_pending_tool_count: int = 0
         self._audit_assistant_had_calls: bool = False
@@ -92,7 +98,19 @@ class AIAgent:
         system_message: str | None = None,
         conversation_history: list[dict[str, Any]] | None = None,
         task_id: str | None = None,
+        is_continuation: bool = False,
     ) -> dict[str, Any]:
+        """Run one wake's conversation.
+
+        ``is_continuation=True`` 改变 prompt 注入语义:
+          - False(新 session): prompt 作为 role:user 消息进入 → 即"完整 wake prompt"，
+            模型把它视为新一轮唤醒的事件叙述
+          - True(接续 session): prompt 走 mid-session 注入形式(sys_tool_call "wake_signal")，
+            避免与上文 user message 重复形成"又是新事件"的语义——
+            实测发现: continuation 用 user 形式让模型对同一消息/事件回复两次
+            (一次 mid-session, 一次 wake 主入口)，改成 wake_signal 后模型只看不动口，
+            完成手头工作就 rest。
+        """
         session_id = self.session_id or task_id or "adhoc"
         # 每个 wake 推进一次段号。设计语义：segment_index = wake 序号，单调递增。
         # 同一 wake 内的所有消息（system/user/assistant/tool/sys_tool 注入）共享同一段号。
@@ -121,9 +139,31 @@ class AIAgent:
             # 无 tag 的 user（如 continuation 中拉回的旧 action_prompt 裸 user）保留原样。
             # 不再区分"新 session / 续用 session"路径，行为一致。
             messages.extend(self._convert_user_to_tool(conversation_history))
-        # action_prompt as user message (GLM requires at least one user message)
-        messages.append({"role": "user", "content": prompt})
-        self._append_message(session_id, "user", prompt)
+        if is_continuation:
+            # 接续 session: 把本 wake 的 prompt 以 wake_signal (sys_tool_call) 形式注入,
+            # 与 mid-session 新事件到达保持同构——避免在对话里再插入一条 role:user
+            # 让模型误判"又来个新事件"而重复回复。
+            # 不持久化为 user_message; _sys_tool_call pair 走 _convert_user_to_tool
+            # 同样会被持久化(参考 wake_signal mid-session 注入逻辑)。
+            assistant_msg, tool_msg = self._sys_tool_call("wake_signal", prompt)
+            messages.append(assistant_msg)
+            messages.append(tool_msg)
+            if self.audit_ctx is not None:
+                try:
+                    self.audit_ctx.recall("wake_signal", prompt)
+                except Exception:
+                    logger.debug("Failed to dual-write continuation wake_signal", exc_info=True)
+            # GLM 需要 ≥1 user message；conversation_history 里已有 user 消息（来自 continue
+            # 拉回的旧 turn），满足约束，无需再追加。
+            # 但若 history 全是 tool/assistant（极端 case），安全兜底加一条占位 user。
+            has_user = any(m.get("role") == "user" for m in messages)
+            if not has_user:
+                messages.append({"role": "user", "content": "(接续会话)"})
+                self._append_message(session_id, "user", "(接续会话)")
+        else:
+            # 新 session: 走标准 wake 路径, action_prompt 直接作为 role:user
+            messages.append({"role": "user", "content": prompt})
+            self._append_message(session_id, "user", prompt)
         # New session: load prior JSON content for merge.
         # Continuation: conversation_history already includes prior messages → no base needed.
         try:
@@ -300,6 +340,36 @@ class AIAgent:
                     except Exception:
                         pass
                     continue
+
+                # ── rest 兜底注入 (走 sys_tool_call 模式, 不污染 user message slot) ──
+                # 模型这一轮没调任何工具, 也没 pending 事件——若它说过"准备休息/
+                # 待命/没事做"之类语义却又没真的调 rest, 注入一条 sys_nudge 假工具结果
+                # 提示: rest 是工具调用, 不是文本意图。
+                # 第二次仍空转就放行(_noop_warn_count >= 1 时不再注入), 尊重模型判断。
+                if self._noop_warn_count < 1 and self._looks_like_idle_intent(content):
+                    self._noop_warn_count += 1
+                    nudge = (
+                        "⚠️ 系统提示：你这一轮没调用任何工具就结束了。"
+                        "在 Digital Life 里，**休息 = 调用 `rest` 工具**——你说"
+                        "\"准备休息\"\"等下醒来再说\"之类的文本不会让躯壳进入休息，"
+                        "只会继续空转耗电直到精力耗尽被强制中断。\n\n"
+                        "请明确选择：\n"
+                        "- 如果本醒的工作告一段落 → 调用 `rest`（带 `mental_context` 给未来的自己留话）；\n"
+                        "- 如果还有事没做完 → 立刻调相应工具去做（不要只写文字）。\n\n"
+                        "下一轮如果还空转，系统将不再提醒，直接结束本次醒。"
+                    )
+                    # 走 _sys_tool_call 模式: 不占 user message 槽, 与 entity_recall /
+                    # wake_signal 等系统提示同构(双写 audit 便于前端排查)。
+                    assistant_msg, tool_msg = self._sys_tool_call("sys_nudge", nudge)
+                    messages.append(assistant_msg)
+                    messages.append(tool_msg)
+                    if self.audit_ctx is not None:
+                        try:
+                            self.audit_ctx.recall("sys_nudge", nudge)
+                        except Exception:
+                            pass
+                    continue
+
                 return {"final_response": content, "tool_calls": tool_calls_seen, "status": "completed"}
 
             # 防瞎忙：检查本轮所有 tool_call 是否都是 sense-only 类
@@ -374,6 +444,20 @@ class AIAgent:
                 name = function.get("name") or ""
                 arguments = self._parse_arguments(function.get("arguments"))
                 result = registry.dispatch(name, arguments, session_id=session_id)
+                # V6 通用条件暴露: dispatch 后检测 preview=True + 工具声明了 reveals_tools_on
+                # → 自动把声明的工具加入条件暴露池, 下一轮模型能看到
+                # → 如果结果不含 preview (confirm/执行完毕) → 自动清空
+                try:
+                    result_json = json.loads(result) if isinstance(result, str) else result
+                    entry = registry._tools.get(name)
+                    if entry and getattr(entry, "reveals_tools_on", ()):
+                        if isinstance(result_json, dict) and result_json.get("preview"):
+                            self._conditionally_revealed_tools.update(entry.reveals_tools_on)
+                        elif isinstance(result_json, dict) and not result_json.get("preview"):
+                            # confirm/执行完毕, 清空条件暴露
+                            self._conditionally_revealed_tools.clear()
+                except Exception:
+                    pass
                 tool_calls_seen.append({"name": name, "arguments": arguments, "result": result})
                 messages.append({"role": "tool", "tool_call_id": call.get("id"), "name": name, "content": result})
                 self._append_message(session_id, "tool", result, tool_name=name, tool_call_id=call.get("id"))
@@ -804,13 +888,17 @@ class AIAgent:
     def _enabled_tool_names(self) -> list[str]:
         all_names = registry.get_all_tool_names()
         if not self.enabled_toolsets:
-            return all_names
-        selected: list[str] = []
-        toolsets = set(self.enabled_toolsets)
-        for name in all_names:
-            if registry.get_toolset_for_tool(name) in toolsets or name in toolsets:
-                selected.append(name)
-        return selected
+            base = list(all_names)
+        else:
+            selected: list[str] = []
+            toolsets = set(self.enabled_toolsets)
+            for name in all_names:
+                if registry.get_toolset_for_tool(name) in toolsets or name in toolsets:
+                    selected.append(name)
+            base = selected
+        # V6: 合并条件暴露工具 (rest preview 后动态加入)
+        base.extend(self._conditionally_revealed_tools)
+        return base
 
     def _ensure_tools_loaded(self) -> None:
         for module_name in (
@@ -1315,7 +1403,7 @@ class AIAgent:
         精简设计（每条 ~70-110 chars，含 preview；旧版 182-196 chars）：
         - 单行紧凑格式 ``{CMP} name=X id=Y pv="…" → recall_tool_result(ID)``
         - preview 固定保留 ``content[:40]``：实战发现不同 tool 的头部都有用 ——
-          ``terminal`` 是 zsh 错误或命令输出，``recall_entity`` 是 entity 名+summary，
+          ``terminal`` 是 zsh 错误或命令输出，``sense_entity`` 是 entity 名+summary，
           ``express_to_human`` 是 sent 状态。短到 40 chars 不显著拖 token，但让模型
           能不调 recall 就粗判"这条工具结果的语义"，避免老去拉原文。
         - tid 仅出现一次（旧版末尾 recall 重复了一次 tool_call_id）。
@@ -1711,6 +1799,28 @@ class AIAgent:
                     logger.debug("Failed to dual-write wake_signal", exc_info=True)
 
 
+    # 休息/待命意图关键字——当模型说完这些语义又不调 rest 工具时, 系统兜底提示一次。
+    # 故意宽匹配, 宁可多提示一次也别让空转溜过去。
+    _IDLE_INTENT_KEYWORDS = (
+        "休息", "待命", "待机", "睡觉", "睡了", "先休", "等一下", "等到", "等下",
+        "等明天", "等闹钟", "等timer", "等 timer", "暂停", "停一下", "稍后",
+        "待会儿", "稍后处理", "进入休", "准备休", "进入待",
+        "rest", "wait", "pending", "hold", "standby", "pause", "no action",
+        "nothing to", "no further", "no more", "all done", "已完成全部",
+        "无事可做", "无待", "无任务",
+    )
+
+    def _looks_like_idle_intent(self, content: str) -> bool:
+        """判断模型最后 assistant content 是否表达"准备休息/待命/等"等空转语义。
+
+        触发场景: 模型说"我准备 rest 了 / 等下个闹钟 / 待命" 等意图性文案
+        但实际没调 rest 工具就结束本轮。这种情况应触发兜底让模型明确做选择。
+        """
+        if not content or not isinstance(content, str):
+            return False
+        text = content.lower()
+        return any(kw.lower() in text for kw in self._IDLE_INTENT_KEYWORDS)
+
     def _notify_manual_events(self, events: list[dict], messages: list[dict[str, Any]]) -> None:
         """Notify about non-message events as tool result (no auto-consume)."""
         lines: list[str] = ["[新事件 — 会话中途到达]"]
@@ -1778,32 +1888,71 @@ class AIAgent:
         # 包含模型的关注点——是 entity 匹配最强信号。现在 reasoning_content 直接在
         # assistant msg 里（_strip_old_reasoning 保留最近 N 轮），只要它还没被 strip
         # 就纳入扫描。
+        # **重要**: 必须剥离 self-injected breadcrumbs ("🎯[...]", "[联想命中]", "命中:",
+        # "[命中:" 等),否则下一轮 query 会因为轮上下文含上一轮的 breadcrumbs,
+        # 提取到 "rest"/"闹钟"/"止损" 等被自身注入的"实体" → 回音污染召回结果。
+        # review 2026-07-23 用户反馈"召回内容场景略有偏差"的真根因。
+        _BREADCRUMB_MARKERS = (
+            "🎯[", "[联想命中", "[命中:", "命中:", "score=", "[统一召回]",
+            "[Route A", "如需更多调 sense_entity",
+        )
+
+        def _strip_breadcrumbs(text: str) -> str:
+            """从 text 里抽出纯净的对话内容, 去掉 breadcrumb 注入的面包屑。"""
+            if not text:
+                return ""
+            # 直接抽行级: 任何包含 markers 的行整行删
+            out_lines = []
+            for ln in text.split("\n"):
+                if any(m in ln for m in _BREADCRUMB_MARKERS):
+                    continue
+                out_lines.append(ln)
+            return "\n".join(out_lines).strip()
+
         thinking_texts: list[str] = []
         other_texts: list[str] = []
         for m in new_messages:
-            if m.get("role") == "assistant":
+            role = m.get("role")
+            # tool 返回是 JSON/terminal 噪声, 不参与联想 query 文本构造
+            if role == "tool":
+                continue
+            if role == "assistant":
                 # 优先 reasoning_content（模型真实的推理过程），fallback 到 content
                 content = (m.get("reasoning_content") or m.get("content") or "")
             else:
                 content = m.get("content", "")
-            if isinstance(content, str) and len(content.strip()) >= 30:
-                if m.get("role") == "assistant":
+            if not isinstance(content, str):
+                continue
+            # 剥离已注入的 breadcrumbs → 防回音污染
+            content = _strip_breadcrumbs(content)
+            if len(content.strip()) >= 30:
+                if role == "assistant":
                     thinking_texts.append(content)
                 else:
                     other_texts.append(content)
 
-        # Build context: thinking first (higher priority), other second
-        context_parts: list[str] = []
-        if thinking_texts:
-            context_parts.extend(thinking_texts[-2:])  # last 2 rounds of thinking
+        # 三轮分权重联想: 从最近 3 轮对话(user+assistant, 不含 tool 返回)分别 recall
+        # 早一轮权重更低, 让近期焦点真正相关的认知优先浮出
+        # tool 返回含大量 JSON/terminal 输出噪声, 不纳入联想 query
+        turn_queries: list[tuple[str, float]] = []  # (query_text, weight)
         if other_texts:
-            context_parts.extend(other_texts[-3:])  # last 3 other messages
+            # other_texts 含 user 消息 + assistant 文本 (不含 tool_result)
+            for i in range(1, min(4, len(other_texts) + 1)):
+                text_chunk = other_texts[-i]
+                if len(text_chunk.strip()) >= 20:
+                    weight = 1.0 if i == 1 else (0.7 if i == 2 else 0.5)
+                    turn_queries.append((text_chunk[-500:], weight))
+        if thinking_texts and len(thinking_texts) >= 1:
+            t = thinking_texts[-1]
+            if len(t.strip()) >= 20:
+                turn_queries.append((t[-500:], 0.8))
 
-        if not context_parts:
+        if not turn_queries:
             return
 
-        combined = " ".join(context_parts)
-        if len(combined) < 30:
+        # 合并 entities 用于 attention boost
+        combined_all = " ".join(q for q, _ in turn_queries)
+        if len(combined_all) < 30:
             return
 
         try:
@@ -1814,7 +1963,7 @@ class AIAgent:
         except ImportError:
             return
 
-        entities = extract_entities_from_context(combined)
+        entities = extract_entities_from_context(combined_all)
 
         # 合并预查结果——dispatch 并行阶段已提前从 reasoning 提取的实体
         if self._prefetched_entities:
@@ -1835,7 +1984,7 @@ class AIAgent:
 
         memories = query_entities_ranked(
             new_entities,
-            current_context=combined,
+            current_context=combined_all,
             exclude_ids=self._injected_memory_ids,
             limit=3,
         )
@@ -1844,7 +1993,7 @@ class AIAgent:
 
         # Format as detail block — entity name + matched memory snippet + type tag.
         # 用户原设计:联想命中要返详情,不只名字。模型在 turn 中能直接看到关联记忆,
-        # 不必再调 recall_entity('名字') 二次拉 (那一步本来基本不发生)。
+        # 不必再调 sense_entity('名字') 二次拉 (那一步本来基本不发生)。
         # 每个 memory 用 200 字 snippet (足以看到关键结论,不至于过长占 token)
         if new_entities:
             # 删旧的 entity_recall pair——按 name + sys_ 前缀过滤，
@@ -1876,14 +2025,28 @@ class AIAgent:
                 from domain.memory.memory.recall.unified import (
                     unified_recall, render_breadcrumbs,
                 )
-                unified_results = unified_recall(
-                    combined,
-                    attention_tokens=new_entities,
-                    exclude_chunk_ids=self._injected_memory_ids_as_chunk_ids(),
-                    budget_kind="passive",
-                )
+                # 三轮分权重联想: 逐轮 recall + 综合评分
+                # 近期 turn 权重更高, 让真正相关的认知优先浮出
+                all_results_map: dict[int, dict] = {}  # chunk_id → best result
+                for turn_text, turn_weight in turn_queries:
+                    turn_hits = unified_recall(
+                        turn_text,
+                        attention_tokens=new_entities,
+                        exclude_chunk_ids=self._injected_memory_ids_as_chunk_ids(),
+                        budget_kind="passive",
+                        cognition_only=True,
+                    )
+                    for h in turn_hits:
+                        cid = h.get("chunk_id", -1)
+                        weighted_score = h.get("final_score", 0) * turn_weight
+                        if cid not in all_results_map or weighted_score > all_results_map[cid].get("_weighted", 0):
+                            h["_weighted"] = weighted_score
+                            all_results_map[cid] = h
+                # 排序取 top
+                sorted_results = sorted(all_results_map.values(),
+                                        key=lambda x: x.get("_weighted", 0), reverse=True)
                 entity_breadcrumbs = render_breadcrumbs(
-                    unified_results, new_entities=new_entities
+                    sorted_results[:10], new_entities=new_entities
                 )
             except Exception as ue:
                 logger.warning(
@@ -1908,7 +2071,7 @@ class AIAgent:
                         lines.append(f"🎯 [{mtype}]{tag} {snippet}")
                 lines.append(
                     f"(🎯触发: {len(new_entities)} 实体/{len(memories)} 条"
-                    "。如需更多调 recall_entity('实体名'))"
+                    "。如需更多调 sense_entity('实体名'))"
                 )
                 entity_breadcrumbs = "\n".join(lines)
 

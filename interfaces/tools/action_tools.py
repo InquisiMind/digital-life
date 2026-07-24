@@ -398,8 +398,23 @@ def _handle_express_to_human(args: Dict[str, Any], **context) -> str:
     text = (args.get("text") or "").strip()
     channel = (args.get("channel") or "").strip()
     chat_id_arg = (args.get("chat_id") or "").strip()
-    wait_minutes = int(args.get("wait_minutes", 5))
-    wait_minutes = max(0, min(wait_minutes, 15))  # clamp to [0, 15], 0 = don't create awaiting_reply
+    # ⚠ awaiting_reply 参数解析
+    # 模型用 wait_reply 显式表达意图: "auto" / "none" / 数字分钟数
+    # 三种值:
+    #   "auto" (默认): 系统自动判断——私聊等5min; 群聊@了真人等5min; 群聊没@真人不等
+    #   "none": 明确不等(同步信息/通知类, 不需要回复)
+    #   数字(N): 明确等N分钟(1-15)
+    wait_reply_raw = str(args.get("wait_reply", "auto")).strip().lower()
+    if wait_reply_raw in ("none", "no", "false", "0"):
+        wait_minutes = 0
+    elif wait_reply_raw in ("auto", ""):
+        wait_minutes = -1  # 哨兵: 表示需要走自动策略(下面 channel 确定后判定)
+    else:
+        try:
+            wait_minutes = max(0, min(int(wait_reply_raw), 15))
+        except ValueError:
+            wait_minutes = -1  # 解析失败 fallback to auto
+
     # mention_user_ids：模型可在消息里 @ 其他 user/bot（飞书群聊场景）
     raw_mentions = args.get("mention_user_ids") or []
     if isinstance(raw_mentions, str):
@@ -554,6 +569,18 @@ def _handle_express_to_human(args: Dict[str, Any], **context) -> str:
                 ),
                 "candidates": _candidates,
             })
+
+    # ── awaiting_reply 自动策略(在 channel 确定后, mention 解析完) ──
+    # wait_minutes=-1 表示模型选了 "auto", 需要根据通道+@情况自动判定
+    if wait_minutes == -1:
+        is_dm = ":dm:" in channel or channel.split(":")[-1].startswith("ou_")
+        mentioned_specific = bool(mention_user_ids)
+        if is_dm or mentioned_specific:
+            wait_minutes = 5  # 私聊 或 群聊@真人 → 等5min
+        else:
+            wait_minutes = 0  # 群聊没@真人 → 不等
+        logger.info("express_to_human: awaiting_reply auto → %dmin (dm=%s, @human=%s)",
+                     wait_minutes, is_dm, mentioned_specific)
 
     # ── 发送前校验（通道已 100% 确定，此刻执行顺序：先未读消息，再目标通道是否查看过）──
     # 从已解析 channel 反解目标 chat_id（形如 lark:group:oc_xxx → oc_xxx）。
@@ -1127,7 +1154,19 @@ registry.register(
                         "另一简单用法：text 里直接写 '@displayName'（如 '@zero'），系统自动转 <at> 标签。"
                     ),
                 },
-                "wait_minutes": {"type": "integer", "description": "等待回复时间，默认5分钟，最大15分钟", "default": 5},
+                "wait_reply": {
+                    "type": "string",
+                    "description": (
+                        "发出消息后是否等待真人回复。awaiting_reply 闹钟到期没收到回复会叫醒你做别的。\n"
+                        "可选值:\n"
+                        "  - 'auto' (默认): 系统自动判断——私聊等5min; 群聊@了真人等5min; 群聊没@真人不等。\n"
+                        "  - 'none': 明确不等(通知/同步/闲聊类消息)。\n"
+                        "  - 数字(1-15): 明确等N分钟。\n"
+                        "判断规则: 你发消息是否期待对方回应?\n"
+                        "  期待→填 'auto' 或具体分钟数; 不期待(同步/报告/通知)→填 'none'。"
+                    ),
+                    "default": "auto",
+                },
             },
             "required": ["text"],
         },
@@ -1142,20 +1181,25 @@ registry.register(
 # ──────────────────────────────── write_diary ────────────────────────────────
 
 def _handle_write_diary(args: Dict[str, Any], **_) -> str:
-    text = (args.get("text") or "").strip()
-    if not text:
-        return registry.tool_error("text is required")
+    text = args.get("text") or ""
+    mode = (args.get("mode") or "replace").strip()
+    if mode not in ("replace", "append"):
+        mode = "replace"
+    if mode == "replace" and not text.strip():
+        return registry.tool_error("text is required (replace mode 需要完整正文)")
 
     snap = vitals.consume_energy(ENERGY_COST_PER_CALL)
     entities = args.get("entities")
     if entities and isinstance(entities, list):
-        _diary(text, entities=entities)
+        _diary(text, entities=entities, mode=mode)
     else:
-        _diary(text)
+        _diary(text, mode=mode)
 
+    note = f"今日日记已{'覆写' if mode == 'replace' else '追加一段'}，精力消耗 {ENERGY_COST_PER_CALL:.0f}"
     return _j({
         "ok": True,
-        "note": f"记在日记里，精力消耗 {ENERGY_COST_PER_CALL:.0f}",
+        "mode": mode,
+        "note": note,
         "energy": round(snap.energy, 1),
     })
 
@@ -1165,19 +1209,33 @@ registry.register(
     toolset="actions",
     schema={
         "name": "write_diary",
-        "description": "写日记(diary/YYYY-MM-DD.md, 按天分文件)。只给自己看, 不发给任何人。晚间复盘(self_review)时必写一段: 今天做了什么/学到什么/明天重点。消耗精力。",
+        "description": (
+            "写/编辑今日日记 (diary/YYYY-MM-DD.md, 按天分文件, 只给自己看不发任何人)。"
+            "默认 replace 模式: 用 text 整体替换今日日记正文, 就像编辑一份文件——"
+            "你能任意编辑/追加/删除段落, 由你自己负责组织全文。\n"
+            "工作流: 先 sense_memory 读今日日记 → 局部改 → write_diary(text=改后全文, mode=replace)。\n"
+            "晚间复盘(self_review)时必写一段连贯的今日总结(今天做了什么/学到什么/明天重点)。\n"
+            "mode=append: 追加一条 `## 时间戳` 碎片段, 用于快速插入不动既有内容。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
-                "text": {"type": "string", "description": "日记内容"},
+                "text": {"type": "string", "description": "日记正文。replace 模式下是今日完整正文; append 模式下是一条碎片"},
+                "mode": {
+                    "type": "string",
+                    "enum": ["replace", "append"],
+                    "default": "replace",
+                    "description": "replace=覆写今日正文(编辑/重写/删除从改全文自然实现); append=追加一条碎片段",
+                },
                 "entities": {"type": "array", "items": {"type": "string"}, "description": "关联的实体"},
             },
-            "required": ["text"],
+            "required": ["text", "mode"],
         },
     },
     handler=_handle_write_diary,
     check_fn=lambda: True,
     emoji="📔",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -1402,6 +1460,7 @@ registry.register(
     handler=_handle_update_scratchpad,
     check_fn=lambda: True,
     emoji="📋",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -1774,12 +1833,55 @@ def _handle_update_rules(args: Dict[str, Any], **_) -> str:
     else:
         _update_rules(text, mode=mode)
 
+    # 兼容层: 同步写入认知库 (新统一入口) — 让规则可被联想命中
+    # mode='replace' 整体覆盖的场景里,逐条追加更合理:模型单条写入即可
+    cog_note = ""
+    if mode == "append":
+        try:
+            from domain.memory.memory.recall.unified.cognition_store import add_cognition_direct
+            entity_links = entities if isinstance(entities, list) else []
+            # V2 (2026-07-23): 透传 payload, 让规则可被精确去重/冲突检测
+            # 模型给的 entities 列表会自动拼出 cog_key(如 ["金开新能"] + 文本前缀)
+            payload = _build_rule_payload(args, entities)
+            cog_result = add_cognition_direct(
+                text=text, entity_links=entity_links, source="rule",
+                payload=payload,
+            )
+            if cog_result.get("duplicate_warning"):
+                cog_note = " " + cog_result["duplicate_warning"]
+            elif cog_result.get("conflict_warning"):
+                cog_note = " " + cog_result["conflict_warning"]
+        except Exception:
+            pass
+
     return _j({
         "ok": True,
         "mode": mode,
-        "note": f"行为规则已更新（{mode}）",
+        "note": f"行为规则已更新（{mode}）" + cog_note,
         "energy": round(snap.energy, 1),
     })
+
+
+def _build_rule_payload(args: Dict[str, Any], entities: Any) -> dict | None:
+    """V2: 从 update_rules 入参构造认知 payload (cog_key + value)。
+
+    规则类认知大多有清晰的 subject:predicate 形态, 把 entities[0] 当 subject,
+    并用模糊 predicate 推断(如"止损"→ stop_loss_line, "仓位"→ position_size)。
+
+    若无法推 cog_key → 返回 None, 走 V1 兜底。
+    """
+    p = args.get("payload")
+    if isinstance(p, dict) and p.get("key"):
+        # 模型直接给了完整 payload — 优先用
+        return p
+    # 简单启发式: 用第一个 entity + 文本提取一个粗粒度 predicate
+    if not isinstance(entities, list) or not entities:
+        return None
+    subject = str(entities[0]).strip()
+    if not subject or len(subject) > 20:
+        return None
+    # 不强行造 predicate(会乱); 让模型有需要时自己手动写 payload
+    return None
 
 
 registry.register(
@@ -1791,7 +1893,10 @@ registry.register(
             "更新长期行为规则。这些规则在每次唤醒时都会被注入，帮助你保持行为一致性。"
             "每条规则应包含：什么场景下、应该怎么做、为什么、违反的后果。"
             "mode='append' 追加一条，mode='replace' 整体替换。"
-            "用 evening_review 和 weekly_review 来积累规则，不要频繁改动。"
+            "用 evening_review 和 weekly_review 来积累规则，不要频繁改动。\n\n"
+            "(V2 可选) 关键参数类规则(如止损线/仓位/汇报时间)可加 payload 字段, "
+            "形如 {\"payload\": {\"key\": \"金开新能:stop_loss_line\", \"value\": -0.07}}, "
+            "供精确去重/冲突检测。纯语气/沟通类规则无需 payload。"
         ),
         "parameters": {
             "type": "object",
@@ -1799,6 +1904,16 @@ registry.register(
                 "text": {"type": "string", "description": "规则内容"},
                 "mode": {"type": "string", "description": "append 或 replace", "enum": ["append", "replace"]},
                 "entities": {"type": "array", "items": {"type": "string"}, "description": "关联的实体，用于后续检索"},
+                "payload": {
+                    "type": "object",
+                    "description": "(V2 可选) 结构化主键, 用于参数类规则的精确去重/冲突检测。格式同 add_cognition",
+                    "properties": {
+                        "key": {"type": "string", "description": "subject:predicate"},
+                        "value": {"description": "任意 JSON"},
+                        "polarity": {"type": "string", "enum": ["positive", "negative", "neutral"], "description": "极性(embedding 分不开 positive/negative)"},
+                    },
+                    "required": ["key"],
+                },
             },
             "required": ["text"],
         },
@@ -1806,6 +1921,7 @@ registry.register(
     handler=_handle_update_rules,
     check_fn=lambda: True,
     emoji="📜",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -1843,6 +1959,7 @@ registry.register(
     handler=_handle_update_context,
     check_fn=lambda: True,
     emoji="📋",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -1856,20 +1973,45 @@ def _handle_add_lesson(args: Dict[str, Any], **_) -> str:
     snap = vitals.consume_energy(ENERGY_COST_PER_CALL)
     entities = args.get("entities")
     section = (args.get("section") or "other").strip().lower()
+
+    # 兼容层: 同时写 LESSONS.md(旧 human-readable) + add_cognition(新认知库)
     if entities and isinstance(entities, list):
         _add_lesson(text, entities=entities, section=section)
     else:
         _add_lesson(text, section=section)
 
+    # 同步写入认知库 (新统一入口)
+    cog_result = None
+    try:
+        from domain.memory.memory.recall.unified.cognition_store import add_cognition_direct
+        entity_links = entities if isinstance(entities, list) else []
+        if not entity_links:
+            entity_links = [section]
+        # V2 (2026-07-23): 透传模型给的 payload (参数/版本/工具特定键的教训)
+        payload = args.get("payload")
+        if payload is not None and not isinstance(payload, dict):
+            try:
+                import json as _json
+                payload = _json.loads(payload)
+            except Exception:
+                payload = None
+        # 安全校验: 空 dict / 无 key → 视为无 payload
+        if isinstance(payload, dict) and not payload.get("key"):
+            payload = None
+        cog_result = add_cognition_direct(
+            text=text, entity_links=entity_links, source="lesson",
+            payload=payload,
+        )
+    except Exception:
+        pass  # 认知库写入失败不阻塞旧路径
+
     # 写入纪律提示:同 section 同主题超阈 → 提示合并而非新写
     warning = ""
     try:
-        from pathlib import Path as _P
         from domain.memory.memory.consciousness.runtime import _get_runtime_home
         les_path = _get_runtime_home() / "memories" / "LESSONS.md"
         if les_path.exists():
             text_full = les_path.read_text(encoding="utf-8")
-            # 同 section 条数 (粗略)
             section_titles = {
                 "trading": "交易策略", "system": "代码工程", "tool": "工具使用",
                 "workflow": "工作方式", "rule": "沟通规则", "other": "其他",
@@ -1883,10 +2025,18 @@ def _handle_add_lesson(args: Dict[str, Any], **_) -> str:
     except Exception:
         pass
 
+    # 如有重复/冲突警告,加到文明提示里
+    if cog_result:
+        if cog_result.get("duplicate_warning"):
+            warning += " " + cog_result["duplicate_warning"]
+        elif cog_result.get("conflict_warning"):
+            warning += " " + cog_result["conflict_warning"]
+
     return _j({
         "ok": True,
         "note": "经验教训已记录。" + warning,
         "energy": round(snap.energy, 1),
+        "cognition_chunk_id": cog_result.get("new_chunk_id") if cog_result else None,
     })
 
 
@@ -1895,7 +2045,13 @@ registry.register(
     toolset="actions",
     schema={
         "name": "add_lesson",
-        "description": "记录一条可迁移的经验教训。长期积累,每次唤醒时自动注入最近 3 条。LESSONS.md 按 section 主题分节存,请选最贴切的 section。",
+        "description": (
+            "记录一条可迁移的经验教训。长期积累,每次唤醒时自动注入最近 3 条。"
+            "LESSONS.md 按 section 主题分节存,请选最贴切的 section。\n\n"
+            "(V2 可选) 数值/参数类教训(如某工具的ideal参数/某个版本号/某个频率)可带 payload,"
+            "形如 {\"payload\": {\"key\": \"execute_buyscript:optimal_position_pct\", \"value\": 12.5}}, "
+            "供未来精确去重/冲突检测。纯叙述类教训无需 payload。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -1906,6 +2062,16 @@ registry.register(
                     "enum": ["trading", "system", "tool", "workflow", "rule", "other"],
                 },
                 "entities": {"type": "array", "items": {"type": "string"}, "description": "关联的实体,用于后续检索。如股票代码、工具名、概念名等"},
+                "payload": {
+                    "type": "object",
+                    "description": "(V2 可选) 结构化主键, 用于参数/版本号的教训的精确去重。格式同 add_cognition",
+                    "properties": {
+                        "key": {"type": "string", "description": "subject:predicate"},
+                        "value": {"description": "任意 JSON"},
+                        "polarity": {"type": "string", "enum": ["positive", "negative", "neutral"], "description": "判断极性"},
+                    },
+                    "required": ["key"],
+                },
             },
             "required": ["text"],
         },
@@ -1913,6 +2079,7 @@ registry.register(
     handler=_handle_add_lesson,
     check_fn=lambda: True,
     emoji="💡",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -1969,6 +2136,7 @@ registry.register(
     handler=_handle_add_insight,
     check_fn=lambda: True,
     emoji="✨",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -2008,6 +2176,7 @@ registry.register(
     handler=_handle_update_self_knowledge,
     check_fn=lambda: True,
     emoji="🪞",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -2135,6 +2304,7 @@ registry.register(
     handler=_handle_read_archive,
     check_fn=lambda: True,
     emoji="📦",
+    schema_visible=False,  # V6 工具精简: 降级
 )
 
 
@@ -2203,6 +2373,7 @@ registry.register(
     handler=_handle_recall_tool_result,
     check_fn=lambda: True,
     emoji="🔍",
+    schema_visible=False,  # V6 工具精简: 降级
     # 召回的就是「当初被压掉的全量」，不能用默认 8KB 再截一道——
     # 否则花一次调用却还是拿不到完整内容，召回机制失效。
     max_result_size_chars=50000,
@@ -2859,6 +3030,7 @@ registry.register(
     handler=_handle_rest,
     check_fn=lambda: True,
     emoji="😴",
+    reveals_tools_on=["record_thought"],  # V6: preview 时暴露"写思绪"
 )
 
 

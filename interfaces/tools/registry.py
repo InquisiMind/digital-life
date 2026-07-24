@@ -45,6 +45,20 @@ class ToolEntry:
     用于"退役工具向新家转发"过渡期——模型看不到 schema 自然不会主动调,
     但旧 session 的历史 tool_call 重放 / 模型偶尔幻觉调用时,handler 仍工作。
     """
+    reveals_tools_on: tuple[str, ...] = ()
+    """V6 条件暴露规范: 声明"当本工具返回 preview=True 时, 自动暴露这些工具给模型"。
+
+    通用机制, 不是定制通信:
+      1. 工具注册方在这里声明 reveals_tools_on=["tool_a", "tool_b"]
+      2. 工具 handler 在需要交互时返回 {"preview": True, ...}
+      3. agent.dispatch 后自动检测: preview=True + 有声明 → 加入条件暴露池
+      4. 下一轮 _enabled_tool_names 自动合并
+      5. confirm/执行后 (preview 消失) 自动清空
+
+    典型场景:
+      rest(reveals_tools_on=["record_thought"]) — 睡前提示卡后暴露"写思绪"
+      未来任何工具想做交互式, 只需声明此字段 + 返回 preview=True
+    """
 
 
 class ToolRegistry:
@@ -67,6 +81,7 @@ class ToolRegistry:
         emoji: str = "",
         max_result_size_chars: int | float | None = None,
         schema_visible: bool = True,
+        reveals_tools_on: list[str] | tuple[str, ...] | None = None,
         **metadata: Any,
     ) -> None:
         self._tools[name] = ToolEntry(
@@ -82,6 +97,7 @@ class ToolRegistry:
             max_result_size_chars=max_result_size_chars,
             metadata=dict(metadata),
             schema_visible=schema_visible,
+            reveals_tools_on=tuple(reveals_tools_on or ()),
         )
         if check_fn and toolset not in self._toolset_checks:
             self._toolset_checks[toolset] = check_fn

@@ -10,27 +10,22 @@ from __future__ import annotations
 
 
 CORE_TOOLS = [
-    "sense_wake_reason",
-    "sense_vitals",
-    "sense_time",
-    "sense_event_queue",
-    "sense_event_detail",
-    "sense_self",
-    "sense_memory",
-    "sense_nurture_log",
-    "sense_scratchpad",
-    "sense_todos",
-    "skills_list",
-    "skill_view",
-    "express_to_human",
-    "write_diary",
-    "record_thought",
-    "update_scratchpad",
-    "todo",
-    "todo_note",
-    "todo_plan",
-    "todo_trigger",
-    "rest",
+    # 写入
+    "add_cognition", "record_thought",
+    # 覆盖/删除
+    "supersede_memory", "mark_obsolete", "delete_cognition",
+    # 召回
+    "recall_memory", "recall_cognition_by_key", "find_conflict_buckets", "search_history",
+    # 感知
+    "sense_file", "sense_status", "sense_conversation", "sense_entity",
+    "sense_social_feed", "sense_schedule", "sense_my_projects", "sense_my_tools", "sense_image",
+    # 文件
+    "write_file",
+    # 行动
+    "express_to_human", "rest", "terminal", "execute_code", "process",
+    "register_attachment", "register_tool",
+    # 技能
+    "skill_view", "skills_list", "register_skill",
 ]
 
 

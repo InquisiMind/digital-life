@@ -117,6 +117,8 @@ def _ensure_schema(instance_id: str | None = None) -> None:
                     ON messages(chat_id, ts DESC);
                 CREATE INDEX IF NOT EXISTS idx_messages_chat_id_ts
                     ON messages(chat_id, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_messages_sender_dir
+                    ON messages(platform_sender, direction, id DESC);
             """)
             # 多模态附件：多模态消息进来时存 attachment_id 列表（JSON array）
             # migration：老库表已存在时补列。ALTER TABLE ADD COLUMN 没有 IF NOT EXISTS
@@ -335,6 +337,76 @@ def list_messages(chat_id: str, limit: int = 30) -> list[dict]:
         conn.close()
 
 
+def last_inbound_per_sender(senders: list[str]) -> dict[str, dict]:
+    """批量查询每个 platform_sender 的最后一条入站消息。
+
+    用途: ContactsTab 展示"这人最近说了啥"——靠最近一条入站消息的内容、时间、
+    所在 chat 类型(dm/group) 来辨识联系人。
+
+    实现走单次 self-join (一次 SQL 取 N 个 sender 的 last inbound):
+      SELECT m.* FROM messages m JOIN (
+        SELECT platform_sender, MAX(id) AS max_id FROM messages
+        WHERE direction='in' AND platform_sender IN (?,?,...) GROUP BY platform_sender
+      ) latest ON m.id = latest.max_id
+    走 idx_messages_sender_dir(platform_sender, direction, id DESC), 毫秒级。
+
+    Args:
+        senders: 一批 platform_id (feishu: ou_xxx / on_xxx)。空列表直接返回 {}。
+
+    Returns:
+        {platform_id: {id, ts, text, sender_name, chat_id, chat_kind}}.
+        chat_kind 由 chat_id 前缀判定: oc_* → "group", ou_/on_* → "dm", 其它 → "".
+        没有 inbound 消息的 sender 不出现在返回 dict 中。
+    """
+    senders = [s for s in senders if s]
+    if not senders:
+        return {}
+    _ensure_schema()
+    p = messages_db_path()
+    conn = sqlite3.connect(str(p))
+    conn.row_factory = sqlite3.Row
+    try:
+        placeholders = ",".join("?" * len(senders))
+        rows = conn.execute(
+            f"""
+            SELECT m.id, m.ts, m.text, m.sender_name, m.chat_id, m.platform_sender
+            FROM messages m JOIN (
+                SELECT platform_sender, MAX(id) AS max_id
+                FROM messages
+                WHERE direction='in' AND platform_sender IN ({placeholders})
+                GROUP BY platform_sender
+            ) latest ON m.id = latest.max_id
+            """,
+            senders,
+        ).fetchall()
+    except Exception:
+        return {}
+    finally:
+        conn.close()
+
+    def _chat_kind(chat_id: str) -> str:
+        cid = (chat_id or "").lower()
+        if cid.startswith("oc_"):
+            return "group"
+        if cid.startswith(("ou_", "on_")):
+            return "dm"
+        return ""
+
+    result: dict[str, dict] = {}
+    for r in rows:
+        pid = r["platform_sender"]
+        chat_id = r["chat_id"] or ""
+        result[pid] = {
+            "id": r["id"],
+            "ts": r["ts"],
+            "text": r["text"] or "",
+            "sender_name": r["sender_name"] or "",
+            "chat_id": chat_id,
+            "chat_kind": _chat_kind(chat_id),
+        }
+    return result
+
+
 def list_plain_text(chat_id: str, limit: int = 30) -> str:
     """格式化成 chat_stream 段渲染需要的纯文本。
 
@@ -376,4 +448,5 @@ __all__ = [
     "record_broadcast_in",
     "list_messages",
     "list_plain_text",
+    "last_inbound_per_sender",
 ]

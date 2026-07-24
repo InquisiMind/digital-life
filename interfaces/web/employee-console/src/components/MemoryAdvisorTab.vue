@@ -2,7 +2,6 @@
   <div class="memory-advisor">
     <header class="advisor-toolbar">
       <div class="toolbar-left">
-        <h2>记忆顾问</h2>
         <span class="hint">把零散的意识碎片压缩成「概念」。profile 是模型每次联想直接读到的精华，碎片只是案底。</span>
       </div>
       <div class="toolbar-right">
@@ -394,9 +393,14 @@ function fragTypeTag(t) {
 
 .advisor-toolbar {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
+  padding: 8px 14px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-line);
+  border-left: 3px solid var(--neon-cyan);
+  border-radius: var(--radius);
 }
 .toolbar-left h2 {
   margin: 0;
@@ -407,11 +411,13 @@ function fragTypeTag(t) {
 }
 .toolbar-left .hint {
   font-size: var(--fs-xs);
-  color: var(--text-muted);
+  color: var(--text-secondary);
+  line-height: 1.5;
 }
 .toolbar-right {
   display: inline-flex;
   gap: 4px;
+  flex-shrink: 0;
 }
 
 .search-row {
@@ -497,22 +503,23 @@ function fragTypeTag(t) {
   align-items: baseline;
   gap: 12px;
   margin-bottom: var(--space-3);
-  border-bottom: 1px solid var(--border-divider);
-  padding-bottom: 8px;
+  padding: 6px 0 10px;
+  border-bottom: 2px solid var(--neon-cyan);
 }
-.ent-head h3 { margin: 0; font-size: var(--fs-lg); font-weight: 600; color: var(--text-primary); }
+.ent-head h3 { margin: 0; font-size: var(--fs-lg); font-weight: 700; color: var(--text-primary); letter-spacing: 0.02em; }
 .ent-head .kind {
-  font-size: var(--fs-xs);
+  font-size: 10px;
   background: var(--neon-cyan-soft);
   color: var(--neon-cyan);
-  padding: 1px 6px;
-  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  border-radius: 8px;
   font-family: var(--font-mono);
+  font-weight: 600;
 }
-.ent-head .aliases { font-size: var(--fs-xs); color: var(--text-muted); }
+.ent-head .aliases { font-size: var(--fs-xs); color: var(--text-muted); font-family: var(--font-mono); }
 
 .profile-card {
-  background: var(--bg-deep);
+  background: var(--bg-panel);
   border: 1px solid var(--border-line);
   border-left: 3px solid var(--neon-cyan);
   border-radius: var(--radius);
@@ -535,23 +542,28 @@ function fragTypeTag(t) {
   font-size: var(--fs-sm);
   color: var(--text-primary);
   line-height: 1.6;
-  background: var(--bg-panel);
-  padding: 8px 10px;
+  background: var(--bg-deep);
   border-radius: var(--radius-sm);
+  padding: 10px 12px;
   margin-bottom: var(--space-2);
 }
 .profile-facts {
   margin: 4px 0 0;
-  padding-left: 20px;
+  padding: 4px 12px 4px 28px;
   font-size: var(--fs-xs);
   color: var(--text-secondary);
   line-height: 1.6;
+  list-style: '› ';
 }
 .profile-extra {
-  margin-top: 4px;
-  font-size: var(--fs-xs);
+  margin-top: 6px;
+  font-size: 10px;
   font-family: var(--font-mono);
   color: var(--neon-magenta);
+  background: var(--bg-deep);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  display: inline-block;
 }
 .profile-edit {
   display: flex;
@@ -573,12 +585,12 @@ function fragTypeTag(t) {
   text-transform: uppercase;
 }
 .frag-item {
-  border-left: 2px solid var(--border-line-strong);
-  padding: 4px 8px;
+  border-left: 2px solid var(--neon-magenta);
+  background: var(--bg-panel);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
   margin: 4px 0;
   font-size: var(--fs-xs);
-  background: var(--bg-panel);
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 .frag-meta {
   display: flex;
@@ -586,9 +598,10 @@ function fragTypeTag(t) {
   align-items: center;
   font-size: 10px;
   color: var(--text-muted);
+  margin-bottom: 2px;
 }
 .frag-meta .ts { font-family: var(--font-mono); }
-.frag-meta .verify { color: var(--neon-lime); }
+.frag-meta .verify { color: var(--neon-lime); font-weight: 600; }
 .frag-snippet {
   white-space: pre-wrap;
   word-break: break-word;
@@ -604,10 +617,11 @@ function fragTypeTag(t) {
 }
 
 .merge-card {
-  background: rgba(255, 182, 72, 0.08);
-  border: 1px solid rgba(255, 182, 72, 0.3);
+  background: rgba(255, 182, 72, 0.06);
+  border: 1px solid rgba(255, 182, 72, 0.25);
+  border-left: 3px solid rgba(255, 182, 72, 0.6);
   border-radius: var(--radius-sm);
-  padding: 8px 10px;
+  padding: 10px 12px;
   margin-top: var(--space-3);
   font-size: var(--fs-xs);
   color: var(--text-secondary);

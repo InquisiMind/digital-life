@@ -929,70 +929,17 @@ def _wake_digital_life_inner_safe(
         except Exception:
             pass
 
-        # 项目岗位上下文：把当前承担的岗位 + 协作伙伴清晰呈现，注入 persona 之后
-        # ——「我是谁」必须含「我是某项目的某岗位」，否则人格与职责脱节。
-        _role_positioning = ""
-        _project_direction = ""  # 目标+论断+KPI 进度 — 让模型每次 wake 都看到自己往哪走
-        try:
-            from domain.project.loader import load_all_projects
-            from infrastructure.config import get_instance_display_name
-            my_iid = instance_id or ""
-            roles_lines: list[str] = []
-            direction_lines: list[str] = []
-            for pid, cfg in load_all_projects().items():
-                if cfg.status != "active":
-                    continue
-                my_pos = cfg.get_position_for_instance(my_iid)
-                if not my_pos:
-                    continue
-                # 该项目其他岗位（我的协作者画像）
-                partners_lines: list[str] = []
-                for other_pos in cfg.positions:
-                    if other_pos.id == my_pos.id:
-                        continue
-                    for asg in other_pos.assignees:
-                        # 区分人类 vs 实例
-                        if asg.startswith("human:"):
-                            partner_label = "zhp"  # 目前只一个真人
-                            partner_role = other_pos.name
-                        else:
-                            partner_label = get_instance_display_name(asg) or asg[:8]
-                            partner_role = other_pos.name
-                        partners_lines.append(f"  · {partner_label}({partner_role})")
-                is_pm = "，**项目经理**" if cfg.manager == my_iid else ""
-                resp = "／".join(my_pos.responsibilities) if my_pos.responsibilities else "执行所在岗位职责"
-                head = f"💼 **{cfg.name}** 项目 — 担任 **{my_pos.name}**{is_pm}"
-                detail = f"  核心职责: {resp}"
-                partners_block = ""
-                if partners_lines:
-                    partners_block = "  协作者:\n" + "\n".join(partners_lines)
-                roles_lines.append("\n".join([head, detail, partners_block]))
-
-                # ── 项目方向段（只留目标一句话; 论断/KPI/节奏按需调 sense_project_detail）──
-                goal = cfg.goal or {}
-                if goal:
-                    gs = goal.get("statement", "")
-                    if gs:
-                        direction_lines.append(f"**{cfg.name}**：{gs}")
-            if roles_lines:
-                _role_positioning = (
-                    "### 你承担的职责\n\n"
-                    "下面是你目前主担的项目和岗位。每一段都该影响你的判断："
-                    "作为策略师优先论断和规划，作为架构师优先抽象和复用，作为交易员优先风控和执行。"
-                    "把岗位责任放在心上，与你的协作者分工推进。\n\n"
-                    + "\n\n".join(roles_lines)
-                )
-            if direction_lines:
-                _project_direction = "\n\n".join(direction_lines)
-        except Exception:
-            pass
+        # 项目职责已从 SYS prompt 移除 —— 合并到 todos 面板渲染(render_my_board 注入
+        # 项目分组头时附带「岗位 / 协作者 / 目标」一行)。语义更干净:
+        #   项目存在 ⟺ 待办里有它的任务; 没待办 = 项目"结项" → 职责/目标也从 prompt 消失
+        # 完整项目档案(论断/KPI/节奏)按需调 sense_project_detail。
 
         # 工作空间介绍 — 不再拼入 _full_system, 改为 slow_ctx 的 sys_tool 注入(见下方)
         _workspace_intro = _render_workspace_intro(instance_id or "")
 
-        # _full_system = L4 + persona + 职责 + 项目方向(只留目标) + skill_index
+        # _full_system = L4 + persona + skill_index (项目职责 / 目标 / 岗位信息由 todos 面板承担)
         _full_system = "\n\n".join(
-            p for p in [_l4_lifecycle, _persona, _role_positioning, _project_direction,
+            p for p in [_l4_lifecycle, _persona,
                         _skill_index] if p
         )
 
@@ -1019,8 +966,8 @@ def _wake_digital_life_inner_safe(
             pass
 
         # Start a new audit wake (dual-write alongside legacy session_db).
-        # 把 _full_system(L4_LIFECYCLE_PROMPT + persona + role_positioning
-        # + workspace + skill_index)全文直接放进 audit meta system_prompt_text,
+        # 把 _full_system(L4_LIFECYCLE_PROMPT + persona + skill_index)全文
+        # 直接放进 audit meta system_prompt_text,
         # 而非依赖 agent.py record_system_prompt(那个只在 system_message 非空时跑,
         # continuation session 走 system_for_agent=None 会跳过,导致前端"完整输入"
         # 只能走 persona_loader fallback,而后者只读 LIFE_PERSONA.md 文件不含 L4
@@ -1297,6 +1244,7 @@ def _wake_digital_life_inner_safe(
                     action_prompt,
                     system_message=system_for_agent,
                     conversation_history=prev_history or None,
+                    is_continuation=is_continuation,
                 )
             except Exception as e:
                 agent_error = e

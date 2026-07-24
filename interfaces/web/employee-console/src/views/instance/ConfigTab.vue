@@ -5,6 +5,24 @@
       <p class="page-subtitle">{{ shortId(iid, 8) }} 实例专属配置（messenger / 群聊 / 员工实例）</p>
     </section>
 
+    <!-- 社交接管: 授权飞书账号让数字生命接管 zhp 的全部 IM 消息 -->
+    <div class="neon-card" style="margin-bottom: var(--space-4); padding: var(--space-4);">
+      <h3 class="page-title" style="font-size: 16px; margin: 0 0 var(--space-3);">社交接管</h3>
+      <p class="brand-sub" style="color: var(--text-muted); margin-bottom: var(--space-3);">
+        接管真人飞书账号后, 数字生命将以真人身份拉取全部群 + P2P 私聊消息萹库,
+        每 30 分钟触发模型 review, 自动把值得追踪的消息落到待办。
+      </p>
+      <div v-if="socialLoading" class="brand-sub mono" style="color: var(--text-muted);">loading…</div>
+      <div v-else style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+        <el-tag v-if="socialStatus.authorized" type="success" effect="dark">已接管</el-tag>
+        <el-tag v-else type="info" effect="plain">未授权</el-tag>
+        <a v-if="socialStatus.oauth_url" :href="socialStatus.oauth_url" target="_blank" rel="noopener">
+          <el-button type="primary" size="small">{{ socialStatus.authorized ? '重新授权' : '⟶ 接管我的飞书' }}</el-button>
+        </a>
+        <el-button v-if="socialStatus.authorized" size="small" type="danger" plain :loading="socialRevoking" @click="revokeSocial">解除授权</el-button>
+      </div>
+    </div>
+
     <div v-if="loading" class="dev-placeholder"><span class="mono">loading…</span></div>
     <div v-else>
       <div v-for="section in instanceSections" :key="section.key" class="neon-card" style="margin-bottom: var(--space-4);">
@@ -79,6 +97,10 @@ const saving = ref(false)
 const wechatLoading = ref(false)
 const qrDialogVisible = ref(false)
 const qrCodeUrl = ref('')
+// 社交接管授权状态(ConfigTab 上方独立块)
+const socialStatus = ref({ authorized: false, oauth_url: '' })
+const socialLoading = ref(false)
+const socialRevoking = ref(false)
 const qrStatus = ref('')
 const allSections = ref([])
 const draft = ref({})
@@ -176,7 +198,29 @@ async function save() {
   } finally { saving.value = false }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadSocialStatus()
+})
+
+async function loadSocialStatus() {
+  socialLoading.value = true
+  try {
+    const d = await instanceApi(iid.value).socialStatus()
+    if (d && !d.error) socialStatus.value = { authorized: !!d.authorized, oauth_url: d.oauth_url || '' }
+  } finally { socialLoading.value = false }
+}
+
+async function revokeSocial() {
+  if (socialRevoking.value) return
+  socialRevoking.value = true
+  try {
+    const d = await instanceApi(iid.value).socialRevoke()
+    if (d && d.error) { ElMessage.error(d.error); return }
+    ElMessage.success(d.note || '已解除授权')
+    await loadSocialStatus()
+  } finally { socialRevoking.value = false }
+}
 </script>
 
 <style scoped>

@@ -18,7 +18,7 @@
       </div>
     </section>
 
-    <el-table :data="filteredContacts" style="width: 100%;" v-loading="loading"
+    <el-table :data="pagedFilteredContacts" style="width: 100%;" v-loading="loading"
       @selection-change="onSelectionChange">
       <el-table-column type="selection" width="40" />
       <el-table-column label="姓名" min-width="140">
@@ -52,6 +52,24 @@
           <span v-else style="color: var(--text-secondary); font-size: 12px;">{{ row.notes || '—' }}</span>
         </template>
       </el-table-column>
+      <el-table-column label="最近消息" min-width="280">
+        <template #default="{ row }">
+          <div v-if="row.last_message" style="display:flex; flex-direction:column; gap:3px;">
+            <div style="display:flex; align-items:center; gap:6px;">
+              <el-tag v-if="row.chat_kind" size="small" :type="row.chat_kind === 'dm' ? 'success' : 'info'">
+                {{ row.chat_kind === 'dm' ? '私聊' : '群' }}
+              </el-tag>
+              <span class="brand-sub mono" style="color: var(--text-muted); font-size: 10px;">
+                {{ relTime(row.last_ts) }}
+              </span>
+            </div>
+            <div class="brand-sub mono" style="color: var(--text-secondary); font-size: 11px; line-height: 1.4;">
+              {{ shortText(row.last_message, 80) }}
+            </div>
+          </div>
+          <span v-else class="brand-sub" style="color: var(--text-muted);">—</span>
+        </template>
+      </el-table-column>
       <el-table-column label="操作" width="240" fixed="right">
         <template #default="{ row }">
           <el-button size="small" text @click="openEdit(row)">编辑</el-button>
@@ -65,6 +83,20 @@
         </template>
       </el-table-column>
     </el-table>
+
+    <div style="margin-top: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+      <span style="color: var(--text-muted); font-size: 12px;">共 {{ filteredContacts.length }} 条</span>
+      <el-pagination
+        v-if="filteredContacts.length > contactPageSize"
+        background
+        layout="prev, pager, next"
+        :total="filteredContacts.length"
+        :page-size="contactPageSize"
+        :current-page="contactPage"
+        :pager-count="7"
+        @current-change="(p) => contactPage = p"
+      />
+    </div>
 
     <!-- 合并操作栏（选中 2 条时显示） -->
     <div v-if="selectedRows.length === 2" style="margin-top: 12px; display: flex; align-items: center; gap: 12px;">
@@ -125,7 +157,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { instanceApi } from '@/api/client'
@@ -133,11 +165,14 @@ import { instanceApi } from '@/api/client'
 const route = useRoute()
 const iid = computed(() => String(route.params.iid || ''))
 const contacts = ref([])
-const loading = ref(false)
+const loading = ref(true)
 const searchText = ref('')
 const filter = ref('all')
 const selectedRows = ref([])
 const merging = ref(false)
+// 前端分页: 联系人通常数量不大 (几十-几百), 走前端 slice 即可
+const contactPage = ref(1)
+const contactPageSize = 20
 
 // ── 计算属性 ──
 const filteredContacts = computed(() => {
@@ -158,6 +193,13 @@ const filteredContacts = computed(() => {
   }
   return list
 })
+// 前端分页: 切当前 page 给 el-table
+const pagedFilteredContacts = computed(() => {
+  const start = (contactPage.value - 1) * contactPageSize
+  return filteredContacts.value.slice(start, start + contactPageSize)
+})
+// 切 filter / search 时重置回第 1 页
+watch([filter, searchText], () => { contactPage.value = 1 })
 
 // ── 加载 ──
 async function load() {
@@ -281,6 +323,20 @@ async function doMerge() {
 function shortText(s, n) {
   if (!s) return ''
   return s.length > n ? s.slice(0, n) + '…' : s
+}
+// iso 时间转相对时间: <1min "刚刚" / <60min "X 分钟前" / <24h "X 小时前"
+// / <7d "X 天前" / ≥7d "MM-DD"
+function relTime(ts) {
+  if (!ts) return ''
+  const t = Number(ts)
+  if (!t) return ''
+  const diff = Date.now() / 1000 - t
+  if (diff < 60) return '刚刚'
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`
+  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`
+  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)} 天前`
+  const d = new Date(t * 1000)
+  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 onMounted(load)

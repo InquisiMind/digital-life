@@ -173,14 +173,19 @@ def _check_target_channel_viewed(
     except Exception:
         pass
 
+    # 如果连历史都加载不到, 说明该通道确实没有对话记录(可能是新通道 / chat_id 未萹库)
+    # → 不拦截, 直接放行(让模型发, 空历史确实也不知道有什么上下文问题)
+    if not recent_chat_log:
+        return None
+
     response: dict[str, Any] = {
         "sent": False,
         "result_summary": (
-            f"你正要发消息到通道 {target_chat_id[:20]}，但本会话还没看过它的近期对话。"
+            f"你正要发消息到通道 {target_chat_id}，但本会话还没看过它的近期对话。"
             "为避免你的发言脱离上下文，请先看一遍下面这份该通道的对话历史，"
             "然后重新组织你的发言再发一次。"
         ),
-        "recent_chat_log": recent_chat_log or "（该通道暂无可用历史，可能是新通道——你可以在确认后重发。）",
+        "recent_chat_log": recent_chat_log,
     }
     _ = viewed  # 仅供调试/可读，登记失败也已尽力补历史
     return response

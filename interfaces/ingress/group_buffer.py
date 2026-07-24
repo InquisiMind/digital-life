@@ -24,7 +24,10 @@ SLOW_BASE_S = 20
 SLOW_JITTER_S = 10
 
 # 快 timer: 纯 random
-FAST_JITTER_S = 5
+# 快 timer jitter 缩短到 0 → fast timer = 固定值, 便于多条 @ 合入同一窗口
+# 但也不宜太长(用户等不起)。实测 8s 是平衡点: 同窗口内几秒内连发多条@不会分批
+FAST_BASE_S = 8
+FAST_JITTER_S = 0
 
 
 class GroupMessageBuffer:
@@ -37,12 +40,14 @@ class GroupMessageBuffer:
         slow_base: int = SLOW_BASE_S,
         slow_jitter: int = SLOW_JITTER_S,
         fast_jitter: int = FAST_JITTER_S,
+        fast_base: int = FAST_BASE_S,
         is_priority: Optional[Callable[[Any], bool]] = None,
     ) -> None:
         self._handler = handler
         self._slow_base = slow_base
         self._slow_jitter = slow_jitter
         self._fast_jitter = fast_jitter
+        self._fast_base = fast_base
         self._is_priority = is_priority or (lambda m: bool(getattr(m, "mentions_bot", False)))
 
         self._buffer: List[Any] = []
@@ -76,14 +81,25 @@ class GroupMessageBuffer:
 
             self._buffer.append(msg)
 
-            # @ / 关键词 → 启动/刷新快 timer
+            # @ / 关键词 → fast timer = now + fast_base(8s) 固定, 不 random
+            # 旧 bug: random(0,5) 导致 alpha @zero 2s 就 flush, zhp 3s 后来的 @zero 分成新 batch
+            # 新逻辑: 固定 8s 缓冲, 同窗口内几秒连发的多条 @ 都合入同一 batch
+            # 若 fast_deadline 已存在且> now(还没到), 不覆盖(取 max 保留更晚的)
             try:
                 if self._is_priority(msg):
-                    self._fast_deadline = time.time() + random.uniform(0, self._fast_jitter)
+                    now_t = time.time()
+                    proposed = now_t + self._fast_base
+                    if self._fast_deadline is None:
+                        # 第一次设 fast timer
+                        self._fast_deadline = proposed
+                    else:
+                        # 已有 fast timer: 取 min — 新消息的 fast 可能更早
+                        # 场景: buffer 里已有普通消息(slow timer 20s), 然后 @ 消息进来
+                        # → fast 8s 更短, 应该提前到 8s 而不是等完 20s
+                        self._fast_deadline = min(self._fast_deadline, proposed)
                     logger.debug(
-                        "GroupMessageBuffer priority msg (mentions_bot=%s), fast deadline in %.2fs",
-                        bool(getattr(msg, "mentions_bot", False)),
-                        max(0, (self._fast_deadline or 0) - time.time()),
+                        "GroupMessageBuffer priority msg, fast deadline in %.2fs",
+                        max(0, (self._fast_deadline or 0) - now_t),
                     )
             except Exception:
                 pass
@@ -200,12 +216,14 @@ class GroupMessageBuffer:
         await self._handler(base)
 
     def stop(self) -> None:
-        """adapter stop 时停止 daemon thread + 吐残留。"""
+        """adapter stop 时停止 daemon thread + 吐残留。
+        
+        注意: stop() 可能在 async context (aiohttp shutdown) 里被调,
+        不能用 asyncio.run() — 会 "cannot be called from a running event loop"。
+        改成: 唤醒 daemon thread 让它自然 flush + 退出, stop 本身不 flush。
+        daemon 线程关闭前会 flush 残留(如果窗口内有积压)。
+        """
         self._stop_flag.set()
-        self._flush_signal.set()  # 唤醒 daemon 让它退出
-        try:
-            asyncio.run(self._flush_once())
-        except Exception as exc:
-            logger.warning("GroupMessageBuffer stop flush failed: %s", exc)
+        self._flush_signal.set()  # 唤醒 daemon 让它处理残留 + 退出
         if self._flush_thread and self._flush_thread.is_alive():
-            self._flush_thread.join(timeout=2.0)
+            self._flush_thread.join(timeout=3.0)  # 给 daemon 3s flush 残留

@@ -560,12 +560,11 @@ class FeishuAdapter(IngressAdapter):
                     self._app_id[:12],
                 )
                 normalized = self._normalize(event)
+
+                # ── 原有逻辑不动：所有 WS 消息都正常走 handler ──
+                # 实例是群里的一员，群消息都该被唤醒（不管有没有@）
                 # 群消息走 30s 合并窗口 + per-instance offset（防多 bot 同步竞争 / 群消息交错）。
                 # 私聊立即下发（用户等不起）。
-                # 设计:
-                #   - 群消息入 self._group_buffer (30s flush + offset);flush 时聚成单条 NormalizedMessage
-                #     (只带 merged_texts 列表),一次调 handler —— 取代事件层 group_message 的 30s debounce
-                #   - 这是消息系统问题,事件层只调度不再合并
                 if getattr(normalized, "is_group", False):
                     self._ensure_group_buffer()
                     self._group_buffer.add(normalized)
@@ -578,6 +577,31 @@ class FeishuAdapter(IngressAdapter):
                             )
                         except RuntimeError:
                             asyncio.run(handler(normalized))
+
+                # ── 附加：社交接管旁路萹库 social_feed ──
+                # 这不影响上面的 wake 逻辑。目的: daemon 拉到的是"真人看到的全部群消息",
+                # 而 WS 实时收到的是"bot 在群里能看到的消息"——两者交集(recall_dups)时 OR IGNORE,
+                # WS 之外的消息(daemon 拉的没 bot 在的群)仍走 daemon 自己萹库。
+                # 这里加旁路: 让"事件订阅全量推送"的消息(包括 bot 不在的群/私聊)也能萹库。
+                try:
+                    from domain.social.store import insert_message as _ws_insert
+                    sender_obj_raw = getattr(event.event, "sender", None)
+                    _ws_insert(
+                        source="feishu_ws",
+                        chat_id=getattr(normalized, "chat_id", "") or "",
+                        chat_name=getattr(normalized, "chat_name", "") or ("私聊" if not getattr(normalized, "is_group", False) else ""),
+                        message_id=getattr(normalized, "message_id", "") or f"ws_{int(time.time()*1000)}",
+                        sender_name=getattr(normalized, "sender_name", "") or "",
+                        sender_id=getattr(normalized, "sender_id", "") or "",
+                        text=getattr(normalized, "content", "") or "",
+                        message_ts=float(getattr(normalized, "timestamp", 0) or time.time()),
+                        instance_id=self._instance_id or "",
+                        at_me=getattr(normalized, "mentions_bot", False),
+                        at_all=getattr(normalized, "mentions_all", False),
+                        sender_is_app=str(getattr(sender_obj_raw, "sender_type", "")).strip() == "app",
+                    )
+                except Exception:
+                    pass  # social_feed 萹库失败不阻塞正常消息流
             except Exception as exc:
                 logger.exception("Feishu _on_message error: %s", exc)
 

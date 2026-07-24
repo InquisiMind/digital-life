@@ -171,6 +171,66 @@ class EmployeeConsoleAPIService:
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
 
+    async def _handle_console_social_status(self, request: web.Request) -> web.Response:
+        """GET /api/employee/{iid}/social/status
+
+        返回当前实例的社交接管授权状态 + 授权 URL。
+        前端 ConfigTab 用: 已授权显示"已接管"+解除按钮; 未授权显示"接管飞书"链接。
+        """
+        try:
+            from infrastructure.config import get_app_instance_id, get_instance_dir
+            iid = get_app_instance_id() or ""
+            instance_dir = get_instance_dir(iid)
+            social_env = instance_dir / "config" / "social.env"
+            authorized = False
+            if social_env.exists():
+                for line in social_env.read_text(encoding="utf-8").splitlines():
+                    if line.startswith("FEISHU_USER_REFRESH_TOKEN="):
+                        val = line.split("=", 1)[1].strip()
+                        if val:
+                            authorized = True
+                            break
+            # 授权 URL (即使已授权也返回, 让用户可重新授权刷新)
+            oauth_url = ""
+            if iid:
+                try:
+                    from application.api.oauth_routes import get_oauth_url
+                    oauth_url = get_oauth_url(iid)
+                except Exception:
+                    pass
+            return web.json_response({
+                "authorized": authorized,
+                "oauth_url": oauth_url,
+                "instance_id": iid,
+            })
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+    async def _handle_console_social_revoke(self, request: web.Request) -> web.Response:
+        """POST /api/employee/{iid}/social/revoke
+
+        解除授权: 删 social.env + 停 personal_assistant 项目 + 清待办。
+        全解耦: 接管是因(OAuth→建项目), 解除是果(删 token→停项目)。
+        """
+        try:
+            from infrastructure.config import get_app_instance_id, get_instance_dir
+            iid = get_app_instance_id() or ""
+            instance_dir = get_instance_dir(iid)
+            social_env = instance_dir / "config" / "social.env"
+            if social_env.exists():
+                social_env.unlink()
+
+            # 接管取消: 停项目 + 清待办
+            try:
+                from domain.lifecycle.schema import deactivate_personal_assistant
+                deactivate_personal_assistant(iid)
+            except Exception as exc:
+                logger.warning("deactivate_personal_assistant failed: %s", exc)
+
+            return web.json_response({"ok": True, "note": "授权已解除, 项目已停, 待办已清理"})
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
     async def _handle_console_sessions(self, request: web.Request) -> web.Response:
         data = await self._input(request)
         return self._response(self.sessions.list_sessions(self._int(data.query.get("limit"), 20)))
@@ -257,6 +317,7 @@ class EmployeeConsoleAPIService:
                 query=(data.query.get("q") or "").strip(),
                 source=(data.query.get("source") or "").strip(),
                 limit=self._int(data.query.get("limit"), 20),
+                offset=self._int(data.query.get("offset"), 0),
             )
         )
 
@@ -519,10 +580,47 @@ class EmployeeConsoleAPIService:
     # ──────────────────────────────── Contacts (社交关系 + 多平台 ID + 黑名单) ────────────────────────────────
 
     async def _handle_console_contacts(self, request: web.Request) -> web.Response:
-        """GET 列表全部 contacts（含 blocked 标志和 platform_ids）。"""
+        """GET 列表全部 contacts（含 blocked 标志和 platform_ids）。
+
+        每条 contact 额外带 last_message / last_ts / chat_id / chat_kind 字段,
+        取自 messages.db 中该 contact 任一 platform_id 的最近一条入站消息。
+        目的: 在 ContactsTab 上让用户看着 platform_id 时能瞬间知道"这人是谁",
+        不为维护聊天记录。
+        """
         from domain.contacts import list_contacts, ensure_schema
         ensure_schema()
-        return web.json_response({"contacts": list_contacts()})
+        contacts = list_contacts() or []
+        # 批拉 last inbound message: 收集所有 feishu platform_id, 一次 SQL 拿完
+        try:
+            from domain.messages import last_inbound_per_sender
+            sender_ids = []
+            for c in contacts:
+                for pid in (c.get("platform_ids") or []):
+                    pidv = pid.get("platform_id") or ""
+                    if pidv:
+                        sender_ids.append(pidv)
+            last_map = last_inbound_per_sender(sender_ids) if sender_ids else {}
+        except Exception:
+            last_map = {}
+        # 每个 contact 取任一 platform_id 在 last_map 里命中的那条(取 ts 最大)
+        for c in contacts:
+            best = None
+            for pid in (c.get("platform_ids") or []):
+                pidv = pid.get("platform_id") or ""
+                hit = last_map.get(pidv)
+                if hit and (best is None or hit.get("ts", "") > best.get("ts", "")):
+                    best = hit
+            if best:
+                c["last_message"] = best.get("text", "")[:200]
+                c["last_ts"] = best.get("ts", "")
+                c["chat_id"] = best.get("chat_id", "")
+                c["chat_kind"] = best.get("chat_kind", "")
+            else:
+                c["last_message"] = ""
+                c["last_ts"] = ""
+                c["chat_id"] = ""
+                c["chat_kind"] = ""
+        return web.json_response({"contacts": contacts})
 
     async def _handle_console_create_contact(self, request: web.Request) -> web.Response:
         """POST 新增 contact. body: {name, notes?, kind?, platform_ids: [{platform, platform_id}, ...]}"""
@@ -1342,6 +1440,10 @@ def _add_console_api_routes(app: web.Application, api_prefix: str, service: Empl
     app.router.add_get(f"{api_prefix}/budget", service._handle_console_budget)
     app.router.add_get(f"{api_prefix}/budget/series", service._handle_console_budget_series)
     app.router.add_get(f"{api_prefix}/vitals/series", service._handle_console_vitals_series)
+
+    # 社交接管: 授权入口 + 状态查询 + 解除授权
+    app.router.add_get(f"{api_prefix}/social/status", service._handle_console_social_status)
+    app.router.add_post(f"{api_prefix}/social/revoke", service._handle_console_social_revoke)
 
 
 def register(app: web.Application, adapter: Any) -> None:

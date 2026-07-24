@@ -98,6 +98,8 @@ export const systemApi = {
   wechatLoginStatus: (iid) =>
     safeFetch(`/api/system/instances/${iid}/wechat-login/status`),
   gatewayRestart: (reason) => api.post('/api/system/gateway/restart', { reason }),
+  // 汇总多实例 token 用量 —— 给 OverviewView 系统级走势图, 不带 iid
+  systemBudgetSeries: (hours = 24, bucket = 'hour') => api.get('/api/system/budget/series', { hours, bucket }),
   projects: (iid) => api.get('/api/system/projects', iid ? { iid } : {}),
   projectDetail: (pid) => api.get(`/api/system/projects/${pid}`),
   projectTasks: (pid) => api.get(`/api/system/projects/${pid}/tasks`),
@@ -145,7 +147,7 @@ export const instanceApi = (iid) => ({
   associations:  () => api.get(`/api/employee/${iid}/associations`),
   // Feature 002 — 统一切片层(chunks 表)访问
   chunks:        (p = {}) => api.get(`/api/employee/${iid}/chunks`,
-                  { q: p.q, source: p.source, limit: p.limit }),
+                  { q: p.q, source: p.source, limit: p.limit, offset: p.offset }),
   chunkDetail:   (id) => api.get(`/api/employee/${iid}/chunks/${id}`),
   wakeSnapshot:  (limit, offset = 0) => api.get(`/api/employee/${iid}/wakes`, { limit: limit || 30, offset }),
   wakeDetail:    (wakeId) => api.get(`/api/employee/${iid}/wakes/${wakeId}`),
@@ -153,5 +155,7 @@ export const instanceApi = (iid) => ({
   budget:        () => api.get(`/api/employee/${iid}/budget`),
   budgetSeries:  (hours = 24, bucket = 'hour') => api.get(`/api/employee/${iid}/budget/series`, { hours, bucket }),
   vitalsSeries:  (hours = 24) => api.get(`/api/employee/${iid}/vitals/series`, { hours }),
+  socialStatus:  () => api.get(`/api/employee/${iid}/social/status`),
+  socialRevoke:  () => api.post(`/api/employee/${iid}/social/revoke`),
   events:        () => api.get(`/api/employee/${iid}/events`),
 })

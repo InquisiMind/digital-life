@@ -70,24 +70,40 @@ async def handle_feishu_oauth_callback(request: web.Request) -> web.Response:
         return web.Response(text="飞书应用未配置 app_id/app_secret (检查 secrets.env)", status=500)
 
     try:
-        # 用 code 换 user_access_token
-        resp = httpx.post(
-            f"{FEISHU_BASE}/authen/v1/access_token",
+        # 用 code 换 user_access_token (Feishu OIDC)
+        # 步骤: 先拿 tenant_access_token → 用它换 user tokens
+        tenant_resp = httpx.post(
+            f"{FEISHU_BASE}/auth/v3/tenant_access_token/internal",
             headers={"Content-Type": "application/json"},
+            json={"app_id": app_id, "app_secret": app_secret},
+            timeout=10,
+        )
+        tenant_tok = tenant_resp.json().get("tenant_access_token", "")
+        if not tenant_tok:
+            return web.Response(
+                text=f"获取 tenant_access_token 失败: {tenant_resp.text}<br><a href='/'>返回</a>",
+                content_type="text/html",
+                status=500,
+            )
+
+        resp = httpx.post(
+            f"{FEISHU_BASE}/authen/v1/oidc/access_token",
+            headers={
+                "Authorization": f"Bearer {tenant_tok}",
+                "Content-Type": "application/json",
+            },
             json={
                 "grant_type": "authorization_code",
                 "code": code,
-                "app_id": app_id,
-                "app_secret": app_secret,
             },
             timeout=10,
         )
         data = resp.json()
         if data.get("code") != 0:
-            error_msg = data.get("msg", "unknown error")
-            logger.warning("OAuth token exchange failed: %s", error_msg)
+            err = data.get("msg", "unknown error")
+            logger.warning("OIDC token exchange failed: %s", err)
             return web.Response(
-                text=f"授权失败: {error_msg}<br><a href='/'>返回</a>",
+                text=f"授权失败: {err}<br><a href='/'>返回</a>",
                 content_type="text/html",
                 status=500,
             )
@@ -109,6 +125,14 @@ async def handle_feishu_oauth_callback(request: web.Request) -> web.Response:
         )
 
         logger.info("OAuth success: tokens saved for instance %s", instance_id[:8])
+
+        # 接管激活: 自动创建 personal_assistant 项目 + 日常待办
+        try:
+            from domain.lifecycle.schema import activate_personal_assistant
+            activate_personal_assistant(instance_id)
+        except Exception as exc:
+            logger.warning("activate_personal_assistant failed: %s", exc)
+
         return web.Response(
             text=(
                 "<html><body style='font-family:sans-serif;padding:40px;'>"
@@ -130,15 +154,33 @@ async def handle_feishu_oauth_callback(request: web.Request) -> web.Response:
 
 
 def get_oauth_url(instance_id: str, redirect_uri: str = "http://localhost:8642/oauth/feishu/callback") -> str:
-    """生成飞书 OAuth 授权 URL。"""
-    app_id, _ = _get_app_creds()
+    """生成飞书 OAuth 授权 URL (v1 authorize + OIDC scope)。
+
+    scope 必须显式声明, 否则 OIDC 返的 user_access_token 只有基础 scope,
+    拉 /im/v1/messages 会 99991679 (权限不足)。
+
+    需要 scope:
+      im:chat:readonly    - 读群列表
+      im:message          - 读消息 + 收发消息
+      im:message.group_at_msg:readonly - 群里 @ 消息读
+      im:resource         - 附件/图片
+      contact:user.base:readonly - 用户信息(查 sender name)
+    """
+    app_id, _ = _get_app_creds(instance_id)
+    if not app_id:
+        logger.warning("get_oauth_url: app_id empty for instance %s", instance_id[:8])
     from urllib.parse import urlencode
     params = urlencode({
         "app_id": app_id,
         "redirect_uri": redirect_uri,
         "state": instance_id,
+        # scope 用空格分隔(飞书 OIDC 标准)
+        # IM 类: 读群/消息/资源/联系人
+        # Drive 类: 读周报/文档/多维表格(飞书周报底层是 Bitable)
+        # Bitable 类: 读/写多维表格(直接填周报数据需要 app:table 读写)
+        "scope": "im:chat:readonly im:message im:message.group_at_msg:readonly im:resource contact:user.base:readonly bitable:app",
     })
-    return f"https://open.feishu.cn/open-apis/authen/v1/index?{params}"
+    return f"https://open.feishu.cn/open-apis/authen/v1/authorize?{params}"
 
 
 def register_oauth_routes(app: web.Application, prefix: str = "") -> None:

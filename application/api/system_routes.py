@@ -93,6 +93,10 @@ def add_system_routes(app: web.Application) -> None:
         f"{SYSTEM_API_PREFIX}/event-types/{{type_id}}", _handle_delete_event_type
     )
 
+    # 汇总多实例 token 走势 —— 跟单实例 /budget/series 同输出结构
+    # 实现: 遍历 apps/*/data/state.db 各跑 budget_log 聚合 SQL, 内存按 at_iso 累加
+    app.router.add_get(f"{SYSTEM_API_PREFIX}/budget/series", _handle_system_budget_series)
+
     # 静态资源：实例 avatar / 动图（仅 GET，相对 apps/{iid}/assets/）
     app.router.add_get(
         r"/employee/{iid:[0-9a-f-]+}/assets/{filename:.*}", _handle_instance_asset
@@ -129,6 +133,124 @@ def add_system_routes(app: web.Application) -> None:
 # ────────────────────────────────────────────────────────────────────────────
 # Overview —— 全部实例状态聚合
 # ────────────────────────────────────────────────────────────────────────────
+
+
+async def _handle_system_budget_series(request: web.Request) -> web.Response:
+    """GET /api/system/budget/series?hours=24&bucket=hour|day
+
+    汇总多实例的 token 用量走势 —— 跟单实例的 GET /api/employee/{iid}/budget/series
+    输出结构相同(`buckets / day_total_used / hour_used / hours / bucket`), 便于前端
+    OverviewView 直接复用 OverviewTab 的图表渲染逻辑。
+
+    实现: 遍历 apps/*/data/state.db, 每个 db 跑跟 token_tracker.usage_series 同款
+    的 SQL, 内存按 at_iso key 累加各字段(formula: 每个 bucket 的 input/output/total/
+    total_summary 等字段累加, count_429 累加)。
+
+    day_total_used / hour_used 从聚合后的 buckets 二次求和得来。
+    """
+    try:
+        q = request.query or {}
+        try:
+            hours = int(q.get("hours", "24"))
+        except ValueError:
+            hours = 24
+        bucket = (q.get("bucket") or "hour").strip()
+        bucket_fmt = {
+            "hour": "%Y-%m-%dT%H:00",
+            "day": "%Y-%m-%d",
+            "minute": "%Y-%m-%dT%H:%M",
+        }.get(bucket, "%Y-%m-%dT%H:00")
+        import sqlite3
+        import time
+        from infrastructure.config import get_project_root
+        since = time.time() - hours * 3600
+
+        # 遍历每个实例的 state.db, 累加 budget_log
+        # 用 dict 合并 at_iso → 各字段求和
+        merged: dict[str, dict[str, int]] = {}
+        apps_root = get_project_root() / "apps"
+        if apps_root.exists():
+            for entry in sorted(apps_root.iterdir()):
+                if not entry.is_dir():
+                    continue
+                cfg_path = entry / "config" / "app.yaml"
+                if not cfg_path.exists():
+                    continue  # 不是有效实例(可能是 eval-sandbox 等)
+                db_path = entry / "data" / "state.db"
+                if not db_path.exists():
+                    continue
+                try:
+                    conn = sqlite3.connect(str(db_path), timeout=2.0)
+                    conn.row_factory = sqlite3.Row
+                    try:
+                        rows = conn.execute(
+                            """
+                            SELECT
+                                strftime(?, occurred_at, 'unixepoch', '+8 hours') AS b,
+                                kind,
+                                COALESCE(SUM(input_tokens), 0)  AS s_in,
+                                COALESCE(SUM(output_tokens), 0) AS s_out,
+                                COALESCE(SUM(total_tokens), 0)  AS s_tot,
+                                COUNT(*) AS cnt
+                            FROM budget_log
+                            WHERE occurred_at >= ?
+                            GROUP BY b, kind
+                            """,
+                            (bucket_fmt, since),
+                        ).fetchall()
+                    finally:
+                        conn.close()
+                except Exception:
+                    continue  # 该 db 不存在 budget_log 表或损坏 → 跳过
+                # 合并到全局
+                for r in rows:
+                    b = r["b"]
+                    bk = merged.setdefault(b, {
+                        "at_iso": b, "input": 0, "output": 0, "total": 0,
+                        "input_summary": 0, "output_summary": 0, "total_summary": 0,
+                        "count_429": 0,
+                    })
+                    kind = r["kind"] or "llm_call"
+                    if kind == "llm_call_429":
+                        bk["count_429"] += int(r["cnt"])
+                    elif kind == "session_summary":
+                        bk["input_summary"] += int(r["s_in"])
+                        bk["output_summary"] += int(r["s_out"])
+                        bk["total_summary"] += int(r["s_tot"])
+                    else:
+                        bk["input"] += int(r["s_in"])
+                        bk["output"] += int(r["s_out"])
+                        bk["total"] += int(r["s_tot"])
+
+        buckets_list = list(merged.values())
+        # buckets 在 hour / minute 模式下应按时间正序输出(跟单实例一致的渲染)
+        # day 也正序(echarts xAxis category 即可显示)
+        buckets_list.sort(key=lambda x: x["at_iso"])
+        # 求 day_total_used / hour_used (跨实例聚合后的今日/本时总数)
+        import time as _t
+        from datetime import datetime, timezone, timedelta
+        BJ = timezone(timedelta(hours=8))
+        now_bj = datetime.now(BJ)
+        today_prefix = now_bj.strftime("%Y-%m-%d")
+        hour_prefix = now_bj.strftime("%Y-%m-%dT%H:")
+        day_total = 0
+        hour_total = 0
+        for b in buckets_list:
+            at = b["at_iso"]
+            if at.startswith(today_prefix):
+                day_total += (b["total"] + b["total_summary"])
+            if at.startswith(hour_prefix):
+                hour_total += (b["total"] + b["total_summary"])
+
+        return web.json_response({
+            "buckets": buckets_list,
+            "day_total_used": day_total,
+            "hour_used": hour_total,
+            "hours": hours,
+            "bucket": bucket,
+        })
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
 
 
 async def _handle_overview(request: web.Request) -> web.Response:

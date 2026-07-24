@@ -1,12 +1,7 @@
 <template>
   <div>
-    <section class="page-hero">
-      <div>
-        <h1 class="page-title">Slices & Cognition</h1>
-        <p class="page-subtitle">
-          统一切片层 · phase 分布 / 认知状态 / 取代诞生链 / freshness
-        </p>
-      </div>
+    <!-- 工具栏 (无大标题, 嵌入 MemoriesTab 子 tab 时不需要再重复 "切片") -->
+    <section class="chunks-toolbar">
       <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
         <el-input
           v-model="filters.q"
@@ -38,36 +33,9 @@
     </section>
 
     <!-- 切片层概览: phase / cognition_state / 取代诞生链 统计 -->
-    <section v-if="overview" class="stats-panel">
-      <div class="stat-cell">
-        <div class="stat-label">切片总数</div>
-        <div class="stat-value">{{ overview.total }}</div>
-      </div>
-      <div class="stat-cell">
-        <div class="stat-label">phase 分布</div>
-        <div class="stat-value-sm">
-          <el-tag v-for="(n, p) in overview.phase" :key="p" :type="phaseTagType(p)" size="small" style="margin: 0 4px 4px 0;">
-            {{ phaseLabel(p) }} {{ n }}
-          </el-tag>
-        </div>
-      </div>
-      <div class="stat-cell" v-if="overview.state && Object.keys(overview.state).length">
-        <div class="stat-label">认知状态</div>
-        <div class="stat-value-sm">
-          <el-tag v-for="(n, s) in overview.state" :key="s" :type="stateTagType(s)" size="small" effect="plain" style="margin: 0 4px 4px 0;">
-            {{ s || 'unknown' }} {{ n }}
-          </el-tag>
-        </div>
-      </div>
-      <div class="stat-cell">
-        <div class="stat-label">取代链 / 诞生链</div>
-        <div class="stat-value-sm">
-          <span style="color: var(--neon-cyan);">↻ {{ overview.superseded || 0 }}</span>
-          <span style="color: var(--text-muted); margin: 0 6px;">/</span>
-          <span style="color: var(--neon-green);">⇆ {{ overview.derived || 0 }}</span>
-        </div>
-      </div>
-    </section>
+    <!-- 概览 stats panel 已移除: 总数与分页器底部"共 X 条"重复,
+         phase 分布以前是基于当前页 30 条计算的假全库分布, 显示反而误导。
+         phase 全库分布需要后端额外 GROUP BY 查询, 暂不维护——单 el-radio-button 过滤已够用 -->
 
     <el-table
       :data="filteredChunks"
@@ -120,8 +88,18 @@
       </el-table-column>
     </el-table>
 
-    <div style="margin-top: 12px; color: var(--text-muted); font-size: 12px;">
-      共 {{ total }} 条 · 显示 {{ filteredChunks.length }} 条(本地按 phase 过滤)
+    <div style="margin-top: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+      <span style="color: var(--text-muted); font-size: 12px;">共 {{ total }} 条</span>
+      <el-pagination
+        v-if="total > PAGE_SIZE"
+        background
+        layout="prev, pager, next"
+        :total="total"
+        :page-size="PAGE_SIZE"
+        :current-page="page"
+        :pager-count="7"
+        @current-change="loadChunks"
+      />
     </div>
 
     <!-- 详情抽屉 -->
@@ -214,7 +192,7 @@ import { ElMessage } from 'element-plus'
 const route = useRoute()
 const iid = computed(() => route.params.iid)
 
-const loading = ref(false)
+const loading = ref(true)
 const chunks = ref([])
 const total = ref(0)
 const sourceOptions = ref([])
@@ -227,13 +205,21 @@ const detailVisible = ref(false)
 const detailLoading = ref(false)
 const detail = ref(null)
 
-async function loadChunks(/* page */) {
+const PAGE_SIZE = 30
+const page = ref(1)
+
+async function loadChunks(targetPage) {
+  // targetPage 可为数字(翻到指定页) 或未传(重置到第 1 页)
+  const p = Number(targetPage) > 0 ? Number(targetPage) : 1
+  page.value = p
+  const offset = (p - 1) * PAGE_SIZE
   loading.value = true
   try {
     const res = await instanceApi(iid.value).chunks({
       q: filters.value.q || undefined,
       source: filters.value.source || undefined,
-      limit: 50,
+      limit: PAGE_SIZE,
+      offset,
     })
     if (res.error) {
       ElMessage.error(res.error)

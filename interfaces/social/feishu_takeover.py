@@ -24,11 +24,41 @@ FEISHU_BASE = "https://open.feishu.cn/open-apis"
 
 
 def _get_app_creds() -> tuple[str, str]:
-    """从环境变量读飞书 app_id + app_secret。"""
+    """从环境变量 → 实例 secrets.env → 实例 app.yaml 读飞书 app_id + app_secret。
+
+    ContextVar instance_id 必须已设置。读顺序:
+      1. 进程 env (master 设置的全局默认)
+      2. apps/{iid}/config/secrets.env (secret 类字段)
+      3. apps/{iid}/config/app.yaml (app_id 等非敏感字段)
+    """
     app_id = os.environ.get("FEISHU_APP_ID", "")
     app_secret = os.environ.get("FEISHU_APP_SECRET", "")
+
     if not app_id or not app_secret:
-        # fallback: 从实例 app.yaml 读
+        # fallback 1: 从实例 secrets.env 读
+        try:
+            from pathlib import Path
+            from infrastructure.config import get_instance_dir
+            iid = ""
+            try:
+                from infrastructure.config import get_app_instance_id
+                iid = get_app_instance_id() or ""
+            except Exception:
+                pass
+            if iid:
+                secrets = get_instance_dir(iid) / "config" / "secrets.env"
+                if secrets.exists():
+                    for line in secrets.read_text(encoding="utf-8").splitlines():
+                        line = line.strip()
+                        if line.startswith("FEISHU_APP_ID=") and not app_id:
+                            app_id = line.split("=", 1)[1].strip()
+                        elif line.startswith("FEISHU_APP_SECRET=") and not app_secret:
+                            app_secret = line.split("=", 1)[1].strip()
+        except Exception:
+            pass
+
+    if not app_id or not app_secret:
+        # fallback 2: 从实例 app.yaml 读 app_id (app_secret 通常在 secrets.env)
         try:
             import yaml
             from infrastructure.config import get_instance_app_config_path
@@ -77,17 +107,47 @@ class FeishuSocialTakeover:
         self._token_expires: float = 0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        # 已知的群列表缓存 {chat_id: chat_name}
-        self._chats: dict[str, str] = {}
+        # 已知的群列表缓存 {chat_id: {name, type}}
+        self._chats: dict[str, dict] = {}
         # 已见过的 message_id 集合(内存去重, DB 也有 UNIQUE)
         self._seen_ids: set[str] = set()
+        # sender name 缓存: open_id → name 避免每条消息都查 contact API
+        self._name_cache: dict[str, str] = {}
+        # 自己的 open_id (daemon 启动后 _load_self_info 填充, 用于 at_me 检测)
+        self._self_open_id: str = ""
         # 飞书 domain
         app_id, _ = _get_app_creds()
         self._app_id = app_id
         self._base = FEISHU_BASE
 
+    def _get_tenant_token(self) -> str:
+        """拿 tenant_access_token (app_access_token) — 用 app_id/secret 换。
+
+        OIDC refresh_access_token / access_token 接口要求 Authorization header
+        带 tenant_access_token, 而不是 v1 接口的 body 传 app_id/app_secret。
+        """
+        app_id, app_secret = _get_app_creds()
+        if not app_id or not app_secret:
+            return ""
+        try:
+            resp = httpx.post(
+                f"{self._base}/auth/v3/tenant_access_token/internal",
+                headers={"Content-Type": "application/json"},
+                json={"app_id": app_id, "app_secret": app_secret},
+                timeout=10,
+            )
+            return resp.json().get("tenant_access_token", "")
+        except Exception:
+            return ""
+
     def _refresh_user_token(self) -> bool:
-        """用 refresh_token 刷新 user_access_token。"""
+        """用 refresh_token 刷新 user_access_token。
+
+        Feishu OIDC 接口: /authen/v1/oidc/refresh_access_token
+        - Authorization header: Bearer <tenant_access_token>
+        - body: {grant_type: refresh_token, refresh_token: <token>}
+        - response.data: {access_token, refresh_token, token_type, expires_in, refresh_expires_in}
+        """
         app_id, app_secret = _get_app_creds()
         if not app_id or not app_secret:
             logger.debug("social_takeover: no app creds")
@@ -98,14 +158,19 @@ class FeishuSocialTakeover:
                 logger.debug("social_takeover: no refresh_token — OAuth not done yet")
                 return False
         try:
+            tenant_tok = self._get_tenant_token()
+            if not tenant_tok:
+                logger.warning("social_takeover: failed to get tenant_access_token")
+                return False
             resp = httpx.post(
-                f"{self._base}/authen/v1/refresh_access_token",
-                headers={"Content-Type": "application/json"},
+                f"{self._base}/authen/v1/oidc/refresh_access_token",
+                headers={
+                    "Authorization": f"Bearer {tenant_tok}",
+                    "Content-Type": "application/json",
+                },
                 json={
                     "grant_type": "refresh_token",
                     "refresh_token": self._refresh_token,
-                    "app_id": app_id,
-                    "app_secret": app_secret,
                 },
                 timeout=10,
             )
@@ -116,12 +181,16 @@ class FeishuSocialTakeover:
             token_data = data.get("data") or {}
             self._user_token = token_data.get("access_token", "")
             new_refresh = token_data.get("refresh_token", "")
+            if not self._user_token:
+                logger.warning("social_takeover: refresh returned empty access_token")
+                return False
             if new_refresh:
                 self._refresh_token = new_refresh
-            expires_in = token_data.get("token", {}).get("expires_in", 7200)
+            expires_in = token_data.get("expires_in", 7200)
             self._token_expires = time.time() + expires_in - 60
             _save_tokens(self.instance_id, self._user_token, self._refresh_token)
-            logger.info("social_takeover: token refreshed, expires in %ds", expires_in)
+            logger.info("social_takeover: token refreshed (OIDC), expires in %ds", expires_in)
+            self._load_self_info()
             return True
         except Exception as exc:
             logger.warning("social_takeover: refresh exception: %s", exc)
@@ -153,29 +222,103 @@ class FeishuSocialTakeover:
             logger.debug("social_takeover API %s exception: %s", path, exc)
             return None
 
-    def _list_chats(self) -> dict[str, str]:
-        """列出 zhp 参与的所有群。返回 {chat_id: chat_name}。"""
-        chats: dict[str, str] = {}
+    def _resolve_user_name(self, open_id: str) -> str:
+        """通过飞书 contact API 解析 open_id → name。带 _name_cache 避免重复请求。
+
+        用 tenant_access_token（应用身份），不是 user_access_token。
+        需要应用后台"可用范围"覆盖目标用户（否则 code=41050 no user authority）。
+
+        失败 → 返回空，不影响萹库主体流程。
+        """
+        if not open_id or open_id in self._name_cache:
+            return self._name_cache.get(open_id, "")
+        try:
+            tenant_tok = self._get_tenant_token()
+            if not tenant_tok:
+                return ""
+            resp = httpx.get(
+                f"{self._base}/contact/v3/users/{open_id}",
+                headers={"Authorization": f"Bearer {tenant_tok}"},
+                params={"user_id_type": "open_id"},
+                timeout=8,
+            )
+            data = resp.json()
+            if data.get("code") == 0:
+                name = (data.get("data") or {}).get("user", {}).get("name", "")
+                if name:
+                    self._name_cache[open_id] = name
+                    return name
+        except Exception:
+            pass
+        return ""
+
+    def _load_self_info(self) -> None:
+        """拿自己的 user info (OIDC user_info), 存 open_id + name 到 _name_cache。
+        同时设 self._self_open_id 供 at_me 检测用。
+        """
+        if not self._user_token:
+            return
+        try:
+            data = self._api_get("/authen/v1/user_info")
+            if data:
+                name = data.get("name", "")
+                oid = data.get("open_id", "")
+                if name and oid:
+                    self._name_cache[oid] = name
+                    self._self_open_id = oid
+                    logger.info("social_takeover: self_info loaded name=%s open_id=%s", name, oid[:16])
+        except Exception:
+            pass
+
+    def _list_chats(self) -> dict[str, dict]:
+        """列出 zhp 参与的会话。返回 {chat_id: {name, type}}。
+
+        Feishu `/im/v1/chats` API 不支持 chat_type 过滤参数(已实测被忽略),
+        且只返回 group/topic 类型会话 —— P2P 私聊不在该列表里(P2P 是按需隐式建立的,
+        通过给对方 open_id 发消息或读 `/im/v1/messages` 用 user_id_type 拉私聊历史)。
+
+        MVP 策略: 这里仅拉 group/topic 会话; P2P 私聊消息走另一条路
+        (后续单独加 `_fetch_p2p_with_recent_contacts` 或在 messages API 用 user_id_type
+        拉跟特定联系人的 chat thread)。当前先把 group/topic 一类群萹库, P2P 留下一阶段。
+
+        实测每条 item 含:
+          chat_id, chat_mode(group|topic), name, owner_id, external, description...
+        """
+        chats: dict[str, dict] = {}
         page_token = None
         for _ in range(10):  # 最多翻 10 页
-            params: dict[str, Any] = {"page_size": 100, "user_id_type": "open_id"}
+            params: dict[str, Any] = {
+                "page_size": 100,
+                "user_id_type": "open_id",
+            }
             if page_token:
                 params["page_token"] = page_token
             data = self._api_get("/im/v1/chats", params)
             if not data:
                 break
             for item in data.get("items", []):
-                chat_id = item.get("chat_id", "")
-                chat_name = item.get("name", "")
-                if chat_id:
-                    chats[chat_id] = chat_name
+                cid = item.get("chat_id", "")
+                if not cid:
+                    continue
+                name = item.get("name", "") or ""
+                mode = (item.get("chat_mode", "") or "group").lower()
+                # chat_mode=topic 当作 group 类(话题组也是群一种); 真正 P2P 不在这返
+                type_str = "group" if mode in ("group", "topic") else mode
+                if cid not in chats:
+                    chats[cid] = {"name": name, "type": type_str}
             page_token = data.get("page_token")
             if not data.get("has_more"):
                 break
         return chats
 
     def _fetch_messages(self, chat_id: str, chat_name: str) -> list[dict]:
-        """拉某个群的最近消息。返回标准化的消息列表。"""
+        """拉某个群的最近消息。返回标准化的消息列表。
+
+        增强字段:
+          - at_me: bool — 该消息是否@了当前机器人 user(本 OAuth 的 open_id)
+          - at_all: bool — 是否@所有人
+          - sender_is_app: bool — sender 是 app(机器人) 还是真人
+        """
         data = self._api_get(
             "/im/v1/messages",
             {
@@ -192,7 +335,7 @@ class FeishuSocialTakeover:
             msg_id = item.get("message_id", "")
             if not msg_id or msg_id in self._seen_ids:
                 continue
-            # 解析 body (飞书消息 body 是 JSON string)
+            # 解析 body
             body_raw = item.get("body", {}).get("content", "{}")
             try:
                 import json
@@ -202,11 +345,29 @@ class FeishuSocialTakeover:
                 text = str(body_raw)[:200]
             # 解析 sender
             sender = item.get("sender", {})
-            sender_id_raw = sender.get("id", "")
-            # sender.id 是完整 open_id, 截短
-            sender_id = sender_id_raw
-            # 飞书 sender_id 在 sender 对象里, name 不一定有
-            sender_name = ""  # 需要额外调 API 才知道名字, 先空着
+            sender_id = sender.get("id", "")
+            sender_type = sender.get("sender_type", "")  # 'user' or 'app'
+            sender_is_app = sender_type == "app"
+            # sender name: 优先 cache; app 类型 →空
+            sender_name = self._resolve_user_name(sender_id) if not sender_is_app else ""
+            # 解析 mentions (@信息) — 同时把 mention name 缓存到 _name_cache
+            mentions_raw = item.get("mentions") or []
+            at_all = False
+            at_me = False
+            for mt in mentions_raw:
+                if not isinstance(mt, dict):
+                    continue
+                mt_id = mt.get("id", "")
+                mt_key = mt.get("key", "")
+                mt_name = mt.get("name", "")
+                if mt.get("is_at_all") or mt_id == "all" or mt_key == "at_all":
+                    at_all = True
+                elif self._self_open_id and (mt_id == self._self_open_id or mt_key == self._self_open_id):
+                    at_me = True
+                # 顺手缓存 mention name → open_id mapping (飞书 mention 自带 name)
+                if mt_name and mt_id:
+                    self._name_cache[mt_id] = mt_name
+
             msg_type = item.get("msg_type", "text")
             if msg_type == "text" and text:
                 messages.append({
@@ -214,10 +375,15 @@ class FeishuSocialTakeover:
                     "chat_id": chat_id,
                     "chat_name": chat_name,
                     "sender_id": sender_id,
+                    "sender_is_app": sender_is_app,
                     "sender_name": sender_name,
                     "text": text.strip()[:500],
                     "message_ts": float(item.get("create_time", "0") or "0"),
+                    "at_me": at_me,
+                    "at_all": at_all,
+                    "mentions": mentions_raw,
                 })
+        return messages
         return messages
 
     def _emit_command(self, msg: dict) -> None:
@@ -246,14 +412,19 @@ class FeishuSocialTakeover:
         """一次轮询:拉群 → 拉消息 → 入库 → 检测命令。"""
         if not self._ensure_token():
             return
-        # 1. 刷新群列表(每 5 分钟刷一次)
+        # 1. 刷新会话列表(群 + P2P); 每 5 分钟刷一次
         if not self._chats or time.time() % 300 < POLL_INTERVAL:
             self._chats = self._list_chats()
             if not self._chats:
                 return
-        # 2. 逐群拉消息
+            n_group = sum(1 for v in self._chats.values() if v.get("type") == "group")
+            n_p2p = sum(1 for v in self._chats.values() if v.get("type") == "p2p")
+            logger.info("social_takeover: chats refreshed instance=%s groups=%d p2p=%d",
+                        self.instance_id[:8], n_group, n_p2p)
+        # 2. 逐会话拉消息
         from domain.social.store import insert_message, has_command
-        for chat_id, chat_name in self._chats.items():
+        for chat_id, chat_meta in self._chats.items():
+            chat_name = chat_meta.get("name", "") if isinstance(chat_meta, dict) else str(chat_meta)
             msgs = self._fetch_messages(chat_id, chat_name)
             for msg in msgs:
                 self._seen_ids.add(msg["message_id"])
@@ -262,19 +433,89 @@ class FeishuSocialTakeover:
                     chat_id=msg["chat_id"],
                     chat_name=msg["chat_name"],
                     message_id=msg["message_id"],
-                    sender_name=msg["sender_name"],
+                    sender_name=msg.get("sender_name", ""),
                     sender_id=msg["sender_id"],
                     text=msg["text"],
                     message_ts=msg["message_ts"],
                     instance_id=self.instance_id,
+                    at_all=msg.get("at_all", False),
+                    at_me=msg.get("at_me", False),
+                    sender_is_app=msg.get("sender_is_app", False),
                 )
-                if is_new and has_command(msg["text"]):
-                    self._emit_command(msg)
+                # 即时触发: zhp 本人说的话含关键词 → emit social_command 立刻唤醒
+                # 其他人发的消息仅萹库, 等模型自然醒来时被动看到
+                if is_new:
+                    from domain.social.store import is_zhp_command
+                    if is_zhp_command(msg["text"], msg["sender_id"], self._self_open_id):
+                        self._emit_command(msg)
             # 控制频率, 避免飞书 rate limit
             time.sleep(0.5)
         # 3. 清理 _seen_ids (保留最近 5000 条)
         if len(self._seen_ids) > 10000:
             self._seen_ids = set(list(self._seen_ids)[-5000:])
+        # 注: 已废除 _maybe_emit_review 主动触发 social_review 事件路径。
+        # 社交接管改为「项目化 + 待办面板」模式: daemon 只萹库, 模型正常 wake
+        # 时通过 todos 面板的「个人助理」项目日常待办, 决定是否进 social_feed 看
+        # 最新消息。这种统一机制更符合"一切都是项目+待办"的数字生命哲学。
+
+        # 4. 拉 P2P 私聊消息
+        # 飞书 /im/v1/chats 不返回 P2P 会话——用 contacts 表里的真实人 open_id 逐个拉。
+        # 只拉最近有互动的联系人(从 messages.db 取最近 7 天有私聊记录的 chat_id)。
+        self._fetch_p2p_messages()
+
+    def _fetch_p2p_messages(self) -> None:
+        """拉 P2P 私聊消息。
+
+        飞书 /im/v1/chats API 不返回私聊会话,我们必须自己确定跟谁有私聊。
+        策略: 从 messages.db(WS 实时通道萹库)取最近 7 天有私聊记录的 ou_ 开头的 chat_id,
+        再用 /im/v1/messages?container_id_type=chat&container_id=ou_xxx 拉最新消息。
+        这样只拉"已知有对话的私聊",不会拉陌生人的。
+        """
+        try:
+            import sqlite3 as _sqlite3
+            from infrastructure.config import get_runtime_state_db_path
+            inst_path = Path("apps") / self.instance_id / "data" / "messages.db"
+            if not inst_path.exists():
+                return
+            mdb = _sqlite3.connect(str(inst_path), timeout=3.0)
+            mdb.row_factory = _sqlite3.Row
+            # 取最近 7 天有私聊的 ou_ chat_id
+            rows = mdb.execute(
+                "SELECT DISTINCT chat_id FROM messages "
+                "WHERE chat_id LIKE 'ou_%' "
+                "ORDER BY ROWID DESC LIMIT 50"
+            ).fetchall()
+            mdb.close()
+            if not rows:
+                return
+
+            p2p_chat_ids = [r["chat_id"] for r in rows]
+            from domain.social.store import insert_message, is_zhp_command
+            for ou_id in p2p_chat_ids:
+                # 用 container_id_type=chat + container_id=ou_xxx 拉私聊消息
+                msgs = self._fetch_messages(ou_id, f"私聊")
+                for msg in msgs:
+                    self._seen_ids.add(msg["message_id"])
+                    is_new = insert_message(
+                        source="feishu",
+                        chat_id=msg["chat_id"],
+                        chat_name="私聊",
+                        message_id=msg["message_id"],
+                        sender_name=msg.get("sender_name", ""),
+                        sender_id=msg["sender_id"],
+                        text=msg["text"],
+                        message_ts=msg["message_ts"],
+                        instance_id=self.instance_id,
+                        at_all=False,
+                        at_me=False,  # P2P 不需要 @
+                        sender_is_app=msg.get("sender_is_app", False),
+                    )
+                    if is_new and is_zhp_command(msg["text"], msg["sender_id"], self._self_open_id):
+                        self._emit_command(msg)
+                time.sleep(0.3)
+            logger.info("social_takeover: p2p messages fetched from %d contacts", len(p2p_chat_ids))
+        except Exception as exc:
+            logger.debug("social_takeover: p2p fetch failed: %s", exc)
 
     def _loop(self) -> None:
         """daemon loop。"""

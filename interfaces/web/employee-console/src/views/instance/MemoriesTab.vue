@@ -8,72 +8,58 @@
       <el-button @click="reloadAll"><el-icon><Refresh /></el-icon></el-button>
     </section>
 
-    <!-- 顶栏 tabs — 3 大板块: 持久化档案 / 短期暂存 / 切片认知 -->
-    <div class="kind-tabs">
-      <span class="tab-group-label">📦 持久化</span>
+    <!-- 两级导航:
+         一级 = 组 (持久化经历 / 短期暂存 / 切片认知)
+         二级 = 当前组内的 tab (持久化经历 4 个 / 短期暂存 3 个)
+         切片认知组只有切片一个内容, 不显示二级 tab 直接进入 -->
+    <div class="group-nav">
       <button
-        v-for="k in persistentKinds"
+        v-for="g in groups"
+        :key="g.key"
+        class="group-tab"
+        :class="{ active: activeGroup === g.key }"
+        @click="switchGroup(g.key)"
+      >{{ g.label }}</button>
+    </div>
+    <div v-if="activeGroup !== 'chunks'" class="kind-tabs">
+      <button
+        v-for="k in currentGroupKinds"
         :key="k.key"
         class="kind-tab"
-        :class="{ active: active === k.key }"
+        :class="[{ active: active === k.key }, k.section === 'ephemeral' ? 'kind-tab-ephemeral' : '']"
         @click="active = k.key"
       >
         <span class="kind-icon">{{ k.icon }}</span>
         <span>{{ k.label }}</span>
-        <span class="kind-count" v-if="counts[k.key] != null">{{ counts[k.key] }}</span>
-        <span class="kind-empty" v-else-if="loaded[k.key] === true && counts[k.key] === 0">0</span>
-      </button>
-
-      <span class="tab-group-label">⌛ 短期暂存</span>
-      <button
-        v-for="k in ephemeralKinds"
-        :key="k.key"
-        class="kind-tab kind-tab-ephemeral"
-        :class="{ active: active === k.key }"
-        @click="active = k.key"
-      >
-        <span class="kind-icon">{{ k.icon }}</span>
-        <span>{{ k.label }}</span>
-        <span class="kind-count" v-if="counts[k.key] != null">{{ counts[k.key] }}</span>
-        <span class="kind-empty" v-else-if="loaded[k.key] === true && counts[k.key] === 0">0</span>
-      </button>
-
-      <span class="tab-group-label">🔬 认知层</span>
-      <button
-        class="kind-tab kind-tab-chunks"
-        :class="{ active: active === 'chunks' }"
-        @click="active = 'chunks'"
-      >
-        <span class="kind-icon">📊</span>
-        <span>切片</span>
+        <span class="kind-count" :class="{ 'kind-count-zero': !tabCount(k.key) }">{{ tabCount(k.key) }}</span>
       </button>
     </div>
 
     <!-- 文件型记忆 (按 ## 标题拆分, 折叠显示) -->
     <template v-if="active !== 'assoc' && active !== 'chunks'">
-      <div v-if="loading" class="dev-placeholder"><span class="mono">loading…</span></div>
+      <div v-if="loading && !segments.length" class="dev-placeholder"><span class="mono">loading…</span></div>
       <div v-else-if="!segments.length" class="dev-placeholder">
-        <span class="mono">// 当前 {{ activeLabel }} 为空</span>
+        <span class="brand-sub mono" style="color: var(--text-muted);">(空)</span>
       </div>
       <div v-else class="segments-list">
-        <!-- 总字数 / 章节统计 -->
-        <div class="kind-summary brand-sub">
-          {{ activeLabel }} · 共 {{ segments.length }} 段 · {{ totalChars }} 字 · 文件
-          <code class="mono">{{ activeMeta.file }}</code>
-        </div>
-
-        <!-- 折叠 / 展开切换 -->
+        <!-- 工具栏: 段/字数 + 仅在段数较多时显示折叠/展开 + 仍有日期未展示时显示加载更多 -->
         <div class="seg-toolbar">
-          <el-button size="small" text @click="collapseAll">全部折叠</el-button>
-          <el-button size="small" text @click="expandAll">全部展开</el-button>
-          <el-button v-if="visibleDaysCount < totalDaysCount" size="small" text @click="showMoreDays">
+          <span class="brand-sub mono" style="color: var(--text-muted); font-size: 11px;">
+            {{ segments.length }} 段 · {{ totalChars }} 字
+          </span>
+          <span style="flex:1"></span>
+          <template v-if="segments.length > 5">
+            <el-button size="small" text @click="collapseAll">全部折叠</el-button>
+            <el-button size="small" text @click="expandAll">全部展开</el-button>
+          </template>
+          <el-button v-if="totalDaysCount > 0 && visibleDaysCount < totalDaysCount" size="small" text @click="showMoreDays">
             加载更多日期 ({{ visibleDaysCount }}/{{ totalDaysCount }})
           </el-button>
         </div>
 
-        <!-- 按天分组渲染, 每天一个折叠卡 -->
+        <!-- 按天分组渲染, 每天一个折叠卡 (day 卡默认收起, 段也默认收起) -->
         <template v-for="group in visibleDayGroupsWithLabel" :key="group.dateKey">
-          <details class="day-group" :open="group.isRecent">
+          <details class="day-group">
             <summary>
               <strong class="mono">📅 {{ group.dateLabel }}</strong>
               <span class="brand-sub mono" style="margin-left: 8px;">{{ group.segs.length }} 段 · {{ group.totalChars }} 字</span>
@@ -82,7 +68,6 @@
               v-for="(seg, idx) in group.segs"
               :key="group.dateKey + '-' + idx"
               class="segment-card"
-              :open="idx < 3"
             >
               <summary class="segment-head">
                 <span class="segment-title mono" v-if="seg.title">{{ seg.title }}</span>
@@ -124,23 +109,52 @@ const iid = computed(() => String(route.params.iid || ''))
 
 // 7 类:已退役 GOALS / HIM 删了对应 tab
 // 按持久化级别分两组:持久化存储 (人/项目长期沉淀) vs 短期暂存 (工作内存/中间态)
+// 持久化: 按使用频率排序 (意识流最高频)
+// 历史上"意识流·归档"已删除 —— 意识流文件本身足够且按天分组能浏览更早日期
 const kinds = [
-  // 持久化档案 - 永久保留 / 历史可追溯
-  { key: 'consciousness_archive', label: '意识流·归档', icon: '🗃️', file: 'CONSCIOUSNESS.archive.md', section: 'persistent' },
-  { key: 'consciousness', label: '意识流', icon: '🌀', file: 'CONSCIOUSNESS.md', section: 'persistent' },
-  { key: 'diary',         label: '日记',   icon: '📔', file: 'diary/', section: 'persistent' },
-  { key: 'lessons',       label: '教训',   icon: '⚠️', file: 'LESSONS.md (按主题分节)', section: 'persistent' },
-  { key: 'assoc',         label: '实体联想', icon: '👤', file: '/entities (人/项目/概念)', section: 'persistent' },
-  // 短期暂存 - 工作内存 / 等待 self_review 消化 / 每天覆盖
-  { key: 'insights',      label: '洞察',   icon: '💡', file: 'INSIGHTS.md', section: 'ephemeral' },
-  { key: 'scratchpad',    label: '草稿',   icon: '📝', file: 'SCRATCHPAD.md', section: 'ephemeral' },
-  { key: 'context',       label: '上下文', icon: '🔗', file: 'CONTEXT.md', section: 'ephemeral' },
+  // 第一组 持久化经历 - 原始写入的记忆 + 手工维护的实体联想
+  { key: 'consciousness', label: '意识流',    icon: '🌀', file: 'CONSCIOUSNESS.md', section: 'persistent' },
+  { key: 'lessons',       label: '教训',      icon: '⚠️', file: 'LESSONS.md', section: 'persistent' },
+  { key: 'assoc',         label: '实体联想',  icon: '👤', file: '/entities', section: 'persistent' },
+  { key: 'diary',         label: '日记',      icon: '📔', file: 'diary/', section: 'persistent' },
+  // 第二组 短期暂存 - 工作内存 / 等待 self_review 消化 / 每天覆盖
+  { key: 'insights',      label: '洞察',      icon: '💡', file: 'INSIGHTS.md', section: 'ephemeral' },
+  { key: 'scratchpad',    label: '草稿',      icon: '📝', file: 'SCRATCHPAD.md', section: 'ephemeral' },
+  { key: 'context',       label: '上下文',    icon: '🔗', file: 'CONTEXT.md', section: 'ephemeral' },
 ]
 const persistentKinds = computed(() => kinds.filter(k => k.section === 'persistent'))
 const ephemeralKinds  = computed(() => kinds.filter(k => k.section === 'ephemeral'))
+// groups 一级组的展示顺序 + label
+// 三组: 持久化经历(含原料+实体手工维护) / 短期暂存 / 切片认知(自动建索引)
+const groups = [
+  { key: 'persistent', label: '持久化经历' },
+  { key: 'ephemeral',  label: '短期暂存' },
+  { key: 'chunks',     label: '切片认知' },
+]
+// active 跟随 activeGroup 自动调整: 切组 → 跳到该组第一个 kind
+// 默认组 = persistent, 默认 tab = consciousness (意识流)
 const active = ref('consciousness')
+const activeGroup = ref('persistent')
+const currentGroupKinds = computed(() => {
+  if (activeGroup.value === 'chunks') {
+    // 切片认知组: 只有切片一个 tab (独立组件, 不在 kinds 数组里)
+    return [{ key: 'chunks', label: '切片', icon: '📊', section: 'chunks' }]
+  }
+  return kinds.filter(k => k.section === activeGroup.value)
+})
+function switchGroup(groupKey) {
+  if (groupKey === activeGroup.value) return
+  activeGroup.value = groupKey
+  // 切组自动跳到该组第一个 tab
+  if (groupKey === 'chunks') {
+    active.value = 'chunks'
+  } else {
+    const first = kinds.find(k => k.section === groupKey)
+    if (first) active.value = first.key
+  }
+}
 
-const loading = ref(false)
+const loading = ref(true)
 const currentContent = ref('')
 const segments = ref([])
 const loaded = ref({})  // {kind: bool} 哪些已加载
@@ -205,6 +219,9 @@ function splitByChapters(content) {
   for (const s of segs) {
     s.dateKey = extractDateKey(s.title, s.body)
   }
+  // 倒序: 文件通常是正序写入(旧的在前), 但 UI 展示应该最新的在最上面
+  // 让用户进入意识流先看到最近的写入, 不必滚到底
+  segs.reverse()
   return segs
 }
 
@@ -217,7 +234,7 @@ function extractDateKey(title, body) {
 
 // 按天分组 + 懒加载(初始显示最近 3 天)
 const dayGroups = computed(() => {
-  // 按 dateKey 分组 (segments 是 reverse 后的, 最近段在前)
+  // 按 dateKey 分组
   const map = new Map()  // dateKey -> {dateKey, segs, totalChars, isRecent}
   for (const s of segments.value) {
     const dk = s.dateKey || '未知日期'
@@ -226,20 +243,27 @@ const dayGroups = computed(() => {
     g.segs.push(s)
     g.totalChars += (s.body || '').length
   }
-  // 倒序(最近在前)+ 标 isRecent(头 2 篇 recent)
-  const arr = Array.from(map.values())
+  // 按 dateKey DESC 排序(最新日期在前), 不依赖上游 segments 顺序
+  // "未知日期" 因为字符串比较最大, 会浮到最前; 压到最后避免遮蔽正常日期
+  const arr = Array.from(map.values()).sort((a, b) => {
+    const ka = a.dateKey === '未知日期' ? '' : a.dateKey
+    const kb = b.dateKey === '未知日期' ? '' : b.dateKey
+    return kb.localeCompare(ka)
+  })
   arr.forEach((g, idx) => { g.isRecent = idx < 2 })
   return arr
 })
 const totalDaysCount = computed(() => dayGroups.value.length)
-const maxVisibleDays = ref(3)  // 默认显示最近 3 天, "加载更多" +5
+// 默认展示近 30 天, 全部 collapsed 状态. 用户进入 -> 看到所有日期 (折叠) -> 按需展开
+// 不再用 +5 step, 老 UX 让人只看到 "最近 3 天" 就要点加载, 不够方便
+const maxVisibleDays = ref(30)
 const visibleDaysCount = computed(() => Math.min(maxVisibleDays.value, totalDaysCount.value))
 const visibleDayGroups = computed(() => dayGroups.value.slice(0, maxVisibleDays.value))
 function showMoreDays() {
-  maxVisibleDays.value = Math.min(maxVisibleDays.value + 5, totalDaysCount.value)
+  maxVisibleDays.value = Math.min(maxVisibleDays.value + 30, totalDaysCount.value)
 }
-// 切 tab 时重置 maxVisibleDays
-watch(active, () => { maxVisibleDays.value = 3 })
+// 切 tab 时重置到近 30 天
+watch(active, () => { maxVisibleDays.value = 30 })
 
 // 给每组算 dateLabel (如: "2026-07-15" + weekday)
 const visibleDayGroupsWithLabel = computed(() => {
@@ -295,9 +319,30 @@ async function reloadAll() {
   // 强制刷新:清 cache 让下次访问必走网络
   segCache.value = {}
   loaded.value = {}
-  // 预加载当前路由组的首个 tab; 实体记忆由 MemoryAdvisorTab 自取, 无需父级处理
-  if (active.value === 'assoc') return
-  await loadMemory(active.value || persistentKinds.value[0]?.key || 'consciousness')
+  counts.value = {}
+  // 预拉所有 kind 的 count —— 避免 nav 数字徽章点击后才出现, 消除宽度跳变
+  // 实体联想(assoc) 不走 loadMemory, 单独走 /entities API 拿 count
+  // chunks 自带 count 在 ChunksTab 内部 loadChunks, 父级不预拉
+  const fileKinds = kinds.filter(k => k.key !== 'assoc').map(k => k.key)
+  const promises = [
+    ...fileKinds.map(k => loadMemory(k).catch(() => {})),
+    // 实体联想 count: 调 /entities 拿 total 字段(返回 capped 至 200 条, total 是真实计数)
+    (async () => {
+      try {
+        const r = await fetch(`/api/employee/${iid.value}/entities`)
+        const d = await r.json().catch(() => ({}))
+        counts.value = { ...counts.value, assoc: d.total ?? (d.entities || []).length ?? 0 }
+      } catch {}
+    })(),
+  ]
+  await Promise.all(promises)
+  // 再把当前 active 拉到位 (preload 已 cache 命中)
+  if (active.value === 'assoc' || active.value === 'chunks') return
+  await loadMemory(active.value || 'consciousness')
+}
+// nav badge 可以稳定显示的 count helper
+function tabCount(key) {
+  return counts.value[key] ?? 0
 }
 
 watch(active, (v) => {
@@ -318,34 +363,52 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.kind-tabs {
+/* 两级导航: 顶行组别(大), 第二行组内 tab(小) */
+.group-nav {
   display: flex;
   gap: 4px;
-  flex-wrap: wrap;
-  margin-bottom: var(--space-4);
-  border-bottom: 1px solid var(--border-line);
-  padding-bottom: 8px;
   align-items: center;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-line);
+  margin-bottom: 6px;
 }
-.tab-group-label {
-  font-size: 11px;
-  letter-spacing: 0.15em;
+.group-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
   color: var(--text-muted);
-  padding: 0 8px 0 4px;
-  font-family: var(--font-mono);
-  border-left: 1px solid var(--border-line-strong);
-  margin-left: 4px;
+  padding: 4px 12px 6px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: all 120ms;
+  margin-bottom: -1px;
 }
-.tab-group-label:first-child {
-  border-left: none;
-  margin-left: 0;
-  padding-left: 0;
+.group-tab:hover { color: var(--text-primary); }
+.group-tab.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--neon-cyan);
+}
+/* 二级 tab (组内) */
+.kind-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: var(--space-4);
+}
+.kind-tabs-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border-line-strong);
+  margin: 0 6px;
 }
 .kind-tab {
   background: transparent;
   border: 1px solid transparent;
   color: var(--text-secondary);
-  padding: 8px 14px;
+  padding: 5px 12px;
   border-radius: var(--radius);
   cursor: pointer;
   font-size: 13px;
@@ -376,15 +439,16 @@ onMounted(() => {
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--neon-cyan);
+  min-width: 18px;
+  text-align: center;
+  display: inline-block;
+}
+/* 数字 0/未加载时用 muted, 不抢视觉 (避免暂存类 "0 0 0" 太吵) */
+.kind-count.kind-count-zero {
+  color: var(--text-muted);
 }
 .kind-empty {
-  background: var(--bg-elevated);
-  padding: 1px 6px;
-  border-radius: var(--radius-sm);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--text-muted);
-  opacity: 0.6;
+  display: none;
 }
 
 .segments-list { display: flex; flex-direction: column; gap: var(--space-3); }

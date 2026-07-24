@@ -464,6 +464,9 @@ class SessionDB:
         给 recall_tool_result 工具用：上下文压缩只发生在发给 LLM 的 payload，
         DB 永远保留原始 content。LLM 调 recall_tool_result(tool_call_id=...) 时，
         通过本方法拿回该次工具调用的完整结果。
+
+        跨 session 查找: continuation session 里模型看到的压缩指针来自前一个 session,
+        所以当前 session_id 找不到时自动 fallback 到全库查(同一个 SessionDB = 同一个实例)。
         """
         with self._lock:
             row = self._conn.execute(
@@ -471,6 +474,13 @@ class SessionDB:
                 "WHERE session_id=? AND tool_call_id=? AND role='tool' LIMIT 1",
                 (session_id, tool_call_id),
             ).fetchone()
+            if not row:
+                # 跨 session fallback: continuation session 的压缩指针引用了旧 session 的 tool_call
+                row = self._conn.execute(
+                    "SELECT tool_name, content, timestamp FROM messages "
+                    "WHERE tool_call_id=? AND role='tool' LIMIT 1",
+                    (tool_call_id,),
+                ).fetchone()
         if not row:
             return None
         return {

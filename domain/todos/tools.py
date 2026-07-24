@@ -229,13 +229,13 @@ def register_task_tools(
                     },
                     "source": {
                         "type": "string",
-                        "description": "任务来源：'personal'（个人）或 'project:{project_id}'（来自项目 deliverable）",
+                        "description": "任务来源。'personal'(个人, 默认) / 'project:{project_id}'(项目派生) / 'project:personal_assistant'(替真人跟进的事项, 来源于社交接管 review)。建议从 social_feed review 出的消息落 todo 时填后者让面板有📬标识。",
                     },
                     "type": {
                         "type": "string",
                         "description": (
-                            "任务类型——标识这事的属性（暂时只记录不驱动逻辑）。"
-                            "例如 development、research、trading、design 等。"
+                            "任务类型——驱动对应 SKILL 方法论注入(task_types.yaml 映射), 模型拿到 todo 后看 type 决定走哪套方法论。"
+                            "常用值: development / research / trading / communication / project_management / assistance(辅助人类类, 来源是 personal_assistant 项目的替真人跟进事项)。留空走默认 todo_execution 通用方法论。"
                         ),
                     },
                     "linked_deliverable_id": {

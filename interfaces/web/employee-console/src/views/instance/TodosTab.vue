@@ -161,7 +161,7 @@ import { instanceApi } from '@/api/client'
 const route = useRoute()
 const iid = computed(() => String(route.params.iid || ''))
 const todos = ref([])
-const loading = ref(false)
+const loading = ref(true)
 const filterStatus = ref('all')
 
 const dlg = reactive({

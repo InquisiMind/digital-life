@@ -19,6 +19,40 @@
       </div>
     </div>
 
+    <!-- 跨实例 token 消耗走势 (汇总所有实例) -->
+    <div class="neon-card" style="margin-bottom: var(--space-5);">
+      <h3 style="font-family: var(--font-display); color: var(--text-secondary); margin: 0 0 var(--space-3);">
+        Token 消耗走势 · 汇总全部实例
+      </h3>
+      <div style="margin-bottom: var(--space-3); display: flex; gap: 8px; align-items: center;">
+        <button class="chart-tab" :class="{ active: tokenMode === 'hour' }" @click="switchTokenMode('hour')">今日 24h</button>
+        <button class="chart-tab" :class="{ active: tokenMode === 'day' }" @click="switchTokenMode('day')">近 30 天</button>
+        <span class="brand-sub" style="margin-left: auto; color: var(--text-muted);">
+          {{ tokenMode === 'hour' ? '按小时聚合（北京时间，每天 00:00 重置）· 跨实例累加' : '按天聚合（每日累计 token）· 跨实例累加' }}
+        </span>
+      </div>
+      <div ref="tokenChartEl" style="height: 240px;"></div>
+      <div v-if="tokenMode === 'hour'" style="display: flex; gap: var(--space-4); margin-top: var(--space-3); flex-wrap: wrap;">
+        <span class="brand-sub" style="color: var(--text-muted);">
+          今日累计 <strong style="color: var(--neon-cyan, #00f0ff);">{{ Number(tokenSeries.day_total_used || 0).toLocaleString() }}</strong> tokens
+        </span>
+        <span class="brand-sub" style="color: var(--text-muted);">
+          本时已用 <strong style="color: var(--neon-cyan, #00f0ff);">{{ Number(tokenSeries.hour_used || 0).toLocaleString() }}</strong>
+        </span>
+      </div>
+      <div v-else style="display: flex; gap: var(--space-4); margin-top: var(--space-3); flex-wrap: wrap;">
+        <span class="brand-sub" style="color: var(--text-muted);">
+          30 天累计 <strong style="color: var(--neon-cyan, #00f0ff);">{{ Number(tokenMonthTotal).toLocaleString() }}</strong> tokens
+        </span>
+        <span class="brand-sub" style="color: var(--text-muted);">
+          日均 <strong style="color: var(--neon-cyan, #00f0ff);">{{ Number(Math.round(tokenMonthTotal / Math.max(1, tokenDayCount))).toLocaleString() }}</strong>
+        </span>
+        <span class="brand-sub" style="color: var(--text-muted);">
+          近 7 天日均 <strong style="color: var(--neon-cyan, #00f0ff);">{{ Number(tokenWeekAvg).toLocaleString() }}</strong>
+        </span>
+      </div>
+    </div>
+
     <!-- 双栏：实时实例 + 项目列表 -->
     <div class="neon-grid" style="grid-template-columns: 1.4fr 1fr; gap: var(--space-5);">
       <div>
@@ -97,6 +131,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { systemApi } from '@/api/client'
 import { fmtTs } from '@/composables/useFormat'
+import { createChart, disposeChart, NEON_PALETTE } from '@/composables/useEcharts'
 // template 用 safeSlice 通过 app.config.globalProperties 注入；script 内用 fmtTs import
 
 const router = useRouter()
@@ -108,6 +143,94 @@ const toggling = ref('') // 正在切换 active 的实例 id
 const refreshTimer = ref(null)
 const now = ref(Date.now())
 const nowTs = computed(() => fmtTs(new Date(now.value).toISOString()))
+
+// ── 跨实例 token 走势图 (汇总) ──
+const tokenChartEl = ref(null)
+let tokenChartHandle = null
+const tokenMode = ref('hour')
+const tokenSeries = ref({})
+const tokenBucketCache = { hour: null, day: null }
+
+const tokenMonthTotal = computed(() => {
+  const buckets = tokenBucketCache.day || []
+  return buckets.reduce((s, b) => s + (Number(b.input) || 0) + (Number(b.output) || 0) + (Number(b.total_summary) || 0), 0)
+})
+const tokenDayCount = computed(() => {
+  const buckets = tokenBucketCache.day || []
+  return buckets.filter(b => (Number(b.input) || 0) + (Number(b.output) || 0) + (Number(b.total_summary) || 0) > 0).length
+})
+const tokenWeekAvg = computed(() => {
+  const buckets = (tokenBucketCache.day || []).slice().sort((a, b) => String(a.at_iso).localeCompare(String(b.at_iso)))
+  const last7 = buckets.slice(-7)
+  if (!last7.length) return 0
+  const total = last7.reduce((s, b) => s + (Number(b.input) || 0) + (Number(b.output) || 0) + (Number(b.total_summary) || 0), 0)
+  return Math.round(total / last7.length)
+})
+
+async function loadChart() {
+  try {
+    const tkHours = tokenMode.value === 'day' ? 720 : 24
+    const d = await systemApi.systemBudgetSeries(tkHours, tokenMode.value)
+    if (d && !d.error) {
+      tokenSeries.value = d
+      tokenBucketCache[tokenMode.value] = d.buckets || []
+      renderTokenChart(d.buckets || [])
+    }
+  } catch {}
+}
+
+function switchTokenMode(mode) {
+  if (mode === tokenMode.value) return
+  tokenMode.value = mode
+  const cached = tokenBucketCache[mode]
+  if (cached && cached.length) {
+    renderTokenChart(cached)
+  } else {
+    loadChart()
+  }
+}
+
+function renderTokenChart(buckets) {
+  if (!tokenChartEl.value || !buckets.length) return
+  const isDay = tokenMode.value === 'day'
+  const labels = buckets.map(b => {
+    const iso = b.at_iso || ''
+    return isDay ? iso.slice(5, 10) : iso.slice(11, 16)
+  })
+  const mainInput = buckets.map(b => Number(b.input) || 0)
+  const mainOutput = buckets.map(b => Number(b.output) || 0)
+  const summaryTotal = buckets.map(b => Number(b.total_summary) || 0)
+  const mainTotal = buckets.map(b => (Number(b.input) || 0) + (Number(b.output) || 0))
+  const series = isDay ? [
+    { name: '主用量', type: 'bar', stack: 'main', data: mainTotal, itemStyle: { color: NEON_PALETTE[0] } },
+    { name: '摘要', type: 'bar', stack: 'main', data: summaryTotal, itemStyle: { color: NEON_PALETTE[4] } },
+  ] : [
+    { name: '主输入', type: 'line', smooth: true, data: mainInput },
+    { name: '主输出', type: 'line', smooth: true, data: mainOutput },
+    { name: '摘要', type: 'line', smooth: true, data: summaryTotal, lineStyle: { type: 'dashed' } },
+  ]
+  const legendData = isDay ? ['主用量', '摘要'] : ['主输入', '主输出', '摘要']
+  const option = {
+    backgroundColor: 'transparent',
+    color: [NEON_PALETTE[0], NEON_PALETTE[1], NEON_PALETTE[4]],
+    grid: { top: 30, left: 50, right: 50, bottom: 30, containLabel: true },
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: 'rgba(10,14,36,0.95)',
+      borderColor: 'rgba(0,240,255,0.32)',
+      textStyle: { color: '#e8ecff' },
+      valueFormatter: v => Number(v).toLocaleString(),
+    },
+    legend: { data: legendData, textStyle: { color: '#9aa4cf' }, top: 0 },
+    xAxis: { type: 'category', data: labels, axisLabel: { color: '#7a85ad' }, axisLine: { lineStyle: { color: '#2a3358' } } },
+    yAxis: [
+      { type: 'value', name: 'tokens', axisLabel: { color: '#7a85ad' }, splitLine: { lineStyle: { color: 'rgba(42,51,88,0.4)' } } },
+    ],
+    series,
+  }
+  if (tokenChartHandle) disposeChart(tokenChartHandle)
+  tokenChartHandle = createChart(tokenChartEl.value, option)
+}
 
 const stats = computed(() => [
   { label: '总实例数', value: instances.value.length, hint: 'registered' },
@@ -156,11 +279,15 @@ async function load() {
 
 onMounted(() => {
   load()
+  loadChart()
   refreshTimer.value = setInterval(load, 10000)
   setInterval(() => { now.value = Date.now() }, 30000)
 })
 
-onUnmounted(() => clearInterval(refreshTimer.value))
+onUnmounted(() => {
+  clearInterval(refreshTimer.value)
+  if (tokenChartHandle) disposeChart(tokenChartHandle)
+})
 </script>
 
 <style scoped>
@@ -237,5 +364,23 @@ onUnmounted(() => clearInterval(refreshTimer.value))
 .project-row {
   margin-bottom: var(--space-3);
   padding: var(--space-4);
+}
+
+/* token 走势图切换 tab */
+.chart-tab {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-line);
+  color: var(--text-secondary);
+  padding: 4px 12px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 120ms;
+}
+.chart-tab:hover { color: var(--text-primary); border-color: var(--neon-cyan); }
+.chart-tab.active {
+  background: color-mix(in oklab, var(--neon-cyan) 15%, var(--bg-elevated));
+  color: var(--neon-cyan);
+  border-color: var(--neon-cyan);
 }
 </style>

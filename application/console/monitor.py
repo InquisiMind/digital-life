@@ -344,9 +344,25 @@ class MonitorConsoleWorkflow:
             if not filename:
                 return UseCaseResult({"error": f"unknown memory: {name}"}, 404)
             path = mem_dir / filename
-            if not path.exists():
-                return UseCaseResult({"content": "", "name": name, "dates": []})
-            content = path.read_text(encoding="utf-8")
+            # 意识流特殊处理: dream 整理把老内容切到 .archive.md, UI 想看全量历史必须合并
+            # 不再做单独 archive tab —— "归档" 是实现细节, 用户视角是同一个意识流时间序列
+            parts: list[str] = []
+            archive_text = ""
+            if name == "consciousness":
+                archive_path = mem_dir / "CONSCIOUSNESS.archive.md"
+                if archive_path.exists():
+                    archive_text = archive_path.read_text(encoding="utf-8").strip()
+                if path.exists():
+                    cur_text = path.read_text(encoding="utf-8").strip()
+                else:
+                    cur_text = ""
+                # 当前内容在前(最新), archive 追加在后(较老); 前端按天分组倒序自然正确
+                parts = [p for p in [cur_text, archive_text] if p]
+                content = "\n\n".join(parts)
+            elif path.exists():
+                content = path.read_text(encoding="utf-8")
+            else:
+                content = ""
             dates = self.parse_memory_dates(content)
             if date_filter:
                 content = self.slice_memory_by_date(content, date_filter)
@@ -382,10 +398,21 @@ class MonitorConsoleWorkflow:
                 content = self.slice_memory_by_date(old.read_text(encoding="utf-8"), date_filter)
                 return UseCaseResult({"content": content, "name": "diary", "dates": dates})
             return UseCaseResult({"content": "", "name": "diary", "dates": dates})
+        # 默认: 合并所有日记文件 (最新在前), 让前端按天分组展示历史全量
+        # 以前只返回 dates[0] 一天的内容, 用户看到 "日记为啥只有很少"
         if dates:
-            daily_file = diary_dir / f"{dates[0]}.md"
-            if daily_file.exists():
-                return UseCaseResult({"content": daily_file.read_text(encoding="utf-8"), "name": "diary", "dates": dates})
+            parts: list[str] = []
+            for d in dates:
+                daily_file = diary_dir / f"{d}.md"
+                if daily_file.exists():
+                    txt = daily_file.read_text(encoding="utf-8").strip()
+                    if txt:
+                        parts.append(txt)
+            if old.exists():
+                legacy = old.read_text(encoding="utf-8").strip()
+                if legacy:
+                    parts.append(f"## (legacy DIARY.md)\n\n{legacy}")
+            return UseCaseResult({"content": "\n\n".join(parts), "name": "diary", "dates": dates})
         return UseCaseResult({"content": "", "name": "diary", "dates": dates})
 
     def events(self) -> UseCaseResult:
@@ -1076,7 +1103,7 @@ class MonitorConsoleWorkflow:
         except Exception as exc:
             return UseCaseResult({"error": str(exc)}, 500)
 
-    def chunks(self, query: str = "", source: str = "", limit: int = 20) -> UseCaseResult:
+    def chunks(self, query: str = "", source: str = "", limit: int = 20, offset: int = 0) -> UseCaseResult:
         try:
             db = self._vector_db()
             if db is None:
@@ -1091,7 +1118,8 @@ class MonitorConsoleWorkflow:
                     where_parts.append("source = ?")
                     params.append(source)
                 where_sql = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
-                capped_limit = min(int(limit), 50)
+                capped_limit = min(max(int(limit), 1), 100)
+                safe_offset = max(int(offset), 0)
                 total = db.execute(f"SELECT COUNT(*) as c FROM chunks{where_sql}", params).fetchone()["c"]
                 # Feature 002 (T028+D): 列表带 phase / source_kind / authority /
                 # freshness / cognition_state / supersede_by, 让前端能展示切片层属性
@@ -1100,8 +1128,8 @@ class MonitorConsoleWorkflow:
                     f"""SELECT id, source, substr(text, 1, 200) as text, created_at,
                               phase, source_kind, authority, freshness, cognition_state
                         FROM chunks{where_sql}
-                        ORDER BY created_at DESC LIMIT ?""",
-                    params + [capped_limit],
+                        ORDER BY created_at DESC LIMIT ? OFFSET ?""",
+                    params + [capped_limit, safe_offset],
                 ).fetchall()
                 return UseCaseResult({"chunks": [dict(row) for row in rows], "total": total})
             finally:

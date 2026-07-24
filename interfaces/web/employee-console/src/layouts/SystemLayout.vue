@@ -121,7 +121,6 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Back, Odometer, ChatDotRound, List, Calendar, Folder, MagicStick,
   Collection, User, Document, Setting, DataAnalysis, Cpu, Bell, RefreshRight,
-  Histogram,
 } from '@element-plus/icons-vue'
 import { systemApi } from '../api/client'
 
@@ -156,7 +155,6 @@ const instanceNav = [
   { path: '/projects', label: '参与项目', icon: Folder },
   { path: '/skills', label: '能力订阅', icon: MagicStick },
   { path: '/memories', label: '记忆 / 联想', icon: Collection },
-  { path: '/chunks', label: '切片 / 认知层', icon: Histogram },
   { path: '/contacts', label: '社交关系', icon: User },
   { path: '/persona', label: '人设 / 提示词', icon: Document },
   { path: '/config', label: '实例配置', icon: Setting },

@@ -33,7 +33,6 @@ import InstanceCalendar from './views/instance/CalendarTab.vue'
 import InstanceProjects from './views/instance/ProjectsTab.vue'
 import InstanceSkills from './views/instance/SkillsTab.vue'
 import InstanceMemories from './views/instance/MemoriesTab.vue'
-import InstanceChunks from './views/instance/ChunksTab.vue'
 import InstanceContacts from './views/instance/ContactsTab.vue'
 import InstancePersona from './views/instance/PersonaTab.vue'
 import InstanceConfig from './views/instance/ConfigTab.vue'
@@ -67,7 +66,6 @@ const routes = [
       { path: 'projects', component: InstanceProjects, meta: { title: '参与项目', icon: 'Folder' } },
       { path: 'skills', component: InstanceSkills, meta: { title: '能力订阅', icon: 'MagicStick' } },
       { path: 'memories', component: InstanceMemories, meta: { title: '记忆 / 联想', icon: 'Collection' } },
-      { path: 'chunks', component: InstanceChunks, meta: { title: '切片 / 认知层', icon: 'Histogram' } },
       { path: 'contacts', component: InstanceContacts, meta: { title: '社交关系', icon: 'User' } },
       { path: 'persona', component: InstancePersona, meta: { title: '人设 / 提示词', icon: 'Document' } },
       { path: 'config', component: InstanceConfig, meta: { title: '实例配置', icon: 'Setting' } },

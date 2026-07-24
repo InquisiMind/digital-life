@@ -154,6 +154,52 @@ def _project_label(project_id: str) -> str:
     return f"项目:{project_id}"
 
 
+def _project_meta_line(project_id: str, iid: str) -> str:
+    """生成项目分组头下方的"目标 + 我的岗位 + 协作者"一行元信息。
+
+    设计：把原来 SYS prompt 里的「💼 项目 - 岗位 - 职责 - 协作者」段并入待办面板。
+    项目存在 ⟺ 有待办；没有待办的项目整体从这里消失，prompt 自然清理。
+    返回空串表示该项目无附加信息（个人项目 / loader 找不到 / 无 iid 等）。
+    """
+    if not project_id or not iid:
+        return ""
+    try:
+        from domain.project.loader import load_project
+        from infrastructure.config import get_instance_display_name
+        cfg = load_project(project_id)
+        if not cfg:
+            return ""
+        parts: list[str] = []
+        # 我的岗位
+        my_pos = cfg.get_position_for_instance(iid)
+        if my_pos and my_pos.name:
+            parts.append(f"岗位 {my_pos.name}")
+        # 协作者(同项目其它岗位的承担者)
+        partner_labels: list[str] = []
+        for other_pos in cfg.positions:
+            if my_pos and other_pos.id == my_pos.id:
+                continue
+            for asg in other_pos.assignees:
+                if asg.startswith("human:"):
+                    partner_labels.append(f"zhp/{other_pos.name}")
+                else:
+                    name = get_instance_display_name(asg) or asg[:8]
+                    partner_labels.append(f"{name}/{other_pos.name}")
+        if partner_labels:
+            parts.append("协作者 " + "、".join(partner_labels))
+        # 目标一句话
+        goal = cfg.goal or {}
+        if isinstance(goal, dict):
+            gs = goal.get("statement", "")
+            if gs:
+                parts.append(f"目标 {gs}")
+        if not parts:
+            return ""
+        return "  · " + " | ".join(parts)
+    except Exception:
+        return ""
+
+
 def _render_badges(item: dict, now_dt: Any) -> str:
     """生成徽章列表（紧凑的一行）。"""
     task = item["task"]
@@ -199,6 +245,35 @@ def _render_badges(item: dict, now_dt: Any) -> str:
     # has_workspace
     if task.has_workspace:
         badges.append({"emoji": "🗂️", "text": "工作空间"})
+
+    # 来源徽章(source 字段)
+    # - 'personal' 或空 → 不显示(默认情况, 避免噪音)
+    # - 'project:personal_assistant' → 📬 社交接管来源(项目化设计)
+    # - 'project:{其它}' → 📁 项目标识
+    src = (task.source or "").strip()
+    if src and src != "personal":
+        if src == "project:personal_assistant":
+            badges.append({"emoji": "📬", "text": "社交接管"})
+        elif src.startswith("project:"):
+            proj_short = src.split(":", 1)[1][:8]
+            badges.append({"emoji": "📁", "text": f"项目:{proj_short}"})
+
+    # type=assistance → 🤝 辅助人类类任务(替真人跟进的事项)
+    task_type = (getattr(task, "type", "") or "").strip().lower()
+    if task_type == "assistance":
+        badges.append({"emoji": "🤝", "text": "替真人事"})
+
+    # tags 含 social 前缀 → 退化标签(老 social_review 路径已废, 历史数据兼容)
+    try:
+        tags_list = task.tags if isinstance(task.tags, list) else []
+    except Exception:
+        tags_list = []
+    for tag in tags_list:
+        if isinstance(tag, str) and tag.lower().startswith("social"):
+            # 已通过 source='project:personal_assistant' 显示了 📬, 不重复
+            if src != "project:personal_assistant":
+                badges.append({"emoji": "📬", "text": "社交接管"})
+            break
 
     return " ".join(f"{b['emoji']} {b['text']}" for b in badges)
 
@@ -329,6 +404,10 @@ def render_my_board(iid: str, now_dt: Any) -> str:
         # 同项目内按紧迫度排序
         proj_items.sort(key=lambda i: _sort_key(i, now_dt))
         lines.append(f"\n### {_project_label(pid)}（{len(proj_items)} 条）")
+        # 项目元信息(岗位/协作者/目标) — 替代原 SYS 里的职责段; 无 todo = 项目消失, 信息同步清理
+        meta_line = _project_meta_line(pid, iid) if pid else ""
+        if meta_line:
+            lines.append(meta_line)
         for item in proj_items:
             lines.extend(_render_todo_lines(item, now_dt))
 

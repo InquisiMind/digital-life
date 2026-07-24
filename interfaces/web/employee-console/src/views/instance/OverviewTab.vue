@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div v-loading="loading" style="min-height: 200px;">
     <section class="page-hero">
       <div>
         <h1 class="page-title">{{ instanceName }}</h1>
@@ -66,21 +66,36 @@
       <h3 style="font-family: var(--font-display); color: var(--text-secondary); margin: 0 0 var(--space-3);">
         Token 消耗趋势
       </h3>
-      <div style="display: flex; gap: var(--space-4); margin-bottom: var(--space-3); flex-wrap: wrap;">
+      <div style="margin-bottom: var(--space-3); display: flex; gap: 8px; align-items: center;">
+        <button class="chart-tab" :class="{ active: tokenMode === 'hour' }" @click="switchTokenMode('hour')">今日 24h</button>
+        <button class="chart-tab" :class="{ active: tokenMode === 'day' }" @click="switchTokenMode('day')">近 30 天</button>
+        <span class="brand-sub" style="margin-left: auto; color: var(--text-muted);">
+          {{ tokenMode === 'hour' ? '按小时聚合（北京时间，每天 00:00 重置）' : '按天聚合（每日累计 token）' }}
+        </span>
+      </div>
+      <div ref="tokenChartEl" style="height: 240px;"></div>
+      <!-- 今日 24h 模式下累计统计(紧跟图下) -->
+      <div v-if="tokenMode === 'hour'" style="display: flex; gap: var(--space-4); margin-top: var(--space-3); flex-wrap: wrap;">
         <span class="brand-sub" style="color: var(--text-muted);">
           今日累计 <strong style="color: var(--neon-cyan, #00f0ff);">{{ Number(tokenSeries.day_total_used || 0).toLocaleString() }}</strong> tokens
         </span>
         <span class="brand-sub" style="color: var(--text-muted);">
           本时已用 <strong style="color: var(--neon-cyan, #00f0ff);">{{ Number(tokenSeries.hour_used || 0).toLocaleString() }}</strong>
         </span>
-        <span v-if="token429Today > 0" class="brand-sub" style="color: var(--neon-pink, #ff2d9c);">
-          ⚠ 今日 429 共 {{ token429Today }} 次
+      </div>
+      <!-- 近 30 天模式下: 30 天总量 + 日均 -->
+      <div v-else style="display: flex; gap: var(--space-4); margin-top: var(--space-3); flex-wrap: wrap;">
+        <span class="brand-sub" style="color: var(--text-muted);">
+          30 天累计 <strong style="color: var(--neon-cyan, #00f0ff);">{{ Number(tokenMonthTotal).toLocaleString() }}</strong> tokens
+        </span>
+        <span class="brand-sub" style="color: var(--text-muted);">
+          日均 <strong style="color: var(--neon-cyan, #00f0ff);">{{ Number(Math.round(tokenMonthTotal / Math.max(1, tokenDayCount))).toLocaleString() }}</strong>
+        </span>
+        <span class="brand-sub" style="color: var(--text-muted);">
+          近 7 天日均 <strong style="color: var(--neon-cyan, #00f0ff);">{{ Number(tokenWeekAvg).toLocaleString() }}</strong>
         </span>
       </div>
-      <div ref="tokenChartEl" style="height: 240px;"></div>
     </div>
-
-    <!-- 精力值波动（连续采样折线：涨=自然恢复，跌=消耗） -->
     <div class="neon-card" style="margin-bottom: var(--space-5);">
       <h3 style="font-family: var(--font-display); color: var(--text-secondary); margin: 0 0 var(--space-4);">
         精力值波动
@@ -245,6 +260,8 @@ const iid = computed(() => String(route.params.iid || ''))
 
 const meta = ref({})
 const energy = ref(0)
+// 全页 loading: 加载完成前不渲染主结构, 避免出现 "0% energy / 无待办" 等假空状态闪烁
+const loading = ref(true)
 // nurture_energy（加鸡腿）按钮状态
 const nurturing = ref(false)
 const nurtureHint = ref('')
@@ -265,11 +282,30 @@ const tokenChartEl = ref(null)
 const energyChartEl = ref(null)
 let tokenChartHandle = null
 let energyChartHandle = null
+// token 走势图模式：今日 24h(按小时聚合) / 近 30 天(按天聚合)
+const tokenMode = ref('hour')
+// 缓存两种 bucket 的数据, 切换时不重发请求
+const tokenBucketCache = { hour: null, day: null }
 const tokenSeries = ref({})
 const vitalsSeries = ref({ samples: [], events: [] })
-const token429Today = computed(() => {
-  // 汇总今日所有桶的 count_429（前端简单求和，桶默认按小时切）
-  return (tokenSeries.value.buckets || []).reduce((s, b) => s + (Number(b.count_429) || 0), 0)
+// 近 30 天 buckets 缓存的派生统计 (切到 day mode 时 loadCharts 写入 tokenBucketCache.day)
+// 由 day mode buckets 计算 30天总量 / 近7天日均 / 有数据天数
+const tokenMonthTotal = computed(() => {
+  const buckets = tokenBucketCache.day || []
+  return buckets.reduce((s, b) => s + (Number(b.input) || 0) + (Number(b.output) || 0) + (Number(b.total_summary) || 0), 0)
+})
+const tokenDayCount = computed(() => {
+  // 至少有一次非零 token 使用的天数 (避免空天数干扰"日均")
+  const buckets = tokenBucketCache.day || []
+  return buckets.filter(b => (Number(b.input) || 0) + (Number(b.output) || 0) + (Number(b.total_summary) || 0) > 0).length
+})
+const tokenWeekAvg = computed(() => {
+  // 取 day mode buckets 的最后 7 个(按 at_iso 升序), 求平均
+  const buckets = (tokenBucketCache.day || []).slice().sort((a, b) => String(a.at_iso).localeCompare(String(b.at_iso)))
+  const last7 = buckets.slice(-7)
+  if (!last7.length) return 0
+  const total = last7.reduce((s, b) => s + (Number(b.input) || 0) + (Number(b.output) || 0) + (Number(b.total_summary) || 0), 0)
+  return Math.round(total / last7.length)
 })
 let chartTimer = null
 // 通道状态（从 meta.channels 推出）
@@ -481,19 +517,26 @@ async function loadSummary() {
 }
 
 async function loadAll() {
-  await Promise.all([loadMeta(), loadStatus(), loadSummary()])
+  try {
+    await Promise.all([loadMeta(), loadStatus(), loadSummary()])
+  } finally {
+    loading.value = false
+  }
 }
 
 // ── 图表：拉 token 序列 + 精力序列，渲染两张图 ──
 // 60s 拉一次（比 15s poller 慢，降低开销；曲线粒度本身是分钟/小时级）
 async function loadCharts() {
   try {
+    const tkHours = tokenMode.value === 'day' ? 720 : 24
+    const tkBucket = tokenMode.value
     const [ts, vs] = await Promise.all([
-      instanceApi(iid.value).budgetSeries(24, 'hour'),
+      instanceApi(iid.value).budgetSeries(tkHours, tkBucket),
       instanceApi(iid.value).vitalsSeries(24),
     ])
     if (ts && !ts.error) {
       tokenSeries.value = ts
+      tokenBucketCache[tokenMode.value] = ts.buckets || []
       renderTokenChart(ts.buckets || [])
     }
     if (vs && !vs.error) {
@@ -503,30 +546,58 @@ async function loadCharts() {
   } catch {}
 }
 
+// 切换 token 图模式: 今日 24h(按小时) / 近 30 天(按天)
+function switchTokenMode(mode) {
+  if (mode === tokenMode.value) return
+  tokenMode.value = mode
+  const cached = tokenBucketCache[mode]
+  if (cached && cached.length) {
+    renderTokenChart(cached)
+  } else {
+    loadCharts()
+  }
+}
+
 function renderTokenChart(buckets) {
   if (!tokenChartEl.value || !buckets.length) return
-  const labels = buckets.map(b => (b.at_iso || '').slice(11, 16))  // HH:MM
+  // hour 模式 label: HH:MM; day 模式 label: MM-DD
+  const isDay = tokenMode.value === 'day'
+  const labels = buckets.map(b => {
+    const iso = b.at_iso || ''
+    return isDay ? iso.slice(5, 10) : iso.slice(11, 16)
+  })
   const mainInput = buckets.map(b => Number(b.input) || 0)
   const mainOutput = buckets.map(b => Number(b.output) || 0)
   const summaryTotal = buckets.map(b => (Number(b.total_summary) || 0))
-  const count429 = buckets.map(b => Number(b.count_429) || 0)
+  // day 模式累计 total 更直观(看每日总规模), hour 模式保持输入/输出分离看趋势
+  const mainTotal = buckets.map(b => (Number(b.input) || 0) + (Number(b.output) || 0))
+  // 取消 429 series (历史数据全是 0, 干扰判断)
+  const series = isDay ? [
+    { name: '主用量', type: 'bar', stack: 'main', data: mainTotal, itemStyle: { color: NEON_PALETTE[0] } },
+    { name: '摘要', type: 'bar', stack: 'main', data: summaryTotal, itemStyle: { color: NEON_PALETTE[4] } },
+  ] : [
+    { name: '主输入', type: 'line', smooth: true, data: mainInput },
+    { name: '主输出', type: 'line', smooth: true, data: mainOutput },
+    { name: '摘要', type: 'line', smooth: true, data: summaryTotal, lineStyle: { type: 'dashed' } },
+  ]
+  const legendData = isDay ? ['主用量', '摘要'] : ['主输入', '主输出', '摘要']
   const option = {
     backgroundColor: 'transparent',
     color: [NEON_PALETTE[0], NEON_PALETTE[1], NEON_PALETTE[4]],
     grid: { top: 30, left: 50, right: 50, bottom: 30, containLabel: true },
-    tooltip: { trigger: 'axis', backgroundColor: 'rgba(10,14,36,0.95)', borderColor: 'rgba(0,240,255,0.32)', textStyle: { color: '#e8ecff' } },
-    legend: { data: ['主输入', '主输出', '摘要', '429次数'], textStyle: { color: '#9aa4cf' }, top: 0 },
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: 'rgba(10,14,36,0.95)',
+      borderColor: 'rgba(0,240,255,0.32)',
+      textStyle: { color: '#e8ecff' },
+      valueFormatter: v => Number(v).toLocaleString(),
+    },
+    legend: { data: legendData, textStyle: { color: '#9aa4cf' }, top: 0 },
     xAxis: { type: 'category', data: labels, axisLabel: { color: '#7a85ad' }, axisLine: { lineStyle: { color: '#2a3358' } } },
     yAxis: [
       { type: 'value', name: 'tokens', axisLabel: { color: '#7a85ad' }, splitLine: { lineStyle: { color: 'rgba(42,51,88,0.4)' } } },
-      { type: 'value', name: '429次数', axisLabel: { color: '#7a85ad' }, splitLine: { show: false } },
     ],
-    series: [
-      { name: '主输入', type: 'line', smooth: true, data: mainInput, yAxisIndex: 0 },
-      { name: '主输出', type: 'line', smooth: true, data: mainOutput, yAxisIndex: 0 },
-      { name: '摘要', type: 'line', smooth: true, data: summaryTotal, yAxisIndex: 0, lineStyle: { type: 'dashed' } },
-      { name: '429次数', type: 'bar', data: count429, yAxisIndex: 1, itemStyle: { color: NEON_PALETTE[1] } },
-    ],
+    series,
   }
   if (tokenChartHandle) disposeChart(tokenChartHandle)
   tokenChartHandle = createChart(tokenChartEl.value, option)
@@ -702,5 +773,22 @@ h3 { margin: 0 0 var(--space-3); font-size: 14px; }
 .nurture-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+/* token 走势图切换 tab */
+.chart-tab {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-line);
+  color: var(--text-secondary);
+  padding: 4px 12px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 120ms;
+}
+.chart-tab:hover { color: var(--text-primary); border-color: var(--neon-cyan); }
+.chart-tab.active {
+  background: color-mix(in oklab, var(--neon-cyan) 15%, var(--bg-elevated));
+  color: var(--neon-cyan);
+  border-color: var(--neon-cyan);
 }
 </style>

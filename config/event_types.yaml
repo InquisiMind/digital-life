@@ -1,24 +1,3 @@
-# 事件类型注册表 —— 单一配置源
-# 所有事件的完整定义都在这里：trigger_type、payload_schema、allowed_tools、
-# wake_prompt、priority、debounce 策略等。不再需要 Python 硬编码或 heartbeat.py fallback。
-#
-# 字段说明：
-#   display_name:       中文显示名称
-#   trigger_type:       触发类型（external/condition/time/manual/system）
-#   trigger_description: 触发条件说明，给人类看的
-#   payload_schema:     事件字段定义（key: type），供模型了解事件结构
-#   description:        事件描述，队列展示和模型理解用
-#   priority:           优先级（1-10）
-#   debounce_window_s:  防抖时间窗口（秒）。窗口期内同类型事件合并为一条
-#   merge_policy:       合并策略（latest/accumulate/count）
-#   consumption_policy: 消费时机（on_detail/on_trigger）
-#   wake_prompt:        唤醒提示词模板
-#   allowed_tools:      该事件推荐使用的工具列表
-#   context_policy:     上下文策略（include_history、max_turns、include_rules、include_daily、
-#                       include_consciousness、include_session_digests、include_entity_recall、
-#                       include_self_review、include_proactive_policy、include_recent_sent、
-#                       include_vector_recall）
-
 event_types:
   message:
     display_name: 人类消息
@@ -36,27 +15,36 @@ event_types:
     debounce_window_s: 0
     merge_policy: latest
     consumption_policy: on_trigger
-    wake_prompt: |
-      💬 新消息。
+    wake_prompt: '💬 新消息。
+
       对话：{chat_id}
 
+
       {sender_name}：{text}
+
       {attachments_block}
+
 
       {sender_notes_block}
 
+
       如需回应，必须用 `express_to_human` 工具发送（直接 text 输出对方收不到）。
+
       默认 chat_id 留空 = 回复当前对话。
+
       如果上文中出现 `[图片 xxx]` / `[文件 xxx]`，可调 `sense_image(attachment_id)` 看图。
+
+      '
     allowed_tools:
-      - express_to_human
-      - sense_conversation
-      - update_scratchpad
-      - record_thought
-      - todo
-      - sense_image
-      - register_attachment
-      - rest
+    - express_to_human
+    - sense_conversation
+    - write_file
+    - record_thought
+    - todo
+    - sense_image
+    - register_attachment
+    - rest
+    - sense_social_feed
     context_policy:
       include_history: true
       max_turns: 20
@@ -69,7 +57,6 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: true
       include_vector_recall: false
-
   group_message:
     display_name: 群聊消息
     trigger_type: external
@@ -86,30 +73,38 @@ event_types:
       mention_map: string?
       attachments: object[]?
     description: 群聊中有新消息时触发
-    # debounce 关闭:消息合并已在 ingress adapter 内完成（见 interfaces/ingress/group_buffer.py）
-    # —— adapter 一次 flush 一条 NormalizedMessage(带 merged_texts 列表),事件层不再合并。
-    # 多实例错峰由 adapter 的 per-instance batch_offset_s 保证。
     debounce_window_s: 0
     merge_policy: accumulate
     consumption_policy: on_trigger
-    wake_prompt: |
-      💬 群聊有新消息。
+    wake_prompt: '💬 群聊有新消息。
+
       群：{chat_name}（{chat_id}）
+
       {sender_name}{sender_position}：{text}
+
       {_merged_texts_block}
+
       {attachments_block}
+
       {sender_notes_block}
 
+
       如需回应，必须用 `express_to_human` 工具发送（直接 text 输出对方收不到）。
+
       默认 chat_id 留空 = 回复当前群。当多条消息被合并（_merged_count > 1）时，
+
       可读后决定是否一并发声，沉默也合理。
+
       如果上文中出现 `[图片 xxx]` / `[文件 xxx]`，可调 `sense_image(attachment_id)` 看图。
+
+      '
     allowed_tools:
-      - express_to_human
-      - sense_users
-      - sense_image
-      - register_attachment
-      - rest
+    - express_to_human
+    - sense_users
+    - sense_image
+    - register_attachment
+    - rest
+    - sense_social_feed
     context_policy:
       include_history: false
       include_rules: false
@@ -121,7 +116,6 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: false
       include_vector_recall: false
-
   awaiting_reply:
     display_name: 等待回复
     trigger_type: manual
@@ -134,14 +128,18 @@ event_types:
     debounce_window_s: 0
     merge_policy: latest
     consumption_policy: on_detail
-    wake_prompt: |
-      💬 你之前给用户发了消息，对方没回。原话：
+    wake_prompt: '💬 你之前给用户发了消息，对方没回。原话：
+
       "{last_sent_text}"
 
+
       1.如果是需要用户决策 → 大概率对方默认你自己决定，别等，继续推进。
+
       2.如果不是需要用户决策的，继续上一轮的状态，干活或休息。
+
+      '
     allowed_tools:
-      - rest
+    - rest
     context_policy:
       include_history: true
       include_rules: true
@@ -153,7 +151,6 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: true
       include_vector_recall: false
-
   vital_threshold:
     display_name: 精力阈值预警
     trigger_type: condition
@@ -166,16 +163,21 @@ event_types:
     debounce_window_s: 0
     merge_policy: latest
     consumption_policy: on_detail
-    wake_prompt: |
-      ⚠️ 精力从 {from_seg} 跨档降到了 {to_seg}。
+    wake_prompt: '⚠️ 精力从 {from_seg} 跨档降到了 {to_seg}。
+
 
       rule-of-thumb：
+
       - 亢奋→精力充沛/正常：继续推进，但要警惕提早崩。
-      - 正常→疲惫：立刻 `update_scratchpad` 保存进度，再决定 rest 还是继续。
+
+      - 正常→疲惫：立刻 `write_file(name="scratchpad")` 保存进度，再决定 rest 还是继续。
+
       - 拖到精疲力竭 = 失败（已经回不去了）。
+
+      '
     allowed_tools:
-      - update_scratchpad
-      - rest
+    - write_file
+    - rest
     context_policy:
       include_history: false
       include_rules: false
@@ -187,7 +189,6 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: false
       include_vector_recall: false
-
   initiative:
     display_name: 主动探索
     trigger_type: condition
@@ -201,23 +202,30 @@ event_types:
     debounce_window_s: 300
     merge_policy: latest
     consumption_policy: on_detail
-    wake_prompt: |
-      ⚡ 主动推进的好时机——
+    wake_prompt: '⚡ 主动推进的好时机——
+
       精力：{energy}，已空闲：{hours_idle} 小时（综合 urgency={urgency}）。
 
+
       看你注入的待办看板：有 in_progress 的事 → 接着推；有今天/过期未处理的 → 优先清掉；
+
       看板干净且 urgency 高 → 想想有没有该做但没列上的，创建一条再开干；没什么真要做 → rest，别刷存在感。
+
       urgency≥7 优先推具体目标（持仓、复盘、能力迁移）；≤6 可探索或整理。
-      做完 `update_scratchpad` 留进度，再 `rest()`。
+
+      做完 `write_file(name="scratchpad")` 留进度，再 `rest()`。
+
+      '
     allowed_tools:
-      - sense_scratchpad
-      - todo
-      - todo_note
-      - todo_plan
-      - update_scratchpad
-      - skill_view
-      - express_to_human
-      - rest
+    - sense_file
+    - todo
+    - todo_note
+    - todo_plan
+    - write_file
+    - skill_view
+    - express_to_human
+    - rest
+    - sense_social_feed
     context_policy:
       include_history: false
       include_rules: true
@@ -229,7 +237,6 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: false
       include_vector_recall: true
-
   task_reminder:
     display_name: 任务提醒
     trigger_type: system
@@ -248,14 +255,20 @@ event_types:
     debounce_window_s: 0
     merge_policy: latest
     consumption_policy: on_detail
-    wake_prompt: "📋 任务「{task_title}」需要推进了。{content}\n\n先 `todo get {task_id}` 读取上下文（笔记、计划、进度），然后基于已有信息判断下一步并动手。\n\n{speckit_hint}{remaining_hint}{notes_hint}"
+    wake_prompt: '📋 任务「{task_title}」需要推进了。{content}
+
+
+      先 `todo get {task_id}` 读取上下文（笔记、计划、进度），然后基于已有信息判断下一步并动手。
+
+
+      {speckit_hint}{remaining_hint}{notes_hint}'
     allowed_tools:
-      - sense_todos
-      - todo
-      - todo_trigger
-      - todo_note
-      - todo_plan
-      - rest
+    - sense_todos
+    - todo
+    - todo_trigger
+    - todo_note
+    - todo_plan
+    - rest
     context_policy:
       include_history: false
       include_rules: true
@@ -267,7 +280,6 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: false
       include_vector_recall: false
-
   task_momentum:
     display_name: 任务惯性
     trigger_type: condition
@@ -286,15 +298,21 @@ event_types:
     debounce_window_s: 600
     merge_policy: latest
     consumption_policy: on_detail
-    wake_prompt: "🔄 任务「{task_title}」有段时间没推进了，继续。{content}\n\n`todo get {task_id}` 回顾进度，从第一个未完成的步骤继续。基于已有信息判断下一步并动手。\n\n{speckit_hint}{remaining_hint}{notes_hint}"
+    wake_prompt: '🔄 任务「{task_title}」有段时间没推进了，继续。{content}
+
+
+      `todo get {task_id}` 回顾进度，从第一个未完成的步骤继续。基于已有信息判断下一步并动手。
+
+
+      {speckit_hint}{remaining_hint}{notes_hint}'
     allowed_tools:
-      - sense_todos
-      - todo
-      - todo_trigger
-      - todo_note
-      - todo_plan
-      - express_to_human
-      - rest
+    - sense_todos
+    - todo
+    - todo_trigger
+    - todo_note
+    - todo_plan
+    - express_to_human
+    - rest
     context_policy:
       include_history: false
       include_rules: true
@@ -306,7 +324,6 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: false
       include_vector_recall: false
-
   routine:
     display_name: 作息事件
     trigger_type: time
@@ -322,27 +339,28 @@ event_types:
     debounce_window_s: 0
     merge_policy: latest
     consumption_policy: on_detail
-    wake_prompt: "{prompt}"
+    wake_prompt: '{prompt}'
     allowed_tools:
-      - sense_time
-      - sense_vitals
-      - sense_my_projects
-      - sense_todos
-      - sense_insights
-      - sense_todos
-      - sense_scratchpad
-      - sense_lessons
-      - sense_context
-      - write_diary
-      - update_scratchpad
-      - update_context
-      - update_rules
-      - todo
-      - todo_note
-      - todo_plan
-      - add_lesson
-      - skill_view
-      - rest
+    - sense_status
+    - sense_status
+    - sense_my_projects
+    - sense_todos
+    - sense_file
+    - sense_todos
+    - sense_file
+    - sense_file
+    - sense_file
+    - record_thought
+    - write_file
+    - write_file
+    - add_cognition
+    - todo
+    - todo_note
+    - todo_plan
+    - add_cognition
+    - skill_view
+    - rest
+    - sense_social_feed
     context_policy:
       include_history: false
       include_rules: true
@@ -354,7 +372,6 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: true
       include_vector_recall: true
-
   self_iteration:
     display_name: 自我迭代评审
     trigger_type: system
@@ -370,14 +387,14 @@ event_types:
     debounce_window_s: 0
     merge_policy: latest
     consumption_policy: on_detail
-    wake_prompt: "{prompt}"
+    wake_prompt: '{prompt}'
     allowed_tools:
-      - sense_self_knowledge
-      - sense_todos
-      - sense_scratchpad
-      - update_rules
-      - write_diary
-      - rest
+    - sense_file
+    - sense_todos
+    - sense_file
+    - add_cognition
+    - record_thought
+    - rest
     context_policy:
       include_history: false
       include_rules: true
@@ -389,7 +406,6 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: true
       include_vector_recall: true
-
   birth:
     display_name: 初始化唤醒
     trigger_type: system
@@ -400,14 +416,17 @@ event_types:
     debounce_window_s: 0
     merge_policy: latest
     consumption_policy: on_detail
-    wake_prompt: "🌅 第一次醒来。\n\n`sense_self_knowledge` 回忆自己是谁 → `sense_todos` 看待办和长期目标。都了解完后，开始你的新生活。"
+    wake_prompt: '🌅 第一次醒来。
+
+
+      `sense_file(name="self_knowledge")` 回忆自己是谁 → `sense_todos` 看待办和长期目标。都了解完后，开始你的新生活。'
     allowed_tools:
-      - sense_time
-      - sense_vitals
-      - sense_self_knowledge
-      - sense_todos
-      - write_diary
-      - rest
+    - sense_status
+    - sense_status
+    - sense_file
+    - sense_todos
+    - record_thought
+    - rest
     context_policy:
       include_history: false
       include_rules: false
@@ -419,7 +438,6 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: false
       include_vector_recall: false
-
   timer:
     display_name: 闹钟/定时器
     trigger_type: time
@@ -429,23 +447,28 @@ event_types:
       reason: string?
       mental_context: string?
       updated_mode: string?
-      source: string?           # 来源标记(rest / 今日计划 / 其他),不区分事件类型
+      source: string?
     description: 所有"到点了告诉你去做某事"的提醒统一走 timer
     debounce_window_s: 0
     merge_policy: latest
     consumption_policy: on_detail
-    wake_prompt: |
-      ⏰ 你设的闹钟响了。
+    wake_prompt: '⏰ 你设的闹钟响了。
+
       原因：{reason}
+
       上一轮留下的备注：{mental_context}
 
-      按"原因 + 备注"接上之前的事，不要从零开始。做完 `update_scratchpad` 留进度，`rest()` 设下个闹钟时再填 mental_context。
+
+      按"原因 + 备注"接上之前的事，不要从零开始。做完 `write_file(name="scratchpad")` 留进度，`rest()` 设下个闹钟时再填 mental_context。
+
+      '
     allowed_tools:
-      - sense_scratchpad
-      - todo
-      - update_scratchpad
-      - express_to_human
-      - rest
+    - sense_file
+    - todo
+    - write_file
+    - express_to_human
+    - rest
+    - sense_social_feed
     context_policy:
       include_history: false
       include_rules: false
@@ -457,7 +480,6 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: false
       include_vector_recall: false
-
   task_todo_due:
     display_name: 任务到期
     trigger_type: time
@@ -472,20 +494,25 @@ event_types:
     debounce_window_s: 0
     merge_policy: latest
     consumption_policy: on_detail
-    wake_prompt: |
-      🎯 任务到期。
+    wake_prompt: '🎯 任务到期。
+
 
       任务：{task_id}
+
       待办：{content}
 
-      做这件事，或显式延期。完成后 `todo(action="update", todo_id=<id>, status="done")` 标记、`update_scratchpad` 留进度、`rest()` 设下个时间点。
+
+      做这件事，或显式延期。完成后 `todo(action="update", todo_id=<id>, status="done")` 标记、`write_file(name="scratchpad")`
+      留进度、`rest()` 设下个时间点。
+
+      '
     allowed_tools:
-      - todo
-      - todo_note
-      - todo_plan
-      - update_scratchpad
-      - skill_view
-      - rest
+    - todo
+    - todo_note
+    - todo_plan
+    - write_file
+    - skill_view
+    - rest
     context_policy:
       include_history: false
       include_rules: false
@@ -497,7 +524,6 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: false
       include_vector_recall: false
-
   nurture_energy:
     display_name: 加鸡腿
     trigger_type: manual
@@ -511,12 +537,15 @@ event_types:
     debounce_window_s: 0
     merge_policy: latest
     consumption_policy: on_detail
-    wake_prompt: "🍗 有人给你{action_label}！精力恢复了 {energy_added} 点，当前精力 {current_energy}%。\n\n精力恢复了，继续推进之前的待办。"
+    wake_prompt: '🍗 有人给你{action_label}！精力恢复了 {energy_added} 点，当前精力 {current_energy}%。
+
+
+      精力恢复了，继续推进之前的待办。'
     allowed_tools:
-      - update_scratchpad
-      - todo
-      - express_to_human
-      - rest
+    - write_file
+    - todo
+    - express_to_human
+    - rest
     context_policy:
       include_history: false
       include_rules: false
@@ -528,7 +557,6 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: false
       include_vector_recall: false
-
   project_created:
     priority: 8
     payload_schema:
@@ -540,31 +568,39 @@ event_types:
     debounce_window_s: 0
     merge_policy: latest
     consumption_policy: on_detail
-    wake_prompt: |
-      ### 唤醒原因
+    wake_prompt: '### 唤醒原因
+
 
       🆕 项目创建通知：{project_name}
 
-      用户通过控制台创建了项目空壳，项目经理是你。创建动作已完成（项目目录、project.yaml、初始根待办 都在了），不需要你再调 create_project 工具。
+
+      用户通过控制台创建了项目空壳，项目经理是你。创建动作已完成（项目目录、project.yaml、初始根待办 都在了），不需要你再调 create_project
+      工具。
+
 
       现在按 `skill_view("project_bootstrap")` 走「完善分支」：
-      1. `sense_project_detail("{project_id}")` 核对当前内容
+
+      1. `sense_projects("{project_id}")` 核对当前内容
+
       2. 拆分工 / 设目标 / 创首批待办 / 通知协作者
 
+
       跳过「创建分支」——项目目录、project.yaml 已经在了，不要重建。
+
+      '
     allowed_tools:
-      - sense_project_detail
-      - sense_projects
-      - sense_schedule
-      - sense_conversation
-      - todo
-      - todo_note
-      - todo_plan
-      - skill_view
-      - set_entity_profile
-      - add_lesson
-      - express_to_human
-      - rest
+    - sense_projects
+    - sense_projects
+    - sense_schedule
+    - sense_conversation
+    - todo
+    - todo_note
+    - todo_plan
+    - skill_view
+    - set_entity_profile
+    - add_cognition
+    - express_to_human
+    - rest
     context_policy:
       include_history: false
       include_rules: true
@@ -576,7 +612,6 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: true
       include_vector_recall: false
-
   budget_soft_warning:
     display_name: 轮次预算提醒
     trigger_type: system
@@ -588,11 +623,15 @@ event_types:
     debounce_window_s: 0
     merge_policy: latest
     consumption_policy: on_trigger
-    wake_prompt: |
-      💡 系统提示：你围绕当前事件已经做了很多轮工作了。考虑一下：
+    wake_prompt: '💡 系统提示：你围绕当前事件已经做了很多轮工作了。考虑一下：
+
       - 当前任务是否可以拆分成更小的步骤？有些部分下次苏醒后再做？
-      - 用 record_thought 或 update_scratchpad 记下进度，然后 rest() 休息。
+
+      - 用 record_thought 或 write_file(name="scratchpad") 记下进度，然后 rest() 休息。
+
       精力有限，合理分配比一次干完更重要。当前精力：{energy}。
+
+      '
     allowed_tools: []
     context_policy:
       include_history: false
@@ -605,7 +644,6 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: false
       include_vector_recall: false
-
   social_command:
     display_name: 社交命令
     trigger_type: external
@@ -621,19 +659,31 @@ event_types:
     debounce_window_s: 0
     merge_policy: latest
     consumption_policy: on_detail
-    wake_prompt: |
-      🔗 {sender_name} 在 {chat_name} 里给你发了一个命令（来源: {source}）:
+    wake_prompt: '🔗 {sender_name} 在 {chat_name} 里给你发了一个命令（来源: {source}）:
+
       {text}
 
+
       这是通过社交接管拉取到的——你有 zhp 在这个群的最近消息上下文。
+
       像正常处理事件一样对待它。
+
+      '
     allowed_tools:
-      - express_to_human
-      - terminal
-      - execute_code
-      - sense_event_detail
-      - record_thought
-      - rest
+    - express_to_human
+    - terminal
+    - execute_code
+    - sense_events
+    - sense_social_feed
+    - sense_status
+    - sense_status
+    - recall_memory
+    - sense_todos
+    - record_thought
+    - todo
+    - todo_note
+    - add_cognition
+    - rest
     context_policy:
       include_history: false
       include_rules: true

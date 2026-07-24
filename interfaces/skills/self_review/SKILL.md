@@ -27,8 +27,8 @@ platforms: []
 
 | Sense | 看什么 |
 |---|---|
-| `sense_insights days_back=1` | 今天所有 idea / doubt / block / warning—— **按 kind 分组** |
-| `sense_memory topic=diary days_back=0` | 今天日记（如果还没写，先 `write_diary` 一段） |
+| `sense_file(name="insights") days_back=1` | 今天所有 idea / doubt / block / warning—— **按 kind 分组** |
+| `sense_memory topic=diary days_back=0` | 今天日记（如果还没写，先 `record_thought` 一段） |
 | `sense_todos type=daily` | 今日计划完成率 |
 | `sense_self` | session 摘要里的 end_reason：completed / timeout / blocked / 0-message |
 | `sense_todos` | 待办状态变化：今天哪些 in_progress→done？哪些 in_progress→还卡着？ |
@@ -40,7 +40,7 @@ platforms: []
 INSIGHTS 里 kind=idea 的条目，今天有没有真的去**试一次**？
 - 没试 → WHY？是因为没精力 / 没时间 / 怕走偏？把它升级为明日的待办。
 - 试了没成 → 结论是？写回 record_thought kind=status 作为"已经否决"。
-- 试了能成 → 升级为规则。例：「换手率<15% 已经验证为有效过滤」→ `update_rules`。
+- 试了能成 → 升级为规则。例：「换手率<15% 已经验证为有效过滤」→ `add_cognition`。
 
 #### Q2. 今天遇到的 block，是真技术卡点还是策略问题？
 
@@ -57,7 +57,7 @@ INSIGHTS 里 kind=block 的条目，逐条问：
 
 doubt 系列，逐条回答今天有没有答案：
 - 有 → 写一句话答案进 record_thought kind=status
-- 没有但**反复出现** → 升级为规则缺失。今日应该 update_rules 一条"遇到 X 必须先 Y"。
+- 没有但**反复出现** → 升级为规则缺失。今日应该 add_cognition 一条"遇到 X 必须先 Y"。
 - 没有且**今天就这一次** → OK，留作明日继续想。
 
 #### Q4. 今天的 timeout / 0-message / 长轮 sense-only session，根因是？
@@ -66,11 +66,11 @@ doubt 系列，逐条回答今天有没有答案：
 - timeout 发生在哪？中途在做啥？是模型陷在 sense 循环还是待办超出最大 turn 数？
 - 0-message session 意味着 wake 起来 → 啥都没做就 rest—— WHY？是当天事件太密（每次 wake 进就被打断）还是**根本没意识到要做事**？
 
-如果是后者，**这是对自己的警示**：明天 morning_plan 一定要 update_context 写"第一件事是什么"，避免醒来不知道做啥。
+如果是后者，**这是对自己的警示**：明天 morning_plan 一定要 write_file(name="context") 写"第一件事是什么"，避免醒来不知道做啥。
 
 #### Q5. 今天有没有违反 RULES？
 
-`sense_rules` + `recall_memory` 搜今天的 session：
+`sense_file(name="rules")` + `recall_memory` 搜今天的 session：
 - 有违反规则的工具调用模式 → 要么改 RULES（规则不现实），要么 record_thought kind=warning 标记"今天违反了 X 条，明日要警觉"
 - 没违反 RULES → 是 RULES 真的发挥了引导作用，还是 RULES 不够细所以无法违反？
 
@@ -105,7 +105,7 @@ todo(action="create", title="<动词> <对象>", description="WHY <理由> | EXP
 
 **只创建待办，不写 plan 文档**——明日早 8:00 wake 起来再走 daily_planner 时会自然落到 plan。
 
-#### 4.2 update_rules / add_lesson（按需，绝不强凑）
+#### 4.2 add_cognition / add_cognition（按需，绝不强凑）
 
 只有当今天**真的产生了**值得长期遵守的规则时才写。判断标准：
 - 这条规则**违反了**会导致明确损失？
@@ -117,7 +117,7 @@ todo(action="create", title="<动词> <对象>", description="WHY <理由> | EXP
 [2026-06-10 起遵守]: 换手率过滤条件已达 medium 信心度，下次回封判断建议条件不再调（除非有 10+ 新案例验证）
 ```
 
-#### 4.3 update_context 给 8:00 醒来的自己
+#### 4.3 write_file(name="context") 给 8:00 醒来的自己
 
 写下面 4 行结构化交接：
 
@@ -133,7 +133,7 @@ todo(action="create", title="<动词> <对象>", description="WHY <理由> | EXP
 
 这是**明早醒来第一秒**看见的——超过 8 行就是没人看。
 
-#### 4.4 add_lesson（核心洞察，最多 1-2 条）
+#### 4.4 add_cognition（核心洞察，最多 1-2 条）
 
 不是流水账。每条 lesson 必须是一句话**能指导明天行为的**。例：
 - ❌ "今天收盘后扫描了候选股"（流水账）
@@ -145,7 +145,7 @@ todo(action="create", title="<动词> <对象>", description="WHY <理由> | EXP
 
 - "今天不错，明天继续加油"——废话，没人想看
 - RULES 越来越长但行为没变——RULES 没人遵守
-- update_context 写成日记第二段——没人会读完
+- write_file(name="context") 写成日记第二段——没人会读完
 - INSIGHTS 里堆积大量 doubt 没回答——下次复盘别再逃避
 - 复盘完没有待办看板更新——明日醒来立志做" )
-- rest() 前 sense_scratchpad 25 次——已经做完反思就该睡
+- rest() 前 sense_file(name="scratchpad") 25 次——已经做完反思就该睡

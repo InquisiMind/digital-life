@@ -13,7 +13,7 @@ platforms: []
 ## 准入条件(都满足才进)
 
 1. 项目骨架已搭(project_bootstrap skill 完成)
-2. 你是这个项目的 **manager**(`sense_project_detail` 确认 `cfg.manager == 你的 iid`)
+2. 你是这个项目的 **manager**(`sense_projects` 确认 `cfg.manager == 你的 iid`)
 3. project.yaml 里 positions / goal / KPI 已经定好
 
 不满足任何一条 → 沉默 rest,让经理来。
@@ -58,7 +58,7 @@ platforms: []
 ### Step 1:sense 现状
 
 ```
-sense_project_detail("{pid}")      # 看 goal / KPI / positions
+sense_projects("{pid}")      # 看 goal / KPI / positions
 sense_project_todos("{pid}")       # 看现有 deliverable
 ```
 

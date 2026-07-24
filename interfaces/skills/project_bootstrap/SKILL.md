@@ -112,7 +112,7 @@ OK 就回复确认、或者直接沉默——1分钟后我按这个走。想改�
 ### Step 6：核对现状
 
 ```
-sense_project_detail("{project_id}")
+sense_projects("{project_id}")
 ```
 
 看清楚：
@@ -161,7 +161,7 @@ invoke_skill("task_breakdown")
 ### Step 10：沉淀
 
 ```
-add_lesson("项目 {name} 立项完成(骨架已建)。下一步:`task_breakdown` skill 拆解首批执行 todo。")
+add_cognition("项目 {name} 立项完成(骨架已建)。下一步:`task_breakdown` skill 拆解首批执行 todo。")
 rest(until="<下一个合理时间点>", reuse=<现有闹钟id>)
 ```
 

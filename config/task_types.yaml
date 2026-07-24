@@ -50,3 +50,12 @@ task_types:
     description: 沟通类任务（回复消息、汇报、协调）。
     applies_to: 任何做沟通的实例
     note: 暂用 todo_execution 通用方法论
+
+  assistance:
+    skill: personal_assistant
+    description: >-
+      辅助人类类任务（替真人追踪事项、跟进待办、整理真人消息）。
+      区别于数字生命自身推进的任务: assistance 类是"我做这些事是为了帮真人",
+      不是模型自身职责范围内的产出。
+    applies_to: 真人助理 / 个人助理项目岗位
+    note: 路径上 source 必填 'project:personal_assistant', 让面板可识别 📬 社交接管标识

@@ -7,7 +7,7 @@ routines:
   prompt_template: |
     🌅 早上好。拿出一个小时认真规划今天。
 
-    调用 `skill_view daily_planner` 按完整方法论走：回顾昨天 → 审视信息缺口 → 逐项目独立深想（含正反两面） → 横向整合 → 落地今日 todos + update_context。
+    调用 `skill_view daily_planner` 按完整方法论走：回顾昨天 → 审视信息缺口 → 逐项目独立深想（含正反两面） → 横向整合 → 落地今日 todos + write_file(name="context")。
   recurrence: daily
   time: 08:00
 - description: 午后诊断：用5 Whys追问根因，对照常见失败模式，做出明确的下午决策
@@ -18,7 +18,7 @@ routines:
   prompt_template: |
     ☀ 午后诊断，不是进度汇报。诚实面对自己。
 
-    `sense_daily` + `sense_vitals` + `sense_rules`（检查有没有违反行为规则？）。
+    `sense_todos` + `sense_status` + `sense_file(name="rules")`（检查有没有违反行为规则？）。
 
     ## 量化上午
     上午完成了几个目标？没完成的比例是多少？
@@ -42,9 +42,9 @@ routines:
     - 放弃哪个目标？（为什么它今天不值得做）
     - 如果精力不足（<40），是否应该 rest() 一段时间？
 
-    用 `update_context` 记录下午决策，帮下次醒来接上。
+    用 `write_file(name="context")` 记录下午决策，帮下次醒来接上。
 
-    如果发现了反复出现的行为模式问题，用 `update_rules` 追加一条行为规则：
+    如果发现了反复出现的行为模式问题，用 `add_cognition` 追加一条行为规则：
     ```
     [规则名]：精力<40时必须rest()——本周第N次在低精力时硬撑了。
     ```
@@ -60,7 +60,7 @@ routines:
   prompt_template: |
     🌙 坐下来,认真回望今天。
 
-    调 `skill_view self_review` 按完整复盘方法论走:归集今天的材料 → 五个真问题 → 写明日 jump-in(工作板 + update_context + add_lesson)。
+    调 `skill_view self_review` 按完整复盘方法论走:归集今天的材料 → 五个真问题 → 写明日 jump-in(工作板 + write_file(name="context") + add_cognition)。
   recurrence: daily
   time: '21:00'
 - description: 凌晨前的"dream" — 睡眠式记忆整理。仅整理内部记忆,不响应外部消息、不开协作。

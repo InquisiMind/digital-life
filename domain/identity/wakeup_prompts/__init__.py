@@ -72,7 +72,7 @@ def format_pending_events(events: List[Dict[str, Any]]) -> str:
     """渲染待处理事件队列（统一摘要列表，不内联详情）。
 
     不再在唤醒 prompt 中注入事件完整明细或 YAML wake_prompt。
-    事件详情统一通过 sense_event_detail 工具返回。
+    事件详情统一通过 sense_events 工具返回。
     BLOCKED+单事件场景由 build_wake_prompt() 另外注入 payload 关键信息。
     """
     if not events:
@@ -95,7 +95,7 @@ def format_pending_events(events: List[Dict[str, Any]]) -> str:
     if len(sorted_events) > 5:
         lines.append(f"- ... 还有 {len(sorted_events) - 5} 条事件")
 
-    lines.append("\n> 调用 `sense_event_detail(event_id)` 查看明细，明细查看后该事件标记已消费。可自行决定优先级与是否处理。")
+    lines.append("\n> 调用 `sense_events(event_id)` 查看明细，明细查看后该事件标记已消费。可自行决定优先级与是否处理。")
     return "\n".join(lines)
 
 

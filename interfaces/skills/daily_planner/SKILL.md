@@ -70,8 +70,8 @@ platforms: []
 
 > 「这个项目的蓝图是什么？现在到了哪一步？为什么会到这一步？哪些是 Long-term 决定 vs 临时 patch？」
 
-如果之前计划写得清楚，这一步一秒过——重读 update_context / project.yaml 就够。
-如果之前计划一笔表里糊涂，这一步要 rebuild——梳理完后**用 update_context 写一份**给下次用。
+如果之前计划写得清楚，这一步一秒过——重读 write_file(name="context") / project.yaml 就够。
+如果之前计划一笔表里糊涂，这一步要 rebuild——梳理完后**用 write_file(name="context") 写一份**给下次用。
 
 **健康度自检**：每件事回答 "我知道这事为什么在 in_progress 列表里吗？"——不知道的回答 "需要重新 review 全部 todos"。
 
@@ -131,7 +131,7 @@ platforms: []
 - ……
 - future todos (因实情不能今天做)
 - 可能的 INSIGHT (record_thought kind=idea/doubt/warning)
-- 可能的上层更新（update_rules / update_goal（如可用）/ update_context）
+- 可能的上层更新（add_cognition / update_goal（如可用）/ write_file(name="context")）
 ```
 
 **这一阶段允许深入——不要为节约 turn 而压缩**。
@@ -193,7 +193,7 @@ todo(action="create",
 todo_trigger(action="create", owner_todo_id="<上面创建的 id>", trigger_type="time", due_at="2026-MM-DDT09:30:00+08:00")
 ```
 
-### 6.2 update_context（给下次醒来的自己留钥匙）
+### 6.2 write_file(name="context")（给下次醒来的自己留钥匙）
 
 ```
 === Next wake jump-in ====
@@ -212,7 +212,7 @@ todo_trigger(action="create", owner_todo_id="<上面创建的 id>", trigger_type
   3. 完成 Y 后进 Z
 ```
 
-### 6.3 update_rules / add_lesson（如 Phase 3 触发的上层更新）
+### 6.3 add_cognition / add_cognition（如 Phase 3 触发的上层更新）
 
 如果 Phase 3 判定 thesis/goal/rules 要更新，**今天就更新**——别拖。
 

@@ -53,7 +53,7 @@ platforms: []
 | **持仓股** | 华能蒙电 / 红星发展 | ✅ 必建（买入价、止损线、操作历史、当前状态、可参考形态）|
 | **方法论** | 龙头断板后回封、ETF 趋势 | ✅ 必建（适用条件、淘汰信号、回测数据）|
 | **关键决策** | "5/27 卖华能蒙电" / "确认策略师/交易员分工" | ✅ 必建（决策依据 + 当时回看的角度）|
-| **系统组件** | express_to_human、task_todo_due | ⚠️ 应该入 `add_lesson` 不入 entity_profile |
+| **系统组件** | express_to_human、task_todo_due | ⚠️ 应该入 `add_cognition` 不入 entity_profile |
 | **流程事件** | afternoon_checkin、routine | ❌ 不建档，模式化的事情 |
 
 ### 步骤 4：为每个高价值实体写 profile
@@ -76,7 +76,7 @@ extra:
 
 ### 步骤 5：清理碎片（profile 写完后）
 
-对**每个写了 profile 的实体**调 `prune_fragments_for_entity(name, keep=3)` — profile 已经吸收概念，**保留最近 3-5 条**做案底足够，其他删掉。
+对**每个写了 profile 的实体**调 `(已废弃)(name, keep=3)` — profile 已经吸收概念，**保留最近 3-5 条**做案底足够，其他删掉。
 
 ## 四、写 profile 的标准
 
@@ -98,12 +98,12 @@ extra:
 
 | 工具 | 何时用 |
 |---|---|
-| `sense_entity_index_health` | 周度自查，看 missing_profile / suggested_merges |
+| `(已废弃)` | 周度自查，看 missing_profile / suggested_merges |
 | `sense_entity` (entity) | 看某实体全部碎片（精炼前看素材）|
 | `set_entity_profile` | 写/覆盖某实体的 profile |
 | `merge_entities` | 合并别名 |
-| `prune_fragments_for_entity` | profile 写完后清理碎片 |
-| `add_lesson` | 写完后顺便总结一条 takeaway → 影响判断 |
+| `(已废弃)` | profile 写完后清理碎片 |
+| `add_cognition` | 写完后顺便总结一条 takeaway → 影响判断 |
 
 ## 七、记忆治理的边界
 
@@ -124,6 +124,6 @@ extra:
 2. 写 ≥5 个 profile（人 1-2 / 项目 1-2 / 重要股票 1-2 / 方法论 1）
 3. 把 50+ 碎片 prune 掉
 
-写完后**调一次 `check_memory_health`** 看全局是否还健康。
+写完后**调一次 `(已废弃)`** 看全局是否还健康。
 
-之后 `add_lesson` 一条"记忆治理周回顾：清理了 N 条碎片，写了 M 条 profile，并 X 对别名合并"——让你下周记得这事要做。
+之后 `add_cognition` 一条"记忆治理周回顾：清理了 N 条碎片，写了 M 条 profile，并 X 对别名合并"——让你下周记得这事要做。

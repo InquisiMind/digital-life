@@ -260,6 +260,14 @@ def get_schedule_overview(days_ahead: int = 7) -> Dict[str, Any]:
         })
 
     # 未来作息的合并去重（只取启用的）
+    # V6: 如果某时间点已有 pending alarm, 标注 has_alarm (前端不重复显示)
+    pending_times = set()
+    for a in alarms:
+        # 提取 HH:MM 部分
+        fa = a.get("fire_at", "")
+        if "T" in fa:
+            pending_times.add(fa[11:16])  # HH:MM
+
     routines = [r for r in load_routines() if r.get("enabled", True)]
     recurring = []
     seen_times = {}  # time -> first entry
@@ -273,6 +281,7 @@ def get_schedule_overview(days_ahead: int = 7) -> Dict[str, Any]:
             "name": r["name"],
             "time": t,
             "description": r.get("description", ""),
+            "has_alarm": t in pending_times,  # V6: 该时间点已有闹钟
         })
 
     # 最近一次唤醒时间

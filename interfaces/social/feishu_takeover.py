@@ -463,43 +463,124 @@ class FeishuSocialTakeover:
         # 只拉最近有互动的联系人(从 messages.db 取最近 7 天有私聊记录的 chat_id)。
         self._fetch_p2p_messages()
 
+    def _resolve_p2p_chat_id(self, open_id: str) -> str:
+        """V6: open_id → P2P chat_id (关键突破).
+
+        飞书 /im/v1/messages 不接受 open_id 作为 container_id.
+        但 /im/v1/chat_p2p/batch_query 可以把 open_id → P2P chat_id.
+        参考 OpenClaw 飞书插件 resolveP2PChatId.
+
+        返回 chat_id (oc_xxx) 或空字符串 (没有私聊记录).
+        """
+        try:
+            resp = httpx.post(
+                f"{self._base}/im/v1/chat_p2p/batch_query",
+                headers={
+                    "Authorization": f"Bearer {self._user_token}",
+                    "Content-Type": "application/json",
+                },
+                params={"user_id_type": "open_id"},
+                json={"chatter_ids": [open_id]},
+                timeout=15,
+            )
+            data = resp.json()
+            if data.get("code") == 0:
+                chats = data.get("data", {}).get("p2p_chats", [])
+                if chats:
+                    return chats[0].get("chat_id", "")
+            return ""
+        except Exception:
+            return ""
+
     def _fetch_p2p_messages(self) -> None:
         """拉 P2P 私聊消息。
 
         飞书 /im/v1/chats API 不返回私聊会话,我们必须自己确定跟谁有私聊。
-        策略: 从 messages.db(WS 实时通道萹库)取最近 7 天有私聊记录的 ou_ 开头的 chat_id,
-        再用 /im/v1/messages?container_id_type=chat&container_id=ou_xxx 拉最新消息。
-        这样只拉"已知有对话的私聊",不会拉陌生人的。
+        策略 (V6 扩展):
+          1. 从 messages.db 取 ou_ 开头的 chat_id (bot 收到过的私聊)
+          2. 从 contacts 表取活跃联系人的 open_id (zhp 的联系人)
+          3. 从 social_feed 已有群消息的 sender_id 中提取 ou_ (在群里活跃的人可能有私聊)
+          合并去重 → 逐个用 /im/v1/messages?container_id=ou_xxx 拉私聊消息。
+          容忍失败 (没有私聊的会返回空或报错, 跳过即可)。
         """
         try:
             import sqlite3 as _sqlite3
-            from infrastructure.config import get_runtime_state_db_path
-            inst_path = Path("apps") / self.instance_id / "data" / "messages.db"
-            if not inst_path.exists():
-                return
-            mdb = _sqlite3.connect(str(inst_path), timeout=3.0)
-            mdb.row_factory = _sqlite3.Row
-            # 取最近 7 天有私聊的 ou_ chat_id
-            rows = mdb.execute(
-                "SELECT DISTINCT chat_id FROM messages "
-                "WHERE chat_id LIKE 'ou_%' "
-                "ORDER BY ROWID DESC LIMIT 50"
-            ).fetchall()
-            mdb.close()
-            if not rows:
+            from pathlib import Path as _Path
+            from domain.social.store import insert_message, is_zhp_command
+            p2p_ids: set[str] = set()
+
+            # 1. messages.db 里已知的 P2P chat_id
+            inst_path = _Path("apps") / self.instance_id / "data" / "messages.db"
+            inst_path = _Path("apps") / self.instance_id / "data" / "messages.db"
+            if inst_path.exists():
+                try:
+                    mdb = _sqlite3.connect(str(inst_path), timeout=3.0)
+                    mdb.row_factory = _sqlite3.Row
+                    rows = mdb.execute(
+                        "SELECT DISTINCT chat_id FROM messages "
+                        "WHERE chat_id LIKE 'ou_%' "
+                        "ORDER BY ROWID DESC LIMIT 30"
+                    ).fetchall()
+                    mdb.close()
+                    p2p_ids.update(r["chat_id"] for r in rows)
+                except Exception:
+                    pass
+
+            # 2. contacts 表的 open_id
+            try:
+                from infrastructure.config import get_runtime_state_db_path
+                sdb = _sqlite3.connect(str(get_runtime_state_db_path()), timeout=3.0)
+                sdb.row_factory = _sqlite3.Row
+                crows = sdb.execute(
+                    "SELECT open_id FROM contacts "
+                    "WHERE open_id LIKE 'ou_%' AND open_id IS NOT NULL "
+                    "ORDER BY ROWID DESC LIMIT 30"
+                ).fetchall()
+                sdb.close()
+                p2p_ids.update(r["open_id"] for r in crows)
+            except Exception:
+                pass
+
+            # 3. social_feed 群消息的 sender_id
+            try:
+                from infrastructure.config import get_runtime_state_db_path
+                sdb = _sqlite3.connect(str(get_runtime_state_db_path()), timeout=3.0)
+                sdb.row_factory = _sqlite3.Row
+                srows = sdb.execute(
+                    "SELECT DISTINCT sender_id FROM social_feed "
+                    "WHERE source='feishu' AND sender_id LIKE 'ou_%' "
+                    "ORDER BY ROWID DESC LIMIT 30"
+                ).fetchall()
+                sdb.close()
+                p2p_ids.update(r["sender_id"] for r in srows)
+            except Exception:
+                pass
+
+            if not p2p_ids:
+                logger.debug("social_takeover: no P2P candidates found")
                 return
 
-            p2p_chat_ids = [r["chat_id"] for r in rows]
-            from domain.social.store import insert_message, is_zhp_command
-            for ou_id in p2p_chat_ids:
-                # 用 container_id_type=chat + container_id=ou_xxx 拉私聊消息
-                msgs = self._fetch_messages(ou_id, f"私聊")
+            # 排除自己的 open_id (不需要拉自己的消息)
+            if self._self_open_id:
+                p2p_ids.discard(self._self_open_id)
+
+            logger.info("social_takeover: fetching P2P from %d candidates", len(p2p_ids))
+            for ou_id in p2p_ids:
+                # V6 关键突破: 用 chat_p2p/batch_query 把 open_id → P2P chat_id
+                # 再用 chat_id 调 /im/v1/messages 拉消息
+                # (参考 OpenClaw 飞书插件 resolveP2PChatId)
+                p2p_chat_id = self._resolve_p2p_chat_id(ou_id)
+                if not p2p_chat_id:
+                    continue  # 没有私聊记录, 跳过
+                msgs = self._fetch_messages(p2p_chat_id, "")
                 for msg in msgs:
                     self._seen_ids.add(msg["message_id"])
+                    # P2P chat_name 用 sender_name
+                    chat_name = msg.get("sender_name", "") or "私聊"
                     is_new = insert_message(
                         source="feishu",
                         chat_id=msg["chat_id"],
-                        chat_name="私聊",
+                        chat_name=chat_name,
                         message_id=msg["message_id"],
                         sender_name=msg.get("sender_name", ""),
                         sender_id=msg["sender_id"],
@@ -507,15 +588,15 @@ class FeishuSocialTakeover:
                         message_ts=msg["message_ts"],
                         instance_id=self.instance_id,
                         at_all=False,
-                        at_me=False,  # P2P 不需要 @
+                        at_me=False,
                         sender_is_app=msg.get("sender_is_app", False),
                     )
                     if is_new and is_zhp_command(msg["text"], msg["sender_id"], self._self_open_id):
                         self._emit_command(msg)
-                time.sleep(0.3)
-            logger.info("social_takeover: p2p messages fetched from %d contacts", len(p2p_chat_ids))
+                time.sleep(0.3)  # 限速
+            logger.info("social_takeover: P2P fetch done from %d candidates", len(p2p_ids))
         except Exception as exc:
-            logger.debug("social_takeover: p2p fetch failed: %s", exc)
+            logger.warning("social_takeover: p2p fetch failed: %s", exc)
 
     def _loop(self) -> None:
         """daemon loop。"""

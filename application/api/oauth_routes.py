@@ -176,9 +176,18 @@ def get_oauth_url(instance_id: str, redirect_uri: str = "http://localhost:8642/o
         "state": instance_id,
         # scope 用空格分隔(飞书 OIDC 标准)
         # IM 类: 读群/消息/资源/联系人
-        # Drive 类: 读周报/文档/多维表格(飞书周报底层是 Bitable)
-        # Bitable 类: 读/写多维表格(直接填周报数据需要 app:table 读写)
-        "scope": "im:chat:readonly im:message im:message.group_at_msg:readonly im:resource contact:user.base:readonly bitable:app",
+        # V6 全接管: 加 group_msg/p2p_msg get_as_user (以用户身份读全量消息)
+        #         + search:message (搜索消息, 发现私聊对象)
+        "scope": (
+            "im:chat:readonly "
+            "im:message "
+            "im:message.group_at_msg:readonly "
+            "im:message.group_msg:get_as_user "    # 全量群消息 (不需@bot)
+            "im:message.p2p_msg:get_as_user "      # 全量私聊消息
+            "im:resource "
+            "contact:user.base:readonly "
+            "bitable:app"
+        ),
     })
     return f"https://open.feishu.cn/open-apis/authen/v1/authorize?{params}"
 

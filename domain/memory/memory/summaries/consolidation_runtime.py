@@ -499,54 +499,9 @@ def _assess_session_cognition(rows: Any, session_id: str) -> Optional[Dict[str, 
         except Exception as e:
             logger.debug("auto-verified failed for %s: %s", new_id, e)
 
-    # C. 启发式 verified: 本轮 assistant 文本含某 entity_links 词 → 该认知被采用
-    # 这一步放在最后, 只对未在本轮动过的 cognition 做 (避免重复 verified)
-    if assistant_action_texts:
-        action_corpus = " ".join(assistant_action_texts).lower()
-        try:
-            from domain.memory.memory.recall.vector import _get_db
-            import json as _json
-            db = _get_db()
-            try:
-                # 拉所有活跃 cognition 的 entity_links, 看哪些词出现在本轮 action_corpus 中
-                active_cogs = db.execute(
-                    "SELECT id, entity_links FROM chunks WHERE phase='cognition' "
-                    "AND (cognition_state IS NULL OR cognition_state NOT IN ('replaced','archived')) "
-                    "AND entity_links IS NOT NULL AND entity_links != '[]' "
-                    "LIMIT 200"
-                ).fetchall()
-                touched_via_links: list[int] = []
-                for r in active_cogs:
-                    try:
-                        links = _json.loads(r["entity_links"])
-                    except Exception:
-                        continue
-                    if not isinstance(links, list):
-                        continue
-                    matched = any(
-                        str(L).lower() in action_corpus
-                        for L in links if str(L) and len(str(L)) >= 2
-                    )
-                    if matched:
-                        touched_via_links.append(r["id"])
-                # 已被 add/supersede 动过的跳过来避免双计; 最多给 5 条打 verified (防风暴)
-                all_done = set(added_chunk_ids) | set(superseded_new_ids) | set(superseded_old_ids) | set(deleted_ids)
-                for cid in touched_via_links:
-                    if cid in all_done:
-                        continue
-                    if len(positive_signals) >= 10:  # 信号总量上限, 防过度计分
-                        break
-                    try:
-                        rr = apply_signal(cid, "verified", reason=f"session {session_id[:30]}: 本轮 assistant 文本含该认知的 entity_links")
-                        if rr.get("ok"):
-                            positive_signals.append(cid)
-                            all_done.add(cid)
-                    except Exception:
-                        pass
-            finally:
-                db.close()
-        except Exception as e:
-            logger.debug("entity_links adoption check failed: %s", e)
+    # C. V6 删除: 原"entity_links 词出现 = 被采纳"太宽泛 (evidence 涨到 42)
+    # 替换为: 不做弱信号强化。只保留 A (写新认知) + B (supersede) 两个强信号。
+    # 真正的"被采纳"应该看模型是否据此认知做了决策 (未来可加 LLM 判断, 但不做启发式)。
 
     # 0 信号 → return None (不影响 digest, 只是不增加字段)
     if not positive_signals and not negative_signals and not added_chunk_ids and not superseded_old_ids and not deleted_ids and not has_error:

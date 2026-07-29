@@ -1,6 +1,6 @@
 ---
 name: memory_hygiene
-description: 记忆整理方法论(dream)。清理意识流 + 合并重复认知 + 标记过时 + 认知网络关联补全 + 结构化冲突解决 + predicate 回填。用 add_cognition/supersede_memory/delete_cognition/find_* 工具维护认知库。
+description: 记忆整理方法论(dream)。清理意识流 + 合并重复认知 + 标记过时 + 认知网络关联补全 + 结构化冲突解决 + predicate 回填。用 add_cognition/update_cognition/find_* 工具维护认知库。
 version: 6.0.0
 platforms: []
 ---
@@ -26,9 +26,9 @@ night_dream routine (23:20) 自动触发。
 **精确 key 桶**: 先调 `find_conflicting_keys()` 看看有哪些 `cog_key`(subject:predicate) 凑成桶.
 
 > 同 `cog_key` 有多条 cognition → 一定是其中之一:
-> · 真冲突 (12% SL vs 8% SL) → 看时间最新/最权威的, 用 `supersede_memory(old, "新表述", new_payload={value: 正确值})` 覆盖
+> · 真冲突 (12% SL vs 8% SL) → 看时间最新/最权威的, 用 `update_cognition(old_id, action="supersede", new_body="新表述", new_payload={value: 正确值})` 覆盖
 > · 不同 scope 的特例 (-8% 一般规律 vs -5% 风险事件后) → 都留, 在新认知 payload 写明确 scope
-> · 同一规则的口头重复 → 用 `supersede_memory` 把它们合并成一条更精炼的
+> · 同一规则的口头重复 → 用 `update_cognition(action="supersede")` 把它们合并成一条更精炼的
 
 **叙述类桶 (V3 #4)**: 调 `find_narrative_conflict_buckets()` 找共享 entity_links ≥2 的认知组.
 > 这些组没有精确 key 但 entity_links 重合:
@@ -42,20 +42,20 @@ night_dream routine (23:20) 自动触发。
 检查方法: 调 `recall_memory` 搜几个最近频繁出现的实体名/概念，看返回的认知列表里有没有重复的。
 
 合并方式:
-- 内容基本一样 → 用 `supersede_memory(old_id, "合并后的统一表述")` 取代老认知
+- 内容基本一样 → 用 `update_cognition(old_id, action="supersede", new_body="合并后的统一表述")` 取代老认知
 - 内容有关联但不完全一样 → 用 `add_cognition` 写一条更高层的元认知, entity_links 关联它们
 
 ### 4. 标记过时认知
-- 项目结束 → 相关规则/教训过期 → `mark_obsolete(id)` (软标 archived, 保留溯源) 或 `delete_cognition(id)` (硬删, 无引用时)
-- 策略调整 → 旧止损线/规则被新规则替代 → `supersede_memory(old_id, "新值", new_payload={value: 正确值})`
-- 数值更新 → 实体信息变了 → `supersede_memory(old_id, "新值", new_payload={value: ...})`
+- 项目结束 → 相关规则/教训过期 → `update_cognition(id, action="obsolete")` (软标 archived, 保留溯源) 或 `update_cognition(id, action="delete")` (硬删, 无引用时)
+- 策略调整 → 旧止损线/规则被新规则替代 → `update_cognition(old_id, action="supersede", new_body="新值", new_payload={value: 正确值})`
+- 数值更新 → 实体信息变了 → `update_cognition(old_id, action="supersede", new_body="新值", new_payload={value: ...})`
 - 认知库是唯一真相源。RULES.md / LESSONS.md 不再参与召回索引, 只留作人类参考。
 - 强化/质疑不需要手动调 — 每次 wake 结束 session digest 阶段自动执行。
 
 ### 5. 认知网络关联补全
 - 检查是否有孤立认知(entity_links 和 derived_from 都空的)
-- 如果有, 回顾它应该关联哪些实体/概念, 用 supersede_memory 更新(继承旧 entity_links + 补全)
-- 或者直接 delete_cognition if 确实没价值
+- 如果有, 回顾它应该关联哪些实体/概念, 用 update_cognition(action="supersede") 更新(继承旧 entity_links + 补全)
+- 或者直接 update_cognition(action="delete") if 确实没价值
 
 ### 5.5 predicate / polarity 回填 (V6 新增, 高优先级)
 很多老 cognition 写入时 model 没填 cog_key + polarity, 留下纯 text. 这导致:
@@ -63,7 +63,7 @@ night_dream routine (23:20) 自动触发。
 - dream 无法 find_conflicting_keys 检测冲突 (因为没 key)
 
 操作方式: 对**最近 3 天创建但没 cog_key** 的认知, 逐条读 text 自判:
-- 有明确的 subject + 判断 → 调 `supersede_memory(old_id, "[同一text]", new_payload={"key": "subject:predicate", "value": ..., "polarity": "positive|negative|neutral"})` 回填
+- 有明确的 subject + 判断 → 调 `update_cognition(old_id, action="supersede", new_body="[同一text]", new_payload={"key": "subject:predicate", "value": ..., "polarity": "positive|negative|neutral"})` 回填
 - 例: text="Alpha 偏好慢节奏 review" → new_payload={"key": "Alpha:preference_review_pace", "polarity": "positive"}
 - 若 100% 抽象、无 subject 判断的认知, 跳过 (不强行造 key)
 
@@ -76,7 +76,7 @@ recall_memory("最近") → 看哪些返回的认知没 cog_key 字段
 
 ### 6. nascent 冗余清理
 - 用 `recall_memory` 搜近 3 天的 nascent 认知, evidence_count=0 + 创建 >3 天 → 疑似垃圾
-- 用 `delete_cognition(id)` 删除 (系统自动强化在 session digest 跑, 不需要 dream 手动调)
+- 用 `update_cognition(id, action="delete")` 删除 (系统自动强化在 session digest 跑, 不需要 dream 手动调)
 
 ### 7. 草稿/笔记收口
 - SCRATCHPAD 清理超 24h 的碎片
@@ -94,14 +94,14 @@ add_cognition(
 )
 ```
 写入后:
-- 系统自动检测相似(cos > 0.92), 高度重复的提示 wrap 用 supersede_memory
+- 系统自动检测相似(cos > 0.92), 高度重复的提示 wrap 用 update_cognition(action="supersede")
 - 如有 payload 含 key 且同 key 已有认知:
   · 同 value → 自动跳过(纯重复)
   · 不同 value → 标记 conflict_with 列表, 让你判断
 
 ### 覆盖旧认知
 ```
-supersede_memory(
+update_cognition(old_id=XXX, action="supersede", new_body=
   old_chunk_id=要覆盖的认知id,
   new_body="更新后的认知内容"
 )
@@ -110,7 +110,7 @@ supersede_memory(
 
 ### 删除无用认知
 ```
-delete_cognition(chunk_id=要删除的认知id)
+update_cognition(chunk_id=要删除的认知id)
 ```
 如果被其它认知引用, 系统会拒绝并建议用 supersede。
 

@@ -71,16 +71,23 @@ routines:
   prompt_template: |
     💭 该"做梦"了。
 
-    这是睡眠式**记忆整理**,不是复盘(evening_review 已做过)。类比人类睡眠中大脑整理白天的记忆。
+    这是睡眠式**认知库整理**,不是复盘。类比人类睡眠中大脑整理白天的记忆。
 
-    调 `skill_view memory_hygiene` 按其日度整理流程逐项执行:
-    清意识流 status 段 → 合并 LESSONS 同主题 → 标 RULES 过期 → 收 SCRATCHPAD → 升级/删 INSIGHTS → 清 CONTEXT 24h 外 → 实体索引整理(删噪音/合别名/清悬空/补 entity，并把碎片消化成实体 profile)。
+    **第一优先级: 认知库去重 + 冲突解决 (必须做)**
+    1. 调 `recall_memory` 搜最近 3 天高频实体名, 看返回的认知列表
+    2. 对说同一件事的多条认知 → 用 `update_cognition(old_id, action="supersede", new_body="合并后的表述")` 合并
+    3. 调 `find_conflict_buckets` 找冲突桶, 逐个解决
+    4. 标记过时认知: `update_cognition(id, action="obsolete", reason="...")`
+    5. 清理碎片: 截断的/不完整的认知 → `update_cognition(id, action="delete")`
 
-    整理完后追加一段 [整理] tag 到意识流做 audit trail。
-    然后 rest 到明早 morning_plan。
+    **第二优先级: 意识流清理**
+    - 清 CONSCIOUSNESS.md 的 status 段 (保留 [整理] audit)
+    - SCRATCHPAD 清 24h 外碎片
 
-    ⚠ dream 是"内部 wake":不 express_to_human、不开项目代码协作、不 consume heavy token。
-    实体消化做不完就做到哪记到哪(写进 [整理] audit),下次 dream 接着挑没 profile / 碎片多的继续。
+    整理完后追加 [整理] audit trail 到意识流。然后 rest 到明早。
+
+    ⚠ dream 是"内部 wake":不 express_to_human、不协作。
+    做不完的做到哪记到哪(写进 [整理] audit),下次 dream 接着做。
   recurrence: daily
   time: '23:00'
 - description: 周度回顾：量化为模式、识别为洞察、决定为行动——每次回顾至少产出一个行为改变

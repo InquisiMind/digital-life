@@ -57,9 +57,11 @@ def set_alarm(
     now = _now_iso()
 
     with _conn() as conn:
+        # V6 闹钟去重: 同一 fire_at 只保留一个, 不管 event_kind
+        # (之前只按 event_kind+fire_at 去重, 导致 routine 闹钟和 rest timer 在同一时间点重复)
         existing = conn.execute(
-            "SELECT id FROM timers WHERE event_kind = ? AND fire_at = ? AND fired_at IS NULL",
-            (event_kind, fire_at),
+            "SELECT id FROM timers WHERE fire_at = ? AND fired_at IS NULL",
+            (fire_at,),
         ).fetchone()
         if existing:
             conn.execute(

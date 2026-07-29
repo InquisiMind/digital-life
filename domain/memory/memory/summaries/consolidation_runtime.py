@@ -354,66 +354,61 @@ def _dedup_tool_summaries(summaries: List[str]) -> List[str]:
     return dedup_tool_summaries(summaries)
 
 
+_COGNITION_ASSESSMENT_PROMPT = """你刚刚结束了一段工作。现在请审视本轮被注入到你思维中的联想认知，判断它们是否起到了作用。
+
+## 本轮对话摘要
+
+{conversation}
+
+## 本轮被注入的联想认知
+
+{recalled_cognitions}
+
+## 评估要求
+
+对每条认知，判断本轮中它的实际作用：
+- **positive**: 你据此认知做了决策/行动，且结果正确（没有被打脸、没有被纠正）
+- **negative**: 你据此认知行动了，但结果错误/被用户纠正/导致了问题
+- **neutral**: 只是看到了，没有据此行动；或无法判断
+
+严格判断 — 只标真正起到作用的。拿不准的标 neutral。
+
+## 输出格式 (JSON)
+
+```json
+[
+  {{"id": 12345, "verdict": "positive", "reason": "据此判断了SL阈值"}},
+  {{"id": 12346, "verdict": "negative", "reason": "用了但被Alpha指出数据过期"}},
+  {{"id": 12347, "verdict": "neutral", "reason": "只是看到了，没据此行动"}}
+]
+```
+
+只输出 JSON 数组，不要其它文字。"""
+
+
 def _assess_session_cognition(rows: Any, session_id: str) -> Optional[Dict[str, Any]]:
-    """Meta-review: wake 结束自动跑, 给本轮动过的认知打 verified/falsified 信号。
+    """Meta-review: wake 结束自动跑, 用 LLM 判断本轮召回的认知是否起到了价值。
 
-    设计原则 (review 2026-07-24 用户反馈):
-      - 不需要模型主动调 signal_memory — wake 结束系统自动判断
-      - 不调 LLM, 纯结构化分析, 0 开销
-      - 输入: session 的完整工具调用记录
-      - 输出: 实际调 apply_signal 改 evidence/challenge/state
+    设计原则:
+      - 输入: 本轮对话 + 被注入的联想认知 (面包屑里的 #id + text)
+      - LLM 判断: 每条认知 → positive/negative/neutral
+      - 输出: positive → apply_signal verified, negative → apply_signal falsified
+      - neutral → 不动
 
-    决策树:
-      · 新增 cognition (add_cognition 写入 chunk_id) → +1 verified (模型自己产出 = 一次自我验证)
-      · supersede_memory 覆盖 (old_id → new_id) → old +1 falsified (被新认知质疑), new +1 verified
-      · delete_cognition → 跳过 (已删, 不需要信号)
-      · session 关键词出现在已被召回的认知 entity_links 中 → 给该认知 +1 verified (真用上了)
-        (粗粒度:扫 assistant 文本出现 entity_links 任一 → 该条被采用)
-      · session 出现错误信号(express_to_human sent=false / 多次延续错误)
-        → 不打 falsified (粗粒度会误打;_D 留给 LLM 后续做)
+    纯规则的部分只保留 supersede 的自动质疑 (这个不需要 LLM 判断):
+      - supersede_memory 老认知 → 自动 falsified (被覆盖 = 被质疑)
     """
+    # === 1. 纯规则: supersede → 老认知自动 falsified ===
     try:
         from domain.memory.memory.recall.unified.cognition_store import apply_signal
     except Exception as e:
         logger.warning("_assess_session_cognition: cannot import apply_signal: %s", e)
         return None
 
-    added_chunk_ids: list[int] = []
-    superseded_old_ids: list[int] = []
-    superseded_new_ids: list[int] = []
-    deleted_ids: list[int] = []
-    assistant_action_texts: list[str] = []  # 收集模型实际产出/动作的文本, 用于 entity_links 采纳检测
-    has_error = False
+    positive_signals: list[int] = []
+    negative_signals: list[int] = []
 
     for m in rows:
-        role = m["role"]
-        content = m["content"] or ""
-        # V6 #6: 只收集"action 文本"做 entity_links 采纳检测
-        # 不再用全部 assistant content (含闲聊/通用推理, 噪音大)
-        # 改为: 只取 tool_call args 里的 text (express_to_human / record_thought / write_diary)
-        if role == "assistant" and m["tool_calls"]:
-            try:
-                calls = json.loads(m["tool_calls"])
-                for call in calls:
-                    fname = call.get("function", {}).get("name", "")
-                    if fname in ("express_to_human", "record_thought", "write_diary",
-                                 "update_context", "add_insight"):
-                        args_str = call.get("function", {}).get("arguments", "{}")
-                        try:
-                            args = json.loads(args_str) if isinstance(args_str, str) else args_str
-                        except Exception:
-                            args = {}
-                        action_text = args.get("text") or args.get("body") or ""
-                        if action_text and len(str(action_text).strip()) > 3:
-                            assistant_action_texts.append(str(action_text))
-            except Exception:
-                pass
-        # 检测错误状态从 tool result 里
-        if role == "tool" and content:
-            c = str(content)
-            if '"ok": false' in c and ('error' in c.lower() or 'reason' in c.lower()):
-                has_error = True
-        # 扫 tool_calls 提取 chunk_id 写入事件
         if not m["tool_calls"]:
             continue
         try:
@@ -422,86 +417,130 @@ def _assess_session_cognition(rows: Any, session_id: str) -> Optional[Dict[str, 
             continue
         for call in calls:
             fname = call.get("function", {}).get("name", "")
-            args_str = call.get("function", {}).get("arguments", "{}")
-            try:
-                args = json.loads(args_str) if isinstance(args_str, str) else args_str
-            except Exception:
-                args = {}
-            # match tool result 找创建/覆盖/删除的 chunk_id — 这里只能从后续 tool result 里找
-            # 简单做法: 看 tool result 的 "chunk_id" 字段对应到的 fn name
-            if fname == "add_cognition":
-                # add 不一定知道 chunk_id, 从 tool result JOIN (rows 里的 assistant→tool 配对)
-                # 但这里简单化: 当前行的 tool result 是下一行 (rows 是按时间顺序) 我们等扫到 result 直接抽
-                pass
-            elif fname == "supersede_memory":
-                old_id = args.get("old_chunk_id")
-                if isinstance(old_id, int):
-                    superseded_old_ids.append(old_id)
-            elif fname == "delete_cognition":
-                cid = args.get("chunk_id")
-                if isinstance(cid, int):
-                    deleted_ids.append(cid)
+            if fname in ("update_cognition", "supersede_memory"):
+                args_str = call.get("function", {}).get("arguments", "{}")
+                try:
+                    args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                except Exception:
+                    args = {}
+                action = args.get("action", "")
+                old_id = args.get("old_chunk_id") or args.get("chunk_id")
+                if action == "supersede" and isinstance(old_id, int):
+                    try:
+                        r = apply_signal(old_id, "falsified", reason=f"session {session_id[:30]}: 被新认知覆盖")
+                        if r.get("ok"):
+                            negative_signals.append(old_id)
+                    except Exception:
+                        pass
 
-    # 再扫一遍 tool result rows 抽 add_cognition 的 new chunk_id
+    # === 2. 收集本轮被注入的联想认知 ===
+    recalled = []
     for m in rows:
-        if m["role"] != "tool" or not m["content"]:
-            continue
-        # 没有 tool_name 字段就直接看 JSON 'ok' True + 'chunk_id'
-        if 'add_cognition' in (str(getattr(m, '__tool__', '')) or '') or 'new_chunk_id' in (m["content"] or ""):
-            try:
-                r_json = json.loads(m["content"])
-                cid = r_json.get("chunk_id") or r_json.get("new_chunk_id")
-                if isinstance(cid, int) and cid > 0:
-                    added_chunk_ids.append(cid)
-            except Exception:
-                pass
-        if 'supersede' in (m["content"] or "").lower():
-            try:
-                r_json = json.loads(m["content"])
-                nid = r_json.get("new_id")
-                oid = r_json.get("old_id")
-                if isinstance(nid, int) and nid > 0:
-                    superseded_new_ids.append(nid)
-                if isinstance(oid, int) and oid > 0:
-                    superseded_old_ids.append(oid)
-            except Exception:
-                pass
+        content = m.get("content") or ""
+        if m.get("role") == "tool" and "联想命中" in content:
+            # 从面包屑里提取 #id 和 text
+            import re
+            for match in re.finditer(r'#(\d+)\s.*?[\]】]\s*(.*?)(?:\n|$)', content):
+                cid = int(match.group(1))
+                text = match.group(2).strip()[:100]
+                if cid > 0 and text:
+                    recalled.append({"id": cid, "text": text})
+    # 去重
+    seen_ids = set()
+    recalled = [r for r in recalled if r["id"] not in seen_ids and not seen_ids.add(r["id"])]
 
-    # === 实际打信号 ===
-    positive_signals: list[int] = []  # +verified
-    negative_signals: list[int] = []  # +falsified
+    if not recalled:
+        # 没有召回认知 → 只返回 supersede 质疑结果
+        if positive_signals or negative_signals:
+            return {
+                "auto_verified": 0,
+                "auto_falsified": len(negative_signals),
+                "llm_assessed": 0,
+                "recalled_count": 0,
+                "summary": f"LLM评估0条(无召回), 自动质疑{len(negative_signals)}条",
+            }
+        return None
 
-    # A. add → evidence +1
-    for cid in added_chunk_ids:
-        try:
-            r = apply_signal(cid, "verified", reason=f"session {session_id[:30]}: 模型本轮写入了此认知")
-            if r.get("ok"):
-                positive_signals.append(cid)
-        except Exception as e:
-            logger.debug("auto-verified failed for %s: %s", cid, e)
+    # === 3. LLM 判断 ===
+    llm_call = _resolve_llm_call()
+    if llm_call is None:
+        logger.warning("_assess_session_cognition: LLM 不可用, 跳过认知评估")
+        return None
 
-    # B. supersede → old +falsified, new +verified
-    for old_id in superseded_old_ids:
-        try:
-            r = apply_signal(old_id, "falsified", reason=f"session {session_id[:30]}: 被新认知 #{superseded_new_ids[-1] if superseded_new_ids else '?'} 覆盖")
-            if r.get("ok"):
-                negative_signals.append(old_id)
-        except Exception as e:
-            logger.debug("auto-falsified failed for %s: %s", old_id, e)
-    for new_id in superseded_new_ids:
-        # 避免重复 verified (add_cognition 已经加过, 但 supersede 路径独立, new 不在 added_chunk_ids 里)
-        if new_id in added_chunk_ids:
-            continue
-        try:
-            r = apply_signal(new_id, "verified", reason=f"session {session_id[:30]}: supersede 写入的新认知")
-            if r.get("ok"):
-                positive_signals.append(new_id)
-        except Exception as e:
-            logger.debug("auto-verified failed for %s: %s", new_id, e)
+    # 构建对话摘要 (压缩, 避免太长)
+    conversation_parts = []
+    for m in rows:
+        role = m.get("role", "")
+        content = (m.get("content") or "").strip()
+        if role in ("user", "assistant") and content and len(content) > 5:
+            conversation_parts.append(f"[{role}] {content[:300]}")
+    conversation = "\n".join(conversation_parts[-20:])[:4000]  # 最近 20 条, 最多 4000 字符
 
-    # C. V6 删除: 原"entity_links 词出现 = 被采纳"太宽泛 (evidence 涨到 42)
-    # 替换为: 不做弱信号强化。只保留 A (写新认知) + B (supersede) 两个强信号。
-    # 真正的"被采纳"应该看模型是否据此认知做了决策 (未来可加 LLM 判断, 但不做启发式)。
+    recalled_text = "\n".join(
+        f"- #{r['id']}: {r['text']}" for r in recalled[:15]  # 最多 15 条
+    )
+
+    prompt = _COGNITION_ASSESSMENT_PROMPT.format(
+        conversation=conversation,
+        recalled_cognitions=recalled_text,
+    )
+
+    try:
+        resp = llm_call(
+            messages=[{"role": "user", "content": prompt}],
+            model=None,  # 用默认模型
+            temperature=0.1,
+            max_tokens=1000,
+        )
+        # 解析 LLM 返回的 JSON
+        import re as _re
+        json_match = _re.search(r'\[.*\]', resp, _re.DOTALL)
+        if not json_match:
+            logger.debug("_assess_session_cognition: LLM 没返回 JSON, resp=%r", resp[:200])
+            return None
+
+        assessments = json.loads(json_match.group(0))
+        assessed_count = 0
+
+        for a in assessments:
+            cid = a.get("id")
+            verdict = str(a.get("verdict", "")).lower()
+            reason = a.get("reason", "")
+            if not isinstance(cid, int) or cid <= 0:
+                continue
+
+            if verdict == "positive":
+                try:
+                    r = apply_signal(cid, "verified", reason=f"LLM评估: {reason[:50]}")
+                    if r.get("ok"):
+                        positive_signals.append(cid)
+                        assessed_count += 1
+                except Exception:
+                    pass
+            elif verdict == "negative":
+                try:
+                    r = apply_signal(cid, "falsified", reason=f"LLM评估: {reason[:50]}")
+                    if r.get("ok"):
+                        negative_signals.append(cid)
+                        assessed_count += 1
+                except Exception:
+                    pass
+
+        logger.info("[cognition_audit] LLM assessed %d cognitions: %d positive, %d negative, %d neutral",
+                    len(assessments), len(positive_signals), len(negative_signals),
+                    len(assessments) - assessed_count)
+
+        return {
+            "auto_verified": len(positive_signals),
+            "auto_falsified": len(negative_signals),
+            "llm_assessed": assessed_count,
+            "recalled_count": len(recalled),
+            "summary": f"LLM评估{len(recalled)}条召回: 强化{len(positive_signals)} 质疑{len(negative_signals)} 中性{len(assessments) - assessed_count}",
+        }
+
+    except Exception as e:
+        logger.warning("_assess_session_cognition: LLM 调用失败: %s", e)
+        return None
 
     # 0 信号 → return None (不影响 digest, 只是不增加字段)
     if not positive_signals and not negative_signals and not added_chunk_ids and not superseded_old_ids and not deleted_ids and not has_error:

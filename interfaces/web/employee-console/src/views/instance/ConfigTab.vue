@@ -5,21 +5,38 @@
       <p class="page-subtitle">{{ shortId(iid, 8) }} 实例专属配置（messenger / 群聊 / 员工实例）</p>
     </section>
 
-    <!-- 社交接管: 授权飞书账号让数字生命接管 zhp 的全部 IM 消息 -->
+    <!-- 社交接管: 授权飞书 + 微信 让数字生命接管全部 IM 消息 -->
     <div class="neon-card" style="margin-bottom: var(--space-4); padding: var(--space-4);">
       <h3 class="page-title" style="font-size: 16px; margin: 0 0 var(--space-3);">社交接管</h3>
       <p class="brand-sub" style="color: var(--text-muted); margin-bottom: var(--space-3);">
-        接管真人飞书账号后, 数字生命将以真人身份拉取全部群 + P2P 私聊消息萹库,
-        每 30 分钟触发模型 review, 自动把值得追踪的消息落到待办。
+        接管真人 IM 账号后, 数字生命将以真人身份拉取全部群 + P2P 私聊消息萹库。
       </p>
-      <div v-if="socialLoading" class="brand-sub mono" style="color: var(--text-muted);">loading…</div>
-      <div v-else style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
-        <el-tag v-if="socialStatus.authorized" type="success" effect="dark">已接管</el-tag>
-        <el-tag v-else type="info" effect="plain">未授权</el-tag>
-        <a v-if="socialStatus.oauth_url" :href="socialStatus.oauth_url" target="_blank" rel="noopener">
-          <el-button type="primary" size="small">{{ socialStatus.authorized ? '重新授权' : '⟶ 接管我的飞书' }}</el-button>
-        </a>
-        <el-button v-if="socialStatus.authorized" size="small" type="danger" plain :loading="socialRevoking" @click="revokeSocial">解除授权</el-button>
+
+      <!-- 飞书接管 -->
+      <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: var(--space-3);">
+        <span class="brand-sub" style="min-width: 40px;">飞书</span>
+        <div v-if="socialLoading" class="brand-sub mono" style="color: var(--text-muted);">loading…</div>
+        <template v-else>
+          <el-tag v-if="socialStatus.authorized" type="success" effect="dark">已接管</el-tag>
+          <el-tag v-else type="info" effect="plain">未授权</el-tag>
+          <a v-if="socialStatus.oauth_url" :href="socialStatus.oauth_url" target="_blank" rel="noopener">
+            <el-button type="primary" size="small">{{ socialStatus.authorized ? '重新授权' : '⟶ 接管我的飞书' }}</el-button>
+          </a>
+          <el-button v-if="socialStatus.authorized" size="small" type="danger" plain :loading="socialRevoking" @click="revokeSocial">解除</el-button>
+        </template>
+      </div>
+
+      <!-- 微信接管 (V6 itchat Web 协议) -->
+      <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+        <span class="brand-sub" style="min-width: 40px;">微信</span>
+        <el-tag v-if="wechatTakeover.status === 'logged_in'" type="success" effect="dark">已接管 ({{ wechatTakeover.my_nickname }})</el-tag>
+        <el-tag v-else-if="wechatTakeover.status === 'qr_ready' || wechatTakeover.status === 'logging_in'" type="warning" effect="dark">等待扫码…</el-tag>
+        <el-tag v-else-if="wechatTakeover.status === 'error'" type="danger" effect="dark">错误</el-tag>
+        <el-tag v-else type="info" effect="plain">未接管</el-tag>
+        <el-button type="success" size="small" :loading="wechatTakeoverLoading" @click="startWechatTakeover">
+          {{ wechatTakeover.status === 'logged_in' ? '重新接管' : '⟶ 接管我的微信' }}
+        </el-button>
+        <el-button v-if="wechatTakeover.status === 'logged_in'" size="small" type="danger" plain @click="stopWechatTakeover">解除</el-button>
       </div>
     </div>
 
@@ -69,10 +86,15 @@
       </div>
     </div>
 
-    <!-- 微信扫码 Dialog -->
+    <!-- 微信扫码 Dialog (接管 + ClawBot 共用) -->
     <el-dialog v-model="qrDialogVisible" title="微信扫码登录" width="360px" :close-on-click-modal="false">
       <div style="text-align: center; padding: 20px;">
-        <img v-if="qrCodeUrl" :src="`/api/system/instances/${iid}/wechat-login/qr-page?qrcode_url=${encodeURIComponent(qrCodeUrl)}`"
+        <!-- V6 接管模式: 直接用 base64 -->
+        <img v-if="qrCodeUrl && qrCodeUrl.startsWith('data:')" :src="qrCodeUrl"
+             alt="微信二维码"
+             style="width: 240px; height: 240px; border-radius: var(--radius); margin-bottom: 16px; background: white;" />
+        <!-- ClawBot 模式: 走代理 URL -->
+        <img v-else-if="qrCodeUrl" :src="`/api/system/instances/${iid}/wechat-login/qr-page?qrcode_url=${encodeURIComponent(qrCodeUrl)}`"
              alt="微信二维码"
              style="width: 240px; height: 240px; border-radius: var(--radius); margin-bottom: 16px; background: white;" />
         <div v-else style="width: 240px; height: 240px; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; background: var(--bg-deep); border-radius: var(--radius);">
@@ -88,7 +110,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { instanceApi, systemApi } from '@/api/client'
+import { instanceApi, systemApi, safeFetch } from '@/api/client'
 
 const route = useRoute()
 const iid = computed(() => String(route.params.iid || ''))
@@ -101,10 +123,76 @@ const qrCodeUrl = ref('')
 const socialStatus = ref({ authorized: false, oauth_url: '' })
 const socialLoading = ref(false)
 const socialRevoking = ref(false)
+// V6 微信全接管 (itchat)
+const wechatTakeover = ref({ status: 'idle', qr_base64: '', my_nickname: '', error: '' })
+const wechatTakeoverLoading = ref(false)
+let wechatTakeoverPollTimer = null
 const qrStatus = ref('')
 const allSections = ref([])
 const draft = ref({})
 const baseline = ref({})
+
+// V6 微信全接管 (itchat)
+async function startWechatTakeover() {
+  if (wechatTakeoverLoading.value) return
+  wechatTakeoverLoading.value = true
+  wechatTakeover.value = { status: 'starting', qr_base64: '', my_nickname: '', error: '' }
+  // 弹 QR 码 dialog
+  qrDialogVisible.value = true
+  qrStatus.value = '启动中…'
+
+  try {
+    // 调后端启动 daemon
+    await safeFetch(`/api/system/instances/${iid.value}/wechat-takeover/start`, { method: 'POST', body: '{}' })
+    // 轮询状态 + QR 码 (5s 间隔, 最多 24 次 = 120s)
+    let polls = 0
+    wechatTakeoverPollTimer = setInterval(async () => {
+      polls++
+      if (polls > 24) {
+        clearInterval(wechatTakeoverPollTimer)
+        qrStatus.value = '扫码超时, 请重新点击'
+        wechatTakeoverLoading.value = false
+        wechatTakeover.value.status = 'timeout'
+        return
+      }
+      try {
+        const d = await safeFetch(`/api/system/instances/${iid.value}/wechat-takeover/status`)
+        wechatTakeover.value = {
+          status: d.status || 'unknown',
+          qr_base64: d.qr_base64 || '',
+          my_nickname: d.my_nickname || '',
+          error: d.error || '',
+        }
+        if (d.status === 'qr_ready' && d.qr_base64) {
+          qrCodeUrl.value = d.qr_base64
+          qrStatus.value = '请用手机微信扫码'
+        } else if (d.status === 'logged_in') {
+          clearInterval(wechatTakeoverPollTimer)
+          qrDialogVisible.value = false
+          wechatTakeoverLoading.value = false
+          ElMessage.success(`✓ 微信接管成功 (${d.my_nickname || '已登录'})`)
+        } else if (d.status === 'error') {
+          clearInterval(wechatTakeoverPollTimer)
+          qrStatus.value = `错误: ${d.error || '未知'}`
+          wechatTakeoverLoading.value = false
+        }
+      } catch (e) { /* ignore poll errors */ }
+    }, 2000)
+  } catch (e) {
+    qrStatus.value = `错误: ${e.message || e}`
+    wechatTakeoverLoading.value = false
+  }
+}
+
+async function stopWechatTakeover() {
+  try {
+    await safeFetch(`/api/system/instances/${iid.value}/wechat-takeover/stop`, { method: 'POST', body: '{}' })
+    wechatTakeover.value = { status: 'stopped', qr_base64: '', my_nickname: '', error: '' }
+    ElMessage.success('微信接管已解除')
+  } catch (e) {
+    ElMessage.error(`解除失败: ${e.message || e}`)
+  }
+}
 
 async function doWechatLogin() {
   if (wechatLoading.value) return

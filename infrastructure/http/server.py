@@ -898,6 +898,13 @@ async def run_master_gateway() -> None:
     from application.api.broadcast_routes import add_broadcast_routes
     add_broadcast_routes(app)
 
+    # 微信消息接收 endpoint: itchat daemon → digital-life
+    try:
+        from application.api.wechat_ingest_routes import add_wechat_ingest_routes
+        add_wechat_ingest_routes(app)
+    except Exception as exc:
+        logger.warning("WeChat ingest routes failed: %s", exc)
+
     # 启动时同步各实例的 subscriptions.yaml(其他实例在哪群 → 各自写好 peers 列表)
     try:
         from domain.messages.broadcast import sync_subscriptions_from_registry
@@ -1074,6 +1081,13 @@ async def run_gateway() -> None:
     # 广播 endpoint:接收 peer 实例的 HTTP 广播(去中心化消息总线 Phase 3)
     from application.api.broadcast_routes import add_broadcast_routes
     add_broadcast_routes(app)
+
+    # 微信消息接收 endpoint: itchat daemon → digital-life
+    try:
+        from application.api.wechat_ingest_routes import add_wechat_ingest_routes
+        add_wechat_ingest_routes(app)
+    except Exception as exc:
+        logger.warning("WeChat ingest routes failed: %s", exc)
 
     # 启动时同步各实例的 subscriptions.yaml(其他实例在哪群 → 各自写好 peers 列表)
     try:

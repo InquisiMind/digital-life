@@ -60,6 +60,20 @@ def add_system_routes(app: web.Application) -> None:
         f"{SYSTEM_API_PREFIX}/instances/{{iid}}/wechat-login/qr-page",
         _handle_wechat_qr_page,
     )
+
+    # V6 微信全接管 (itchat Web 协议, 以用户身份拉全量消息)
+    app.router.add_post(
+        f"{SYSTEM_API_PREFIX}/instances/{{iid}}/wechat-takeover/start",
+        _handle_wechat_takeover_start,
+    )
+    app.router.add_get(
+        f"{SYSTEM_API_PREFIX}/instances/{{iid}}/wechat-takeover/status",
+        _handle_wechat_takeover_status,
+    )
+    app.router.add_post(
+        f"{SYSTEM_API_PREFIX}/instances/{{iid}}/wechat-takeover/stop",
+        _handle_wechat_takeover_stop,
+    )
     app.router.add_get(f"{SYSTEM_API_PREFIX}/projects", _handle_projects)
     app.router.add_post(f"{SYSTEM_API_PREFIX}/projects", _handle_create_project)
     app.router.add_delete(f"{SYSTEM_API_PREFIX}/projects/{{pid}}", _handle_delete_project)
@@ -2154,6 +2168,43 @@ async def _handle_spa_root_redirect(request: web.Request) -> web.Response:
 async def _handle_root_redirect(request: web.Request) -> web.Response:
     """/ → /system（默认入口）。"""
     raise web.HTTPFound("/system")
+
+
+# ============ V6 微信全接管 (itchat Web 协议) ============
+
+
+async def _handle_wechat_takeover_start(request: web.Request) -> web.Response:
+    """POST /api/system/instances/{iid}/wechat-takeover/start — 启动微信接管。"""
+    iid = request.match_info["iid"]
+    try:
+        from interfaces.social.wechat_takeover import start_takeover
+        result = start_takeover(iid)
+        return web.json_response(result)
+    except Exception as exc:
+        logger.exception("wechat_takeover start failed")
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
+async def _handle_wechat_takeover_status(request: web.Request) -> web.Response:
+    """GET /api/system/instances/{iid}/wechat-takeover/status — 获取接管状态 + QR 码。"""
+    iid = request.match_info["iid"]
+    try:
+        from interfaces.social.wechat_takeover import get_takeover_status
+        result = get_takeover_status(iid)
+        return web.json_response(result)
+    except Exception as exc:
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
+async def _handle_wechat_takeover_stop(request: web.Request) -> web.Response:
+    """POST /api/system/instances/{iid}/wechat-takeover/stop — 停止微信接管。"""
+    iid = request.match_info["iid"]
+    try:
+        from interfaces.social.wechat_takeover import stop_takeover
+        result = stop_takeover(iid)
+        return web.json_response(result)
+    except Exception as exc:
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
 
 
 __all__ = ["add_system_routes", "SYSTEM_API_PREFIX"]

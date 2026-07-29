@@ -586,9 +586,14 @@ class MonitorConsoleWorkflow:
         return result
 
     def schedules(self) -> UseCaseResult:
-        """List all routine schedules."""
-        from domain.lifecycle.routine_scheduler import load_routines
-        return UseCaseResult({"schedules": load_routines()})
+        """List all routine schedules, 标注 matches_today."""
+        from domain.lifecycle.routine_scheduler import load_routines, _matches_today
+        from domain.lifecycle.clock import now_dt
+        routines = load_routines()
+        now = now_dt()
+        for r in routines:
+            r["matches_today"] = _matches_today(r, now)
+        return UseCaseResult({"schedules": routines})
 
     def create_schedule(self, body: dict[str, Any]) -> UseCaseResult:
         """Create a new routine schedule."""

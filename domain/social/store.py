@@ -378,14 +378,35 @@ def is_zhp_command(text: str, sender_id: str, self_open_id: str = "") -> bool:
 
 
 def render_social_feed(instance_id: str = "", limit: int = 30) -> str:
-    """渲染最近未读消息为注入文本。调完后自动 mark scanned。
+    """渲染最新社交消息为注入文本。
+
+    V6 修复: 始终返回最新 N 条, 不依赖 scanned 字段过滤。
+    之前 WHERE scanned=0 导致: 第一次看后 mark_scanned → 第二次看跳到更老的 → 越看越老。
+    scanned 只做统计用, 不影响查询。
 
     过滤规则(帮模型过滤噪音):
       - sender_is_app=1 的机器人消息: 跳过(系统通知/机器人回复不是真人意图)
       - 保留所有 has_command=1 / at_all=1 的消息(明确有意图或广播)
       - 其余消息保留但标注优先级: 有 command → 🔡, at_all → ⚠️
     """
-    msgs = get_unreviewed_unread(instance_id, limit)
+    conn = sqlite3.connect(str(_state_db_path()))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, source, chat_name, sender_name, text, has_command,
+                   message_ts, at_me, at_all, sender_is_app, reviewed
+            FROM social_feed
+            WHERE (instance_id = ? OR ? = '')
+            ORDER BY message_ts DESC
+            LIMIT ?
+            """,
+            (instance_id, instance_id, limit * 3),  # 多拉点, 过滤机器人后保证够 limit
+        ).fetchall()
+    finally:
+        conn.close()
+
+    msgs = [dict(r) for r in rows]
     if not msgs:
         return ""
 
@@ -395,10 +416,11 @@ def render_social_feed(instance_id: str = "", limit: int = 30) -> str:
         if m.get("sender_is_app") and not m.get("at_all") and not m.get("has_command"):
             continue  # 机器人普通消息跳过
         filtered.append(m)
+    filtered = filtered[:limit]  # 截到 limit
     if not filtered:
         return ""
 
-    lines = ["[zhp 的近况]  📌=@我 ⚠️=@所有人 🔡=含命令前缀"]
+    lines = ["[社交近况]"]
     for m in filtered:
         ts_raw = m["message_ts"]
         ts = _format_relative_ts(ts_raw)
@@ -406,13 +428,12 @@ def render_social_feed(instance_id: str = "", limit: int = 30) -> str:
         sender = (m.get("sender_name") or "?")[:8]
         text = (m.get("text") or "").replace("\n", " ").strip()[:80]
         tags = []
-        if m.get("at_me"): tags.append("📌")
+        if m.get("at_me"): tags.append("@我")
         if m.get("has_command"): tags.append("🔡")
         if m.get("at_all"): tags.append("⚠️")
         tag_str = " ".join(tags)
         lines.append(f"  · {ts} {chat} | {sender} {tag_str}: {text}")
-    lines.append(f"[/zhp 的近况 · {len(filtered)} 条]")
-    mark_scanned([m["id"] for m in filtered])
+    lines.append(f"[/社交近况 · {len(filtered)} 条]")
     return "\n".join(lines)
 
 

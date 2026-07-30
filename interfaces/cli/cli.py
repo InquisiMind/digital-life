@@ -183,9 +183,12 @@ def _base_env(api_port: int | None = None, cwd: Path | None = None) -> dict[str,
         env["API_SERVER_PORT"] = str(api_port)
     # 合并 SSL 证书：certifi 公共 CA + ZCode 代理 CA
     combined_cert = Path.home() / ".zcode" / "v2" / "acp-traffic-proxy" / "combined-ca.pem"
-    if combined_cert.exists():
-        env["SSL_CERT_FILE"] = str(combined_cert)
-        env["REQUESTS_CA_BUNDLE"] = str(combined_cert)
+    try:
+        if combined_cert.exists():
+            env["SSL_CERT_FILE"] = str(combined_cert)
+            env["REQUESTS_CA_BUNDLE"] = str(combined_cert)
+    except (PermissionError, OSError):
+        pass  # 沙箱权限限制 → 跳过, 用系统默认 CA
     return env
 
 

@@ -2079,6 +2079,9 @@ class AIAgent:
             assistant_msg, tool_msg = self._sys_tool_call("entity_recall", breadcrumb_text)
             messages.append(assistant_msg)
             messages.append(tool_msg)
+            # V6: 持久化到 messages.db — 让 _assess_session_cognition 能读到面包屑做 LLM 评估
+            self._append_message(self.session_id, "tool", breadcrumb_text,
+                                 tool_name="entity_recall", tool_call_id=tool_msg.get("tool_call_id"))
             if self.audit_ctx is not None:
                 try:
                     self.audit_ctx.recall("entity_recall", breadcrumb_text)

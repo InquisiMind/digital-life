@@ -597,7 +597,8 @@ def _handle_sense_social_feed(args: Dict[str, Any], **_) -> str:
     tag_filter = (args.get("tag") or "").strip()
     chat_id = (args.get("chat_id") or "").strip()
     chat_name = (args.get("chat_name") or "").strip()
-    before = (args.get("before") or "").strip()  # V6: 翻页参数
+    before = (args.get("before") or "").strip()
+    after = (args.get("after") or "").strip()
     try:
         import sqlite3 as _sqlite3
         from infrastructure.config import get_app_instance_id, get_runtime_state_db_path
@@ -621,30 +622,40 @@ def _handle_sense_social_feed(args: Dict[str, Any], **_) -> str:
             params_list.append(iid)
         # Time filter: 默认最近 7 天, 但 before 翻页时放宽到 30 天
         from datetime import datetime as _dt
-        days_back = 30 if before else 7
+        days_back = 30 if (before or after) else 7
         _cutoff_ts = (_dt.now().timestamp() - days_back * 86400) * 1000
-        where_parts.append("message_ts > ?")
-        params_list.append(_cutoff_ts)
-        # V6: before 翻页 — 返回指定时间之前的消息
+        # 如果有 after, 不用默认 cutoff (用户可能查很久之前的)
+        if not after:
+            where_parts.append("message_ts > ?")
+            params_list.append(_cutoff_ts)
+
+        # V6: 时间范围查询 — before/after 支持组合
+        def _parse_time(s: str) -> float:
+            """解析 'MM-DD HH:MM' 或 ISO → 毫秒时间戳."""
+            from domain.lifecycle.clock import beijing_now_dt
+            now_bj = beijing_now_dt()
+            if "-" in s and ":" in s:
+                parts = s.split()
+                md = parts[0].split("-")
+                hm = parts[1].split(":") if len(parts) > 1 else ["0","0"]
+                return now_bj.replace(month=int(md[0]), day=int(md[1]),
+                                      hour=int(hm[0]), minute=int(hm[1]), second=0).timestamp() * 1000
+            else:
+                return _dt.fromisoformat(s).timestamp() * 1000
+
         if before:
-            # 解析 "MM-DD HH:MM" 或 ISO 格式
             try:
-                from domain.lifecycle.clock import beijing_now_dt
-                now_bj = beijing_now_dt()
-                # 尝试 "MM-DD HH:MM"
-                if "-" in before and ":" in before:
-                    parts = before.split()
-                    md = parts[0].split("-")
-                    hm = parts[1].split(":") if len(parts) > 1 else ["0","0"]
-                    before_dt = now_bj.replace(month=int(md[0]), day=int(md[1]),
-                                              hour=int(hm[0]), minute=int(hm[1]), second=0)
-                else:
-                    before_dt = _dt.fromisoformat(before)
-                before_ts = before_dt.timestamp() * 1000
                 where_parts.append("message_ts < ?")
-                params_list.append(before_ts)
+                params_list.append(_parse_time(before))
             except Exception:
-                pass  # before 解析失败 → 不加过滤, 返回最新
+                pass
+        if after:
+            try:
+                where_parts.append("message_ts > ?")
+                params_list.append(_parse_time(after))
+            except Exception:
+                pass
+
         if category:
             where_parts.append("category = ?")
             params_list.append(category)
@@ -695,18 +706,25 @@ def _handle_sense_social_feed(args: Dict[str, Any], **_) -> str:
             tag_str = f" #{msg_tags}" if msg_tags else ""
             lines.append(f"  · {ts} {cat_icon} {chat} | {sender}{tag_str}: {text}")
         lines.append(f"[/社交近况 · {len(msgs)} 条]")
-        # V6: 返回最旧一条的时间, 供模型翻页 (before=该时间)
-        oldest_ts = min((m.get("message_ts") or 0) for m in msgs) if msgs else 0
-        oldest_str = ""
-        if oldest_ts:
-            from datetime import datetime as _dt2
-            _ts_sec = oldest_ts / 1000 if oldest_ts > 1e12 else oldest_ts
-            oldest_str = _dt2.fromtimestamp(_ts_sec).strftime("%m-%d %H:%M")
+        # V6: 返回时间边界, 供模型双向翻页
+        from datetime import datetime as _dt2
+        def _fmt_ts(ts_val):
+            if not ts_val: return ""
+            _ts_sec = ts_val / 1000 if ts_val > 1e12 else ts_val
+            return _dt2.fromtimestamp(_ts_sec).strftime("%m-%d %H:%M")
+        oldest_str = _fmt_ts(min((m.get("message_ts") or 0) for m in msgs)) if msgs else ""
+        newest_str = _fmt_ts(max((m.get("message_ts") or 0) for m in msgs)) if msgs else ""
+        hint_parts = []
+        if oldest_str:
+            hint_parts.append(f'往老翻: sense_social_feed(before="{oldest_str}")')
+        if newest_str:
+            hint_parts.append(f'往新翻: sense_social_feed(after="{newest_str}")')
         return _j({
             "messages": lines,
             "count": len(msgs),
-            "oldest": oldest_str,  # 传给 before= 可翻页看更老的消息
-            "hint": "要看更早的消息, 调 sense_social_feed(before=\"" + oldest_str + "\")" if oldest_str else "",
+            "oldest": oldest_str,
+            "newest": newest_str,
+            "hint": " | ".join(hint_parts) if hint_parts else "",
         })
     except Exception as exc:
         return _j({"error": str(exc)})
@@ -718,23 +736,28 @@ registry.register(
     schema={
         "name": "sense_social_feed",
         "description": (
-            "查看真人飞书消息。\n"
-            "1. 不传参数: 跨群扫一眼最新消息(最近在前)\n"
-            "2. chat_id/chat_name: 拉指定群的完整对话流(正序, 像在飞书里点进群看上下文)\n"
-            "3. before='MM-DD HH:MM': 翻页 — 看更老的消息 (上次返回的 oldest 值)\n"
-            "4. category/tag: 按分类/标签筛选\n"
-            "建议: 先无参数扫一眼→看到感兴趣的群→再 chat_name 进去拉完整上下文。"
-            "看了不够? 用 before 翻页。"
+            "查看真人飞书消息 (类 SQL 查询)。\n"
+            "1. 不传参数: 跨群最新消息(最近在前)\n"
+            "2. chat_id/chat_name: 拉指定群完整对话流\n"
+            "3. before/after: 时间范围过滤 (格式 MM-DD HH:MM), 可组合\n"
+            "4. category/tag: 分类/标签筛选\n"
+            "返回 oldest + newest, 供翻页。\n"
+            "示例:\n"
+            "  sense_social_feed() — 最新 30 条\n"
+            "  sense_social_feed(before='07-30 12:06') — 该时间之前\n"
+            "  sense_social_feed(after='07-30 11:00') — 该时间之后\n"
+            "  sense_social_feed(chat_name='智赋千行', after='07-30 11:00', before='07-30 12:00') — 指定群+时间段"
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "limit": {"type": "integer", "description": "拉多少条(默认30)"},
-                "before": {"type": "string", "description": "翻页: 返回该时间之前的消息 (格式 MM-DD HH:MM, 用上次返回的 oldest 值)"},
+                "limit": {"type": "integer", "description": "返回条数(默认30)"},
+                "before": {"type": "string", "description": "时间上界: 只返回该时间之前的消息 (MM-DD HH:MM)"},
+                "after": {"type": "string", "description": "时间下界: 只返回该时间之后的消息 (MM-DD HH:MM)"},
                 "category": {"type": "string", "description": "分类: command/mention/work/social/notification/system/default"},
-                "tag": {"type": "string", "description": "自定义标签筛选(模糊匹配 tags 字段)"},
-                "chat_id": {"type": "string", "description": "指定群的 chat_id(oc_xxx), 拉该群完整对话流"},
-                "chat_name": {"type": "string", "description": "按群名模糊匹配(不知道 chat_id 时用)"},
+                "tag": {"type": "string", "description": "自定义标签筛选(tags 字段模糊匹配)"},
+                "chat_id": {"type": "string", "description": "指定群 chat_id(oc_xxx)"},
+                "chat_name": {"type": "string", "description": "按群名模糊匹配"},
             },
             "required": [],
         },

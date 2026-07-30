@@ -585,20 +585,19 @@ def _handle_sense_scratchpad(args: Dict[str, Any], **_) -> str:
 def _handle_sense_social_feed(args: Dict[str, Any], **_) -> str:
     """调取 social_feed 表中的真人 IM 消息。
 
-    三种查看模式:
-      1. 默认 (无参数): 跨群混合, 按时间倒序——快速扫一眼有没有新消息
-      2. chat_id="oc_xxx": 拉指定群的消息流(连贯对话上下文, 像在飞书里点进一个群)
-      3. chat_name="XXX群": 按群名模糊匹配(如果不知道 chat_id)
-      4. category="mention": 只看 @你的消息
-      5. tag="紧急": 按自定义标签筛选
+    查看模式:
+      1. 默认 (无参数): 跨群混合, 按时间倒序, 最新 N 条
+      2. chat_id/chat_name: 拉指定群的消息流(连贯对话上下文)
+      3. category/tag: 按 分类/标签 筛选
+      4. before="MM-DD HH:MM": 翻页 — 返回该时间之前的消息 (配合上一次返回的最后一条时间)
     """
     _burn()
     limit = int(args.get("limit") or 30)
-    only_unread = args.get("only_unread") != False  # 默认只看未读
     category = (args.get("category") or "").strip()
     tag_filter = (args.get("tag") or "").strip()
     chat_id = (args.get("chat_id") or "").strip()
     chat_name = (args.get("chat_name") or "").strip()
+    before = (args.get("before") or "").strip()  # V6: 翻页参数
     try:
         import sqlite3 as _sqlite3
         from infrastructure.config import get_app_instance_id, get_runtime_state_db_path
@@ -608,27 +607,44 @@ def _handle_sense_social_feed(args: Dict[str, Any], **_) -> str:
 
         where_parts: list[str] = []
         params_list: list = []
-        # 指定 chat_id 时: 不限 only_unread, 拉该群的完整历史上下文
+        # 指定 chat_id/chat_name: 拉该群完整上下文
         if chat_id:
             where_parts.append("chat_id = ?")
             params_list.append(chat_id)
-            only_unread = False  # 看群对话时不限制未读
         elif chat_name:
             where_parts.append("chat_name LIKE ?")
             params_list.append(f"%{chat_name}%")
-            only_unread = False
-        else:
-            if only_unread:
-                where_parts.append("scanned = 0 AND reviewed = 0")
+        # V6: 不再用 scanned=0 过滤 — 解耦已读和拉取
+        # scanned 只做统计, 不影响查询
         if iid:
             where_parts.append("(instance_id = ? OR instance_id = '')")
             params_list.append(iid)
-        # Time filter: exclude messages older than 7 days to prevent
-        # stale data (e.g. last year's notifications) being mistaken for recent.
+        # Time filter: 默认最近 7 天, 但 before 翻页时放宽到 30 天
         from datetime import datetime as _dt
-        _cutoff_ts = (_dt.now().timestamp() - 7 * 86400) * 1000  # ms
+        days_back = 30 if before else 7
+        _cutoff_ts = (_dt.now().timestamp() - days_back * 86400) * 1000
         where_parts.append("message_ts > ?")
         params_list.append(_cutoff_ts)
+        # V6: before 翻页 — 返回指定时间之前的消息
+        if before:
+            # 解析 "MM-DD HH:MM" 或 ISO 格式
+            try:
+                from domain.lifecycle.clock import beijing_now_dt
+                now_bj = beijing_now_dt()
+                # 尝试 "MM-DD HH:MM"
+                if "-" in before and ":" in before:
+                    parts = before.split()
+                    md = parts[0].split("-")
+                    hm = parts[1].split(":") if len(parts) > 1 else ["0","0"]
+                    before_dt = now_bj.replace(month=int(md[0]), day=int(md[1]),
+                                              hour=int(hm[0]), minute=int(hm[1]), second=0)
+                else:
+                    before_dt = _dt.fromisoformat(before)
+                before_ts = before_dt.timestamp() * 1000
+                where_parts.append("message_ts < ?")
+                params_list.append(before_ts)
+            except Exception:
+                pass  # before 解析失败 → 不加过滤, 返回最新
         if category:
             where_parts.append("category = ?")
             params_list.append(category)
@@ -653,10 +669,8 @@ def _handle_sense_social_feed(args: Dict[str, Any], **_) -> str:
             mode = f"chat_id={chat_id}" if chat_id else f"chat_name={chat_name}" if chat_name else "all"
             return _j({"messages": [], "note": f"无消息 ({mode}, category={category or 'any'})"})
 
-        # 指定群时 mark_scanned
-        if only_unread and not chat_id and not chat_name:
-            from domain.social.store import mark_scanned
-            mark_scanned([m["id"] for m in msgs])
+        # V6: 不再 mark_scanned — 已读标记和拉取解耦
+        # 返回最后一条的时间, 供模型翻页用
 
         # 格式化: 过滤机器人 + 标记
         from datetime import datetime
@@ -681,7 +695,19 @@ def _handle_sense_social_feed(args: Dict[str, Any], **_) -> str:
             tag_str = f" #{msg_tags}" if msg_tags else ""
             lines.append(f"  · {ts} {cat_icon} {chat} | {sender}{tag_str}: {text}")
         lines.append(f"[/社交近况 · {len(msgs)} 条]")
-        return _j({"messages": lines, "count": len(msgs)})
+        # V6: 返回最旧一条的时间, 供模型翻页 (before=该时间)
+        oldest_ts = min((m.get("message_ts") or 0) for m in msgs) if msgs else 0
+        oldest_str = ""
+        if oldest_ts:
+            from datetime import datetime as _dt2
+            _ts_sec = oldest_ts / 1000 if oldest_ts > 1e12 else oldest_ts
+            oldest_str = _dt2.fromtimestamp(_ts_sec).strftime("%m-%d %H:%M")
+        return _j({
+            "messages": lines,
+            "count": len(msgs),
+            "oldest": oldest_str,  # 传给 before= 可翻页看更老的消息
+            "hint": "要看更早的消息, 调 sense_social_feed(before=\"" + oldest_str + "\")" if oldest_str else "",
+        })
     except Exception as exc:
         return _j({"error": str(exc)})
 
@@ -692,17 +718,19 @@ registry.register(
     schema={
         "name": "sense_social_feed",
         "description": (
-            "查看真人飞书消息。三种方式:\n"
+            "查看真人飞书消息。\n"
             "1. 不传参数: 跨群扫一眼最新消息(最近在前)\n"
             "2. chat_id/chat_name: 拉指定群的完整对话流(正序, 像在飞书里点进群看上下文)\n"
-            "3. category/tag: 按分类/标签筛选\n"
+            "3. before='MM-DD HH:MM': 翻页 — 看更老的消息 (上次返回的 oldest 值)\n"
+            "4. category/tag: 按分类/标签筛选\n"
             "建议: 先无参数扫一眼→看到感兴趣的群→再 chat_name 进去拉完整上下文。"
+            "看了不够? 用 before 翻页。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "limit": {"type": "integer", "description": "拉多少条(默认30)"},
-                "only_unread": {"type": "boolean", "description": "只看未读(默认true; 指定chat_id时自动false)"},
+                "before": {"type": "string", "description": "翻页: 返回该时间之前的消息 (格式 MM-DD HH:MM, 用上次返回的 oldest 值)"},
                 "category": {"type": "string", "description": "分类: command/mention/work/social/notification/system/default"},
                 "tag": {"type": "string", "description": "自定义标签筛选(模糊匹配 tags 字段)"},
                 "chat_id": {"type": "string", "description": "指定群的 chat_id(oc_xxx), 拉该群完整对话流"},

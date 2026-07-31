@@ -337,19 +337,24 @@ def _read_sheet(sheet_token: str) -> dict[str, Any]:
     """读电子表格 — 先查 sheet 列表, 再读每个 sheet 的值。
 
     限制: 多 sheet 只读前 3 个, 每 sheet 最多 50 行, 避免超长。
+
+    注意 v3 的 /spreadsheets/{token} 只返 spreadsheet 元信息(无 sheets 列表),
+    sheet 列表必须单独查 /spreadsheets/{token}/sheets/query。
     """
-    # 1. 列出所有 sheet
+    # 1. spreadsheet 元信息 (标题)
     meta = _api_get(f"/sheets/v3/spreadsheets/{sheet_token}")
     if not meta:
-        return {"ok": False, "reason": "sheet 元信息读取失败"}
-    sheets = meta.get("sheets") or []
-    if not sheets:
-        return {"ok": False, "reason": "spreadsheet 没有 sheet"}
-    title = ""
+        return {"ok": False, "reason": "sheet 元信息读取失败 (权限不足或链接错误)"}
     sp = meta.get("spreadsheet") or {}
     title = sp.get("title", "")
 
-    # 2. 逐 sheet 读值 (限制前 3 个)
+    # 2. sheet 列表 (独立接口)
+    sheets_resp = _api_get(f"/sheets/v3/spreadsheets/{sheet_token}/sheets/query")
+    sheets = (sheets_resp or {}).get("sheets") or []
+    if not sheets:
+        return {"ok": False, "reason": f"spreadsheet '{title}' 没有 sheet 或无权读", "title": title}
+
+    # 3. 逐 sheet 读值 (限制前 3 个)
     parts: list[str] = []
     for sh in sheets[:3]:
         sid = sh.get("sheet_id", "")
@@ -357,10 +362,11 @@ def _read_sheet(sheet_token: str) -> dict[str, Any]:
         if not sid:
             continue
         # v2 values API: range=sheetId!A1:Z50
+        # 注意: dateTimeRenderOption 的值飞书不认(Formatted 无效), 只传 valueRenderOption
         rng = f"{sid}!A1:Z50"
         vals = _api_get(
             f"/sheets/v2/spreadsheets/{sheet_token}/values/{rng}",
-            params={"valueRenderOption": "ToString", "dateTimeRenderOption": "Formatted"},
+            params={"valueRenderOption": "ToString"},
         )
         if not vals:
             continue

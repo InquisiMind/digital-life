@@ -2117,3 +2117,57 @@ def _feishu_check_authorized() -> bool:
         return is_feishu_authorized()
     except Exception:
         return False
+
+
+def _handle_feishu_download(args: Dict[str, Any], **_) -> str:
+    """下载飞书二进制文件 (PDF/图片/附件) 到本地 attachments。
+
+    当 feishu_call 返回 {code:0, msg:"binary response"} 时, 改用这个工具保存文件。
+    文件落到 apps/{iid}/data/attachments/, 入库后 sense_image/前端可见。
+    """
+    path = str(args.get("path") or "").strip()
+    params = args.get("params") or {}
+    filename = str(args.get("filename") or "").strip()
+    if not path:
+        return _j({"ok": False, "reason": "path 必填 (飞书 open-apis 下载路径)"})
+    try:
+        from interfaces.social.feishu_docs import download_feishu_file
+        result = download_feishu_file(path, params=params or None, filename=filename)
+        return _j(result)
+    except Exception as e:
+        return _j({"ok": False, "reason": f"{type(e).__name__}: {e}"})
+
+
+registry.register(
+    name="feishu_download",
+    toolset="actions",
+    schema={
+        "name": "feishu_download",
+        "description": (
+            "下载飞书二进制文件 (PDF/图片/附件) 到本地。当 feishu_call 返回 "
+            "'binary response' 时改用此工具。文件保存到 attachments, 之后可用 "
+            "sense_image 查看。token 内部处理, 你看不到。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "飞书 open-apis 下载路径, 如 /drive/v1/medias/{file_token}/download",
+                },
+                "params": {
+                    "type": "object",
+                    "description": "URL query 参数 (可选)",
+                },
+                "filename": {
+                    "type": "string",
+                    "description": "保存文件名 (可选, 不填按 sha 自动命名)",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    handler=_handle_feishu_download,
+    check_fn=lambda: _feishu_check_authorized(),
+    emoji="📥",
+)

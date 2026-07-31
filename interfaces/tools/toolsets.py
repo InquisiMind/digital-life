@@ -22,7 +22,7 @@ CORE_TOOLS = [
     # 文件
     "write_file",
     # 飞书 API 代理 (读写统管, token 隐藏, 写操作两步确认)
-    "feishu_call",
+    "feishu_call", "feishu_download",
     # 行动
     "express_to_human", "rest", "terminal", "execute_code", "process",
     "register_attachment", "register_tool",

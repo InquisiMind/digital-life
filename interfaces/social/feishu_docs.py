@@ -261,9 +261,96 @@ def _api_request(
         if body and method in {"POST", "PUT", "PATCH", "DELETE"}:
             kwargs["json"] = body
         resp = httpx.request(method, f"{FEISHU_BASE}{path}", **kwargs)
+        # 二进制响应 (PDF/图片/文件下载): 不能 .json(), 否则 JSONDecodeError
+        content_type = resp.headers.get("content-type", "")
+        if not content_type.startswith("application/json"):
+            return {
+                "code": 0,
+                "msg": "binary response",
+                "content_type": content_type,
+                "size_bytes": len(resp.content),
+                # 二进制不能塞 JSON, 告诉调用方这是文件流
+                # feishu_call 工具会提示用 feishu_download 另存
+                "hint": "二进制响应, 如需保存文件用 feishu_download 工具",
+            }
         return resp.json()
     except Exception as exc:
         return {"code": -2, "msg": f"{type(exc).__name__}: {exc}"}
+
+
+def download_feishu_file(
+    path: str,
+    params: dict | None = None,
+    filename: str = "",
+) -> dict[str, Any]:
+    """下载飞书二进制文件 (PDF/图片/附件) 并落盘到 apps/{iid}/data/attachments/。
+
+    feishu_call 检测到二进制响应时, 模型改用这个工具保存文件。
+    token 内部处理, 模型不可见。
+    """
+    token = _ensure_user_token()
+    if not token:
+        return {"ok": False, "reason": "user_access_token 获取失败"}
+    try:
+        resp = httpx.get(
+            f"{FEISHU_BASE}{path}",
+            headers={"Authorization": f"Bearer {token}"},
+            params=params or {},
+            timeout=60,
+        )
+        if resp.status_code != 200 or not resp.content:
+            return {"ok": False, "reason": f"下载失败 status={resp.status_code}"}
+        content_type = resp.headers.get("content-type", "application/octet-stream")
+        # 推断扩展名
+        ext_map = {
+            "application/pdf": ".pdf",
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/gif": ".gif",
+            "application/vnd.ms-excel": ".xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+        }
+        ext = ext_map.get(content_type, "")
+        if not ext:
+            # 从 content-type 末段猜
+            ext = "." + content_type.split("/")[-1].split(";")[0] if "/" in content_type else ""
+
+        from infrastructure.config import get_instance_data_dir, get_app_instance_id
+        iid = get_app_instance_id() or ""
+        if not iid:
+            return {"ok": False, "reason": "无法确定 instance_id"}
+        att_dir = get_instance_data_dir(iid) / "attachments"
+        att_dir.mkdir(parents=True, exist_ok=True)
+
+        import hashlib
+        sha = hashlib.sha256(resp.content).hexdigest()[:16]
+        fname = filename or f"feishu_{sha}{ext}"
+        fpath = att_dir / fname
+        fpath.write_bytes(resp.content)
+
+        # 入 attachments 库 (让 sense_image / 前端能看到)
+        try:
+            from infrastructure.persistence.instance.attachments import register_attachment
+            register_attachment(
+                instance_id=iid,
+                source="feishu_download",
+                source_key=sha,
+                mime=content_type,
+                local_path=str(fpath),
+                size_bytes=len(resp.content),
+            )
+        except Exception:
+            pass
+
+        return {
+            "ok": True,
+            "local_path": str(fpath),
+            "filename": fname,
+            "size_bytes": len(resp.content),
+            "mime": content_type,
+        }
+    except Exception as exc:
+        return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
 
 
 # 旧的只读便捷函数 (内部用, read_feishu_url 依赖)
@@ -561,6 +648,7 @@ __all__ = [
     "read_feishu_url",
     "parse_feishu_url",
     "_api_request",
+    "download_feishu_file",
     "_resolve_wiki_obj",
     "is_feishu_authorized",
 ]

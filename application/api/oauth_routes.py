@@ -178,7 +178,8 @@ def get_oauth_url(instance_id: str, redirect_uri: str = "http://localhost:8642/o
         # IM 类: 读群/消息/资源/联系人
         # V6 全接管: 加 group_msg/p2p_msg get_as_user (以用户身份读全量消息)
         # 文档读: wiki/docx/sheet readonly (sense_feishu_doc 工具用)
-        # 文档写: docx:document + sheets:spreadsheet + drive:drive (write_feishu_doc 工具用)
+        # 文档写: sheets:spreadsheet (write_feishu_doc 工具用)
+        #   注: docx:document / drive:drive 暂未开通, append_docx/export 不可用
         "scope": (
             "im:chat:readonly "
             "im:message "
@@ -191,9 +192,7 @@ def get_oauth_url(instance_id: str, redirect_uri: str = "http://localhost:8642/o
             "wiki:wiki:readonly "                  # 读 wiki 节点
             "docx:document:readonly "              # 读 docx 文档
             "sheets:spreadsheet:readonly "         # 读电子表格
-            "docx:document "                       # 写 docx (追加段落)
-            "sheets:spreadsheet "                  # 写 sheet (追加行)
-            "drive:drive"                          # 导出文档 (export_tasks)
+            "sheets:spreadsheet"                   # 写电子表格 (追加行)
         ),
     })
     return f"https://open.feishu.cn/open-apis/authen/v1/authorize?{params}"

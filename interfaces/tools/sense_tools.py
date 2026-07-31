@@ -2111,24 +2111,23 @@ registry.register(
     schema={
         "name": "write_feishu_doc",
         "description": (
-            "写飞书文档。两步确认机制: 首次调用只返回 preview (目标文档+将写入内容), "
-            "确认无误后加 confirm=true 再次调用才真正执行。改的是真实飞书文档, 慎用。\n"
-            "三种 action:\n"
-            "  append_sheet — 往电子表格追加行 (需 sheet_id + rows 二维数组)\n"
-            "  append_docx  — 往文档追加纯文本段落 (需 text)\n"
-            "  export       — 导出为 PDF/xlsx 到本地 (需 format?, 默认按文档类型)"
+            "写飞书电子表格: 往指定 sheet 追加数据行。两步确认机制——"
+            "首次调用只返回 preview (目标文档名+sheet列表+将写入内容样例), "
+            "确认无误后加 confirm=true 再次调用才真正写入。改的是真实飞书文档, 慎用。\n"
+            "action=append_sheet: 需 sheet_id + rows (二维数组, 单次最多 50 行)。\n"
+            "(docx 追加段落、PDF/xlsx 导出因 OAuth 未开通相应写权限, 暂不可用)"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "url": {
                     "type": "string",
-                    "description": "飞书文档链接 (wiki/docx/sheets/base)",
+                    "description": "飞书电子表格链接 (支持 /sheets/ 直链或 /wiki/ 节点)",
                 },
                 "action": {
                     "type": "string",
-                    "enum": ["append_sheet", "append_docx", "export"],
-                    "description": "写入动作",
+                    "enum": ["append_sheet"],
+                    "description": "写入动作 (当前仅支持 append_sheet)",
                 },
                 "confirm": {
                     "type": "boolean",
@@ -2136,21 +2135,12 @@ registry.register(
                 },
                 "sheet_id": {
                     "type": "string",
-                    "description": "append_sheet 时必填: 目标 sheet 的 ID (preview 阶段会列出可选值)",
+                    "description": "目标 sheet 的 ID (preview 阶段若不填会列出所有可选 sheet)",
                 },
                 "rows": {
                     "type": "array",
                     "items": {"type": "array"},
-                    "description": "append_sheet 时必填: 要追加的行 (二维数组, 如 [[\"a\",\"b\"],[\"c\",\"d\"]])",
-                },
-                "text": {
-                    "type": "string",
-                    "description": "append_docx 时必填: 要追加的段落文本",
-                },
-                "format": {
-                    "type": "string",
-                    "enum": ["pdf", "xlsx", "docx"],
-                    "description": "export 时可选: 导出格式。默认 sheet→xlsx, docx/bitable→pdf",
+                    "description": "要追加的行 (二维数组, 如 [[\"a\",\"b\"],[\"c\",\"d\"]]), 单次最多 50 行",
                 },
             },
             "required": ["url", "action"],

@@ -2001,152 +2001,110 @@ registry.register(
 
 
 # ════════════════════════════════════════════════════════════════
-# 飞书文档读取 — 以 user 身份读 wiki/docx/sheet/bitable 链接内容
+# 飞书 API 通用代理 — 读写统管, token 隐藏, 写操作两步确认
 # ════════════════════════════════════════════════════════════════
 
 
-def _handle_sense_feishu_doc(args: Dict[str, Any], **_) -> str:
-    """读飞书文档链接内容。自动识别 wiki/docx/sheet/bitable。
+def _handle_feishu_call(args: Dict[str, Any], **_) -> str:
+    """通用飞书 API 代理。模型组装 method+path+params+body, 工具内部加 token。
 
-    依赖 user_access_token (OAuth 授权)。权限域:
-      wiki:wiki:readonly + docx:document:readonly + sheets:spreadsheet:readonly
+    安全设计:
+      - token 在 _api_request 内部获取, 永不返回给模型
+      - 写操作 (POST/PUT/PATCH/DELETE) 默认 preview, confirm=true 才真发
+      - 返回飞书原始 JSON (含 code/msg), 让模型看清真实错误, 不再误判
     """
-    url = str(args.get("url") or "").strip()
-    if not url:
-        return _j({"ok": False, "reason": "url 必填"})
-    try:
-        from interfaces.social.feishu_docs import read_feishu_url
-        result = read_feishu_url(url)
-        if not result.get("ok"):
-            return _j(result)
-        # 内容超长截断 (避免单次塞爆上下文)
-        content = result.get("content", "") or ""
-        truncated = False
-        if len(content) > 12000:
-            content = content[:12000]
-            truncated = True
+    method = str(args.get("method") or "").strip().upper()
+    path = str(args.get("path") or "").strip()
+    params = args.get("params") or {}
+    body = args.get("body")
+    confirm = bool(args.get("confirm"))
+
+    if not method or method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
+        return _j({"ok": False, "reason": "method 必填 (GET/POST/PUT/PATCH/DELETE)"})
+    if not path:
+        return _j({"ok": False, "reason": "path 必填 (飞书 open-apis 路径, 如 /sheets/v2/spreadsheets/{token}/values_append)"})
+    if not isinstance(params, dict):
+        return _j({"ok": False, "reason": "params 必须是对象"})
+    if body is not None and not isinstance(body, dict):
+        return _j({"ok": False, "reason": "body 必须是对象"})
+
+    is_write = method in {"POST", "PUT", "PATCH", "DELETE"}
+
+    # 写操作两步确认: confirm=false → 只 preview, 不发请求
+    if is_write and not confirm:
         return _j({
             "ok": True,
-            "type": result.get("type"),
-            "title": result.get("title", ""),
-            "content": content,
-            "length": result.get("length", len(content)),
-            "truncated": truncated,
+            "preview": True,
+            "method": method,
+            "path": path,
+            "params": params,
+            "body": body,
+            "hint": "这是写操作, 会改真实飞书文档。确认无误后加 confirm=true 再次调用以执行。",
         })
-    except Exception as e:
-        return _j({"ok": False, "reason": f"{type(e).__name__}: {e}"})
-
-
-registry.register(
-    name="sense_feishu_doc",
-    toolset="senses",
-    schema={
-        "name": "sense_feishu_doc",
-        "description": (
-            "读取飞书文档/表格链接的内容。支持 wiki 知识库节点、docx 文档、"
-            "sheets 电子表格、base 多维表格。传入飞书链接即可自动识别类型并拉取内容。"
-            "示例: https://xxx.feishu.cn/wiki/xxxxx"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "url": {
-                    "type": "string",
-                    "description": "飞书文档链接 (wiki/docx/sheets/base)",
-                },
-            },
-            "required": ["url"],
-        },
-    },
-    handler=_handle_sense_feishu_doc,
-    check_fn=lambda: True,
-    emoji="📎",
-)
-
-
-# ════════════════════════════════════════════════════════════════
-# 飞书文档写入 — 两步确认 (preview → confirm)
-# ════════════════════════════════════════════════════════════════
-
-
-def _handle_write_feishu_doc(args: Dict[str, Any], **_) -> str:
-    """写飞书文档 (追加行/追加段落/导出)。两步确认: 首次只 preview, confirm=true 才执行。
-
-    依赖 user_access_token (需 docx:document + sheets:spreadsheet + drive:drive scope)。
-    """
-    url = str(args.get("url") or "").strip()
-    action = str(args.get("action") or "").strip()
-    confirm = bool(args.get("confirm"))
-    if not url:
-        return _j({"ok": False, "reason": "url 必填"})
-    if not action:
-        return _j({"ok": False, "reason": "action 必填 (append_sheet/append_docx/export)"})
-
-    # 解析可选参数
-    kwargs: dict[str, Any] = {"confirm": confirm}
-    if action == "append_sheet":
-        rows = args.get("rows")
-        if not isinstance(rows, list):
-            return _j({"ok": False, "reason": "append_sheet 需要 rows (二维数组)"})
-        kwargs["sheet_id"] = str(args.get("sheet_id") or "").strip()
-        kwargs["rows"] = rows
-    elif action == "append_docx":
-        kwargs["text"] = str(args.get("text") or "")
-    elif action == "export":
-        kwargs["fmt"] = str(args.get("format") or args.get("fmt") or "").strip()
-    else:
-        return _j({"ok": False, "reason": f"未知 action: {action}"})
 
     try:
-        from interfaces.social.feishu_docs import write_feishu_url
-        result = write_feishu_url(url, action, **kwargs)
-        return _j(result)
+        from interfaces.social.feishu_docs import _api_request
+        result = _api_request(method, path, params=params or None, body=body)
+        # 原样返回飞书响应 (含 code/msg/data)
+        # 大响应截断, 避免塞爆上下文
+        result_str = _j(result)
+        if len(result_str) > 20000:
+            return _j({
+                "ok": True,
+                "note": "响应过大已截断, 如需完整数据请缩小查询范围 (如分页/限制行数)",
+                "code": result.get("code"),
+                "msg": result.get("msg", ""),
+                "truncated": True,
+                "data_preview": str(result.get("data", ""))[:2000],
+            })
+        return result_str
     except Exception as e:
         return _j({"ok": False, "reason": f"{type(e).__name__}: {e}"})
 
 
 registry.register(
-    name="write_feishu_doc",
+    name="feishu_call",
     toolset="actions",
     schema={
-        "name": "write_feishu_doc",
+        "name": "feishu_call",
         "description": (
-            "写飞书电子表格: 往指定 sheet 追加数据行。两步确认机制——"
-            "首次调用只返回 preview (目标文档名+sheet列表+将写入内容样例), "
-            "确认无误后加 confirm=true 再次调用才真正写入。改的是真实飞书文档, 慎用。\n"
-            "action=append_sheet: 需 sheet_id + rows (二维数组, 单次最多 50 行)。\n"
-            "(docx 追加段落、PDF/xlsx 导出因 OAuth 未开通相应写权限, 暂不可用)"
+            "调用飞书开放平台 API (读写统管)。传入 HTTP method + open-apis 路径, "
+            "工具自动以你的 user 身份签名 (token 对你不可见)。返回飞书原始响应 (含 code/msg)。\n"
+            "写操作 (POST/PUT/PATCH/DELETE) 默认只返回 preview, 加 confirm=true 才真正执行。\n"
+            "API 路径速查调 skill_view('feishu_api')。常用场景:\n"
+            "  读表格: GET /sheets/v2/spreadsheets/{token}/values/{sheetId}!A1:Z50\n"
+            "  追加行: POST /sheets/v2/spreadsheets/{token}/values_append\n"
+            "  改单元格: PUT /sheets/v2/spreadsheets/{token}/values"
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "url": {
+                "method": {
                     "type": "string",
-                    "description": "飞书电子表格链接 (支持 /sheets/ 直链或 /wiki/ 节点)",
+                    "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+                    "description": "HTTP 方法。GET 只读; 其余是写操作 (需两步确认)",
                 },
-                "action": {
+                "path": {
                     "type": "string",
-                    "enum": ["append_sheet"],
-                    "description": "写入动作 (当前仅支持 append_sheet)",
+                    "description": "飞书 open-apis 路径 (不含域名), 如 /sheets/v2/spreadsheets/{token}/values_append",
+                },
+                "params": {
+                    "type": "object",
+                    "description": "URL query 参数 (可选)",
+                },
+                "body": {
+                    "type": "object",
+                    "description": "请求体 JSON (POST/PUT 用, 可选)",
                 },
                 "confirm": {
                     "type": "boolean",
-                    "description": "false(默认)=只 preview; true=执行写入。必须先 preview 再 confirm",
-                },
-                "sheet_id": {
-                    "type": "string",
-                    "description": "目标 sheet 的 ID (preview 阶段若不填会列出所有可选 sheet)",
-                },
-                "rows": {
-                    "type": "array",
-                    "items": {"type": "array"},
-                    "description": "要追加的行 (二维数组, 如 [[\"a\",\"b\"],[\"c\",\"d\"]]), 单次最多 50 行",
+                    "description": "写操作两步确认: false(默认)=只 preview; true=执行。GET 不需要",
                 },
             },
-            "required": ["url", "action"],
+            "required": ["method", "path"],
         },
     },
-    handler=_handle_write_feishu_doc,
+    handler=_handle_feishu_call,
     check_fn=lambda: True,
-    emoji="✏️",
+    emoji="🔌",
 )

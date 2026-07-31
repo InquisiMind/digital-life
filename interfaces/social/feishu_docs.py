@@ -1,18 +1,18 @@
-"""飞书文档读取模块 — 以 user_access_token 身份读 wiki/docx/sheet。
+"""飞书文档 API 模块 — token 管理 + 读取封装 + 通用请求。
 
 设计:
   - 独立于 social takeover daemon, 不依赖 daemon 内存状态。
   - 复用 social.env 里的 refresh_token, 自己刷新 user_access_token。
-  - 支持 4 类链接: wiki/ docx/ sheets/ base/(bitable)。
-  - wiki 是"外壳": 先 get_node 拿 obj_token+obj_type, 再按类型读内容。
+  - token 对模型不可见: feishu_call 工具内部调用 _ensure_user_token, 不外泄。
 
-调用入口:
-  read_feishu_url(url) -> { ok, type, title, content, ... }
+三层:
+  1. token 管理: _ensure_user_token / _refresh_token / _persist_refresh
+  2. 通用请求:   _api_request(method, path, params, body) — 返回原始 JSON (含 code/msg)
+  3. 读取封装:   read_feishu_url(url) — 渲染成文本 (兼容旧 sense 调用, 可选)
 
 权限域 (OAuth scope):
-  - wiki:wiki:readonly       读 wiki 节点
-  - docx:document:readonly   读 docx 文档内容
-  - sheets:spreadsheet:readonly 读电子表格
+  - wiki:wiki:readonly / docx:document:readonly / sheets:spreadsheet:readonly (读)
+  - sheets:spreadsheet (写) / bitable:app (多维表格读写)
 """
 
 from __future__ import annotations
@@ -36,34 +36,50 @@ _TOKEN_REFRESH_LOCK = {}  # instance_id -> threading.Lock
 
 
 def _get_app_creds() -> tuple[str, str]:
-    """读飞书 app_id + app_secret (与 feishu_takeover 同源逻辑)。"""
+    """从环境变量 → 实例 secrets.env → 实例 app.yaml 读飞书 app_id + app_secret。
+
+    ContextVar instance_id 必须已设置。读顺序:
+      1. 进程 env (master 设置的全局默认)
+      2. apps/{iid}/config/secrets.env (secret 类字段)
+      3. apps/{iid}/config/app.yaml (app_id 等非敏感字段)
+    """
     app_id = os.environ.get("FEISHU_APP_ID", "")
     app_secret = os.environ.get("FEISHU_APP_SECRET", "")
-    if app_id and app_secret:
-        return app_id, app_secret
-    try:
-        from pathlib import Path
-        from infrastructure.config import get_instance_dir, get_app_instance_id
-        iid = get_app_instance_id() or ""
-        if iid:
-            secrets = get_instance_dir(iid) / "config" / "secrets.env"
-            if secrets.exists():
-                for line in secrets.read_text(encoding="utf-8").splitlines():
-                    line = line.strip()
-                    if line.startswith("FEISHU_APP_ID=") and not app_id:
-                        app_id = line.split("=", 1)[1].strip()
-                    elif line.startswith("FEISHU_APP_SECRET=") and not app_secret:
-                        app_secret = line.split("=", 1)[1].strip()
-            if not app_id:
-                import yaml
-                from infrastructure.config import get_instance_app_config_path
-                cfg = get_instance_app_config_path()
-                if cfg.exists():
-                    raw = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-                    feishu = (raw.get("channels") or {}).get("feishu") or {}
-                    app_id = app_id or feishu.get("app_id", "")
-    except Exception:
-        pass
+
+    if not app_id or not app_secret:
+        # fallback 1: 从实例 secrets.env 读
+        try:
+            from pathlib import Path
+            from infrastructure.config import get_instance_dir, get_app_instance_id
+            iid = ""
+            try:
+                iid = get_app_instance_id() or ""
+            except Exception:
+                pass
+            if iid:
+                secrets = get_instance_dir(iid) / "config" / "secrets.env"
+                if secrets.exists():
+                    for line in secrets.read_text(encoding="utf-8").splitlines():
+                        line = line.strip()
+                        if line.startswith("FEISHU_APP_ID=") and not app_id:
+                            app_id = line.split("=", 1)[1].strip()
+                        elif line.startswith("FEISHU_APP_SECRET=") and not app_secret:
+                            app_secret = line.split("=", 1)[1].strip()
+        except Exception:
+            pass
+
+    if not app_id or not app_secret:
+        # fallback 2: 从实例 app.yaml 读 app_id (app_secret 通常在 secrets.env)
+        try:
+            import yaml
+            from infrastructure.config import get_instance_app_config_path
+            cfg_path = get_instance_app_config_path()
+            if cfg_path.exists():
+                raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+                feishu = (raw.get("channels") or {}).get("feishu") or {}
+                app_id = app_id or feishu.get("app_id", "")
+        except Exception:
+            pass
     return app_id, app_secret
 
 
@@ -108,7 +124,11 @@ def _load_social_env() -> tuple[str, str, str]:
 
 
 def _ensure_user_token() -> str:
-    """拿有效的 user_access_token — 缓存 + 自动刷新。返回空串=失败。"""
+    """拿有效的 user_access_token — 缓存 + 自动刷新。返回空串=失败。
+
+    token 对调用方透明: 刷新后 _persist_refresh 把轮换的 refresh_token 写回 social.env。
+    feishu_call 工具用这个, 模型永远拿不到 token 值。
+    """
     import threading
 
     access, refresh, iid = _load_social_env()
@@ -208,61 +228,57 @@ def _persist_refresh(refresh: str) -> None:
         pass
 
 
-def _api_get(path: str, params: dict | None = None) -> dict | None:
-    """以 user 身份 GET 飞书 API。code != 0 返回 None。"""
-    token = _ensure_user_token()
-    if not token:
-        return None
-    try:
-        resp = httpx.get(
-            f"{FEISHU_BASE}{path}",
-            headers={"Authorization": f"Bearer {token}"},
-            params=params or {},
-            timeout=15,
-        )
-        data = resp.json()
-        if data.get("code") != 0:
-            logger.debug("feishu_docs API %s code=%s msg=%s",
-                         path, data.get("code"), data.get("msg", ""))
-            return None
-        return data.get("data") or {}
-    except Exception as exc:
-        logger.debug("feishu_docs API %s exception: %s", path, exc)
-        return None
+# ════════════════════════════════════════════════════════════════
+# 通用请求 — feishu_call 工具的底层。返回原始 JSON (含 code/msg), 不吞错误。
+# ════════════════════════════════════════════════════════════════
 
+def _api_request(
+    method: str,
+    path: str,
+    params: dict | None = None,
+    body: dict | None = None,
+) -> dict[str, Any]:
+    """以 user 身份发任意飞书 API 请求。返回原始 JSON {code, msg, data}。
 
-def _api_post(path: str, json_body: dict | None = None, params: dict | None = None) -> dict | None:
-    """以 user 身份 POST 飞书 API。code != 0 返回 None。
-
-    镜像 _api_get, 用于写入操作 (append_sheet/append_docx/export_task create)。
+    与旧 _api_get/_api_post 的区别:
+      - 返回完整响应 (含 code/msg), 不在 code!=0 时返回 None
+      - 让调用方 (feishu_call 工具) 看到真实错误, 避免误判
     """
     token = _ensure_user_token()
     if not token:
-        return None
+        return {"code": -1, "msg": "user_access_token 获取失败 (social.env 无 refresh_token 或刷新失败)"}
+    method = method.upper()
     try:
-        resp = httpx.post(
-            f"{FEISHU_BASE}{path}",
-            headers={
+        kwargs: dict[str, Any] = {
+            "headers": {
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
             },
-            params=params or {},
-            json=json_body or {},
-            timeout=20,
-        )
-        data = resp.json()
-        if data.get("code") != 0:
-            logger.debug("feishu_docs POST %s code=%s msg=%s",
-                         path, data.get("code"), data.get("msg", ""))
-            return None
-        return data.get("data") or {}
+            "timeout": 20,
+        }
+        if params:
+            kwargs["params"] = params
+        if body and method in {"POST", "PUT", "PATCH", "DELETE"}:
+            kwargs["json"] = body
+        resp = httpx.request(method, f"{FEISHU_BASE}{path}", **kwargs)
+        return resp.json()
     except Exception as exc:
-        logger.debug("feishu_docs POST %s exception: %s", path, exc)
+        return {"code": -2, "msg": f"{type(exc).__name__}: {exc}"}
+
+
+# 旧的只读便捷函数 (内部用, read_feishu_url 依赖)
+def _api_get(path: str, params: dict | None = None) -> dict | None:
+    """以 user 身份 GET 飞书 API。code != 0 返回 None (只读封装用)。"""
+    data = _api_request("GET", path, params=params)
+    if data.get("code") != 0:
+        logger.debug("feishu_docs GET %s code=%s msg=%s",
+                     path, data.get("code"), data.get("msg", ""))
         return None
+    return data.get("data") or {}
 
 
 def _resolve_wiki_obj(node_token: str) -> dict[str, str] | None:
-    """wiki 节点 → {obj_token, obj_type, title}。读取和写入都用。
+    """wiki 节点 → {obj_token, obj_type, title}。读取和 feishu_call 解析都用。
 
     失败返回 None (调用方自行决定报错文案)。
     """
@@ -329,20 +345,12 @@ def parse_feishu_url(url: str) -> dict[str, str]:
 
 def _read_wiki(node_token: str) -> dict[str, Any]:
     """wiki 是外壳: get_node 拿 obj_token+obj_type, 再按类型读内容。"""
-    node = _api_get(
-        "/wiki/v2/spaces/get_node",
-        params={"token": node_token},
-    )
-    if not node or not node.get("node"):
+    resolved = _resolve_wiki_obj(node_token)
+    if not resolved:
         return {"ok": False, "reason": "wiki get_node 失败 (可能权限不足或链接错误)"}
-    info = node["node"]
-    obj_token = info.get("obj_token", "")
-    obj_type = info.get("obj_type", "")  # docx / sheet / bitable / ...
-    title = info.get("title", "")
-    if not obj_token:
-        return {"ok": False, "reason": f"wiki 节点 obj_token 空, obj_type={obj_type}"}
-
-    # 递归读实际内容
+    obj_token = resolved["obj_token"]
+    obj_type = resolved["obj_type"]
+    title = resolved["title"]
     if obj_type == "docx":
         body = _read_docx(obj_token)
         return {**body, "title": title or body.get("title", ""), "wiki_type": "docx"}
@@ -496,7 +504,7 @@ def _render_records(rows: list[dict]) -> str:
     return "\n".join(out) if out else "(无记录)"
 
 
-# ── 对外总入口 ───────────────────────────────────────────────────
+# ── 对外读入口 (兼容旧 sense 调用, 可选保留) ─────────────────────
 
 def read_feishu_url(url: str) -> dict[str, Any]:
     """读任意飞书文档链接 (统一入口)。
@@ -524,375 +532,9 @@ def read_feishu_url(url: str) -> dict[str, Any]:
     return {"ok": False, "reason": f"未知类型 {kind}"}
 
 
-# ════════════════════════════════════════════════════════════════
-# 写入能力 — 两步确认 (preview → confirm)
-# ════════════════════════════════════════════════════════════════
-
-# 最大行数限制 (防超长)
-MAX_WRITE_ROWS = 50
-# 导出任务轮询配置
-_EXPORT_POLL_INTERVAL = 3.0
-_EXPORT_POLL_MAX = 20  # 60s 总超时
-# 文档类型 → 导出格式映射
-_EXPORT_TYPE_FMT = {
-    "sheet": "xlsx",
-    "docx": "pdf",
-    "bitable": "pdf",
-}
-
-
-def _write_sheet(sheet_token: str, sheet_id: str, rows: list[list]) -> dict[str, Any]:
-    """往 sheet 追加行。用 values_append (OVERWRITE 模式)。
-
-    飞书 API: POST /sheets/v2/spreadsheets/{token}/values_append
-    body: { valueRange: { range: "{sid}!A1:{endCol}1", values: [[...]] } }
-
-    注意 range 必须是完整范围 (如 A1:Z1), 不能是单格 (A1 会报 90202 wrong range)。
-    append 会自动跳到表末尾追加, range 只用于声明列范围。
-    """
-    if not rows:
-        return {"ok": False, "reason": "rows 为空"}
-    if len(rows) > MAX_WRITE_ROWS:
-        return {"ok": False, "reason": f"单次最多追加 {MAX_WRITE_ROWS} 行, 收到 {len(rows)} 行"}
-    # 列数取所有行的最大值 (补齐空格)
-    max_cols = max(len(r) for r in rows)
-    norm_rows = [list(r) + [""] * (max_cols - len(r)) for r in rows]
-    # range 用 A1:<endcol>1 完整范围。列号转换: 1→A, 26→Z, 27→AA
-    end_col = _col_letter(max_cols)
-
-    body = {
-        "valueRange": {
-            "range": f"{sheet_id}!A1:{end_col}1",
-            "values": norm_rows,
-        }
-    }
-    result = _api_post(
-        f"/sheets/v2/spreadsheets/{sheet_token}/values_append",
-        json_body=body,
-        params={"insertDataOption": "OVERWRITE"},
-    )
-    if result is None:
-        return {"ok": False, "reason": "values_append 失败 (sheet_id 错误或权限不足, 查 feishu_docs debug 日志)"}
-    updated_range = result.get("updatedRange") or result.get("tableRange") or ""
-    return {
-        "ok": True,
-        "action": "append_sheet",
-        "appended": len(rows),
-        "range": updated_range,
-        "cols": max_cols,
-    }
-
-
-def _col_letter(n: int) -> str:
-    """列序号 → Excel 列字母 (1→A, 26→Z, 27→AA)。range 范围用。"""
-    result = ""
-    while n > 0:
-        n, rem = divmod(n - 1, 26)
-        result = chr(65 + rem) + result
-    return result
-
-
-def _append_docx(doc_token: str, text: str) -> dict[str, Any]:
-    """往 docx 文档末尾追加纯文本段落。
-
-    飞书 API:
-      1. GET /docx/v1/documents/{token} → 拿 document_id (根 block)
-      2. POST /docx/v1/documents/{token}/blocks/{block_id}/children
-         body: { children: [{block_type:2, text:{elements:[{text_run:{content:"..."}}]}}] }
-
-    block_type=2 是文本块 (Text)。文档根 block 的 block_id 等于 document_id。
-    """
-    if not text or not text.strip():
-        return {"ok": False, "reason": "text 为空"}
-    text = text[:4000]  # 单段限 4000 字
-
-    # 1. 拿根 block_id
-    meta = _api_get(f"/docx/v1/documents/{doc_token}")
-    if not meta or not meta.get("document"):
-        return {"ok": False, "reason": "无法读 docx 元信息 (权限不足或文档不存在)"}
-    doc = meta["document"]
-    root_block_id = doc.get("document_id", "")
-    title = doc.get("title", "")
-    if not root_block_id:
-        return {"ok": False, "reason": "document_id 解析失败"}
-
-    # 2. 追加文本 block
-    body = {
-        "children": [
-            {
-                "block_type": 2,  # Text block
-                "text": {
-                    "elements": [
-                        {"text_run": {"content": text}}
-                    ]
-                },
-            }
-        ],
-        "index": -1,  # 末尾
-    }
-    result = _api_post(
-        f"/docx/v1/documents/{doc_token}/blocks/{root_block_id}/children",
-        json_body=body,
-    )
-    if result is None:
-        return {"ok": False, "reason": "docx children POST 失败 (权限不足或 block_id 错误)"}
-    added = (result.get("children") or [])
-    return {
-        "ok": True,
-        "action": "append_docx",
-        "title": title,
-        "added_blocks": len(added),
-        "text_len": len(text),
-    }
-
-
-def _export_doc(obj_token: str, obj_type: str, fmt: str = "") -> dict[str, Any]:
-    """导出文档为 PDF/xlsx 本地文件。2 步异步 API。
-
-    飞书 API:
-      1. POST /drive/v1/export_tasks  → task_id
-      2. GET /drive/v1/export_tasks/{task_id}  → 轮询到 result.file_token
-      3. GET /drive/v1/download/{file_token}/download  → 下载二进制
-
-    文件落地: apps/{iid}/data/exports/{token8}.{ext}
-    """
-    if not fmt:
-        fmt = _EXPORT_TYPE_FMT.get(obj_type, "pdf")
-    if fmt not in {"pdf", "xlsx", "docx"}:
-        return {"ok": False, "reason": f"不支持的导出格式: {fmt}"}
-
-    # 1. 创建导出任务
-    create_body = {
-        "file_extension": fmt,
-        "token": obj_token,
-        "type": _obj_type_to_export_type(obj_type),
-    }
-    task = _api_post("/drive/v1/export_tasks", json_body=create_body)
-    if not task or not task.get("ticket"):
-        return {"ok": False, "reason": "export_tasks 创建失败 (权限不足或 token 错误)"}
-    task_id = task["ticket"]
-
-    # 2. 轮询任务状态
-    file_token = ""
-    for _ in range(_EXPORT_POLL_MAX):
-        time.sleep(_EXPORT_POLL_INTERVAL)
-        status = _api_get(f"/drive/v1/export_tasks/{task_id}")
-        if not status:
-            continue
-        jr = status.get("result") or {}
-        if status.get("job_status") == 0 and jr.get("file_token"):
-            file_token = jr["file_token"]
-            break
-        if status.get("job_status", 0) < 0:
-            return {"ok": False, "reason": f"导出任务失败: code={status.get('job_status')}"}
-    if not file_token:
-        return {"ok": False, "reason": f"导出任务超时 ({_EXPORT_POLL_MAX * _EXPORT_POLL_INTERVAL:.0f}s)"}
-
-    # 3. 下载文件
-    return _download_export(file_token, obj_token, fmt, task_id)
-
-
-def _obj_type_to_export_type(obj_type: str) -> str:
-    """obj_type → 飞书 export type 参数。"""
-    return {
-        "docx": "docx",
-        "sheet": "sheet",
-        "bitable": "bitable",
-    }.get(obj_type, obj_type)
-
-
-def _download_export(file_token: str, obj_token: str, fmt: str, task_id: str) -> dict[str, Any]:
-    """下载导出文件并落地到 apps/{iid}/data/exports/。"""
-    try:
-        from infrastructure.config import get_instance_data_dir, get_app_instance_id
-        iid = get_app_instance_id() or ""
-        if not iid:
-            return {"ok": False, "reason": "无法确定 instance_id, 文件无法落地"}
-        exports_dir = get_instance_data_dir(iid) / "exports"
-        exports_dir.mkdir(parents=True, exist_ok=True)
-        fname = f"{obj_token[:8]}_{task_id[:8]}.{fmt}"
-        fpath = exports_dir / fname
-
-        token = _ensure_user_token()
-        if not token:
-            return {"ok": False, "reason": "token 获取失败"}
-        resp = httpx.get(
-            f"{FEISHU_BASE}/drive/v1/download/{file_token}/download",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=60,
-        )
-        if resp.status_code != 200 or not resp.content:
-            return {"ok": False, "reason": f"下载失败 status={resp.status_code}"}
-        fpath.write_bytes(resp.content)
-
-        # 入 attachments 库 (让 sense_image/register_attachment 可见)
-        try:
-            from infrastructure.persistence.instance.attachments import register_attachment
-            register_attachment(
-                instance_id=iid,
-                source="feishu_export",
-                source_key=obj_token,
-                mime={"pdf": "application/pdf", "xlsx": "application/vnd.ms-excel"}.get(fmt, "application/octet-stream"),
-                local_path=str(fpath),
-                size_bytes=len(resp.content),
-            )
-        except Exception:
-            pass  # 入库失败不影响导出成功
-
-        return {
-            "ok": True,
-            "action": "export",
-            "format": fmt,
-            "local_path": str(fpath),
-            "size_bytes": len(resp.content),
-        }
-    except Exception as exc:
-        return {"ok": False, "reason": f"下载异常: {type(exc).__name__}: {exc}"}
-
-
-def _preview_sheet_write(sheet_token: str, sheet_id: str, rows: list[list]) -> dict[str, Any]:
-    """preview: 读 sheet 元信息 + 显示将要写入的内容, 不执行写入。"""
-    # 拿 sheet 列表确认 sheet_id 有效
-    sheets_resp = _api_get(f"/sheets/v3/spreadsheets/{sheet_token}/sheets/query")
-    sheets = (sheets_resp or {}).get("sheets") or []
-    target = None
-    for sh in sheets:
-        if sh.get("sheet_id") == sheet_id:
-            target = sh
-            break
-    sp_meta = _api_get(f"/sheets/v3/spreadsheets/{sheet_token}")
-    sp_title = (sp_meta or {}).get("spreadsheet", {}).get("title", "")
-
-    if target is None:
-        # sheet_id 没指定 → 列出所有供选
-        sheet_list = [{"sheet_id": s.get("sheet_id"), "title": s.get("title")} for s in sheets[:5]]
-        return {
-            "ok": False,
-            "preview": True,
-            "reason": f"sheet_id '{sheet_id}' 不存在或未指定",
-            "spreadsheet_title": sp_title,
-            "available_sheets": sheet_list,
-        }
-    max_cols = max((len(r) for r in rows), default=0)
-    return {
-        "ok": True,
-        "preview": True,
-        "action": "append_sheet",
-        "target": f"{sp_title} / {target.get('title', sheet_id)}",
-        "sheet_id": sheet_id,
-        "will_append": f"{len(rows)} 行 × {max_cols} 列",
-        "sample_first_row": (rows[0] if rows else []),
-        "hint": "确认无误后, 加 confirm=true 再次调用以执行写入",
-    }
-
-
-def _preview_docx_write(doc_token: str, text: str) -> dict[str, Any]:
-    """preview: 读 docx 标题 + 显示将追加的文本, 不执行写入。"""
-    meta = _api_get(f"/docx/v1/documents/{doc_token}")
-    if not meta or not meta.get("document"):
-        return {"ok": False, "reason": "无法读 docx 元信息 (权限不足或文档不存在)"}
-    title = meta["document"].get("title", "")
-    return {
-        "ok": True,
-        "preview": True,
-        "action": "append_docx",
-        "target": title,
-        "will_append": f"{len(text)} 字 (纯文本段落)",
-        "text_preview": text[:200] + ("..." if len(text) > 200 else ""),
-        "hint": "确认无误后, 加 confirm=true 再次调用以执行写入",
-    }
-
-
-def _preview_export(obj_token: str, obj_type: str, fmt: str) -> dict[str, Any]:
-    """preview: 显示将导出的格式和目标路径, 不执行。"""
-    final_fmt = fmt or _EXPORT_TYPE_FMT.get(obj_type, "pdf")
-    return {
-        "ok": True,
-        "preview": True,
-        "action": "export",
-        "target": f"{obj_token[:16]}... ({obj_type})",
-        "format": final_fmt,
-        "hint": "确认无误后, 加 confirm=true 再次调用以执行导出",
-    }
-
-
-# ── 写入总入口 ───────────────────────────────────────────────────
-
-def write_feishu_url(
-    url: str,
-    action: str,
-    *,
-    confirm: bool = False,
-    sheet_id: str = "",
-    rows: list[list] | None = None,
-    text: str = "",
-    fmt: str = "",
-) -> dict[str, Any]:
-    """写飞书文档 (统一入口)。两步确认: confirm=false 只 preview, confirm=true 才执行。
-
-    action:
-      append_sheet — 往 sheet 追加行 (需 sheet_id + rows)
-      append_docx  — 往 docx 追加文本段落 (需 text)
-      export       — 导出为 PDF/xlsx (需 fmt?, 默认按类型)
-    """
-    parsed = parse_feishu_url(url)
-    kind = parsed.get("type", "")
-    token = parsed.get("token", "")
-    if not kind:
-        return {"ok": False, "reason": f"无法识别飞书链接: {url}"}
-
-    # wiki → 二次解析到 obj
-    obj_type = kind
-    obj_token = token
-    wiki_title = ""
-    if kind == "wiki":
-        resolved = _resolve_wiki_obj(token)
-        if not resolved:
-            return {"ok": False, "reason": "wiki 节点解析失败 (权限不足或链接错误)"}
-        obj_token = resolved["obj_token"]
-        obj_type = resolved["obj_type"]
-        wiki_title = resolved.get("title", "")
-        if obj_type not in {"sheet", "docx", "bitable"}:
-            return {"ok": False, "reason": f"wiki 节点类型 {obj_type} 不支持写入"}
-
-    # ── action 分发 ──
-    if action not in {"append_sheet", "append_docx", "export"}:
-        return {"ok": False, "reason": f"未知 action: {action} (支持 append_sheet/append_docx/export)"}
-
-    # ── preview 阶段 (confirm=false) ──
-    if not confirm:
-        if action == "append_sheet":
-            if obj_type != "sheet":
-                return {"ok": False, "reason": f"目标不是 sheet (obj_type={obj_type}), 无法追加行"}
-            if not sheet_id:
-                return _preview_sheet_write(obj_token, "", rows or [])
-            return _preview_sheet_write(obj_token, sheet_id, rows or [])
-        if action == "append_docx":
-            if obj_type != "docx":
-                return {"ok": False, "reason": f"目标不是 docx (obj_type={obj_type}), 无法追加段落"}
-            if not text.strip():
-                return {"ok": False, "reason": "text 不能为空"}
-            return _preview_docx_write(obj_token, text)
-        if action == "export":
-            return _preview_export(obj_token, obj_type, fmt)
-
-    # ── confirm=true 执行阶段 ──
-    if action == "append_sheet":
-        if obj_type != "sheet":
-            return {"ok": False, "reason": f"目标不是 sheet (obj_type={obj_type})"}
-        if not sheet_id:
-            return {"ok": False, "reason": "confirm 阶段必须指定 sheet_id"}
-        return _write_sheet(obj_token, sheet_id, rows or [])
-    if action == "append_docx":
-        if obj_type != "docx":
-            return {"ok": False, "reason": f"目标不是 docx (obj_type={obj_type})"}
-        if not text.strip():
-            return {"ok": False, "reason": "text 不能为空"}
-        return _append_docx(obj_token, text)
-    if action == "export":
-        return _export_doc(obj_token, obj_type, fmt)
-
-    return {"ok": False, "reason": "未处理的分支"}
-
-
-__all__ = ["read_feishu_url", "parse_feishu_url", "write_feishu_url"]
+__all__ = [
+    "read_feishu_url",
+    "parse_feishu_url",
+    "_api_request",
+    "_resolve_wiki_obj",
+]

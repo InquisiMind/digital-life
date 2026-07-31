@@ -19,11 +19,10 @@ CORE_TOOLS = [
     # 感知
     "sense_file", "sense_status", "sense_conversation", "sense_entity",
     "sense_social_feed", "sense_schedule", "sense_my_projects", "sense_my_tools", "sense_image",
-    "sense_feishu_doc",
     # 文件
     "write_file",
-    # 飞书写入 (两步确认)
-    "write_feishu_doc",
+    # 飞书 API 代理 (读写统管, token 隐藏, 写操作两步确认)
+    "feishu_call",
     # 行动
     "express_to_human", "rest", "terminal", "execute_code", "process",
     "register_attachment", "register_tool",

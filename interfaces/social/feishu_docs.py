@@ -545,7 +545,10 @@ def _write_sheet(sheet_token: str, sheet_id: str, rows: list[list]) -> dict[str,
     """往 sheet 追加行。用 values_append (OVERWRITE 模式)。
 
     飞书 API: POST /sheets/v2/spreadsheets/{token}/values_append
-    body: { valueRange: { range: "{sid}!A:N", values: [[...]] } }
+    body: { valueRange: { range: "{sid}!A1:{endCol}1", values: [[...]] } }
+
+    注意 range 必须是完整范围 (如 A1:Z1), 不能是单格 (A1 会报 90202 wrong range)。
+    append 会自动跳到表末尾追加, range 只用于声明列范围。
     """
     if not rows:
         return {"ok": False, "reason": "rows 为空"}
@@ -554,10 +557,12 @@ def _write_sheet(sheet_token: str, sheet_id: str, rows: list[list]) -> dict[str,
     # 列数取所有行的最大值 (补齐空格)
     max_cols = max(len(r) for r in rows)
     norm_rows = [list(r) + [""] * (max_cols - len(r)) for r in rows]
+    # range 用 A1:<endcol>1 完整范围。列号转换: 1→A, 26→Z, 27→AA
+    end_col = _col_letter(max_cols)
 
     body = {
         "valueRange": {
-            "range": f"{sheet_id}!A1",  # A1 起, append 会自动找末尾
+            "range": f"{sheet_id}!A1:{end_col}1",
             "values": norm_rows,
         }
     }
@@ -567,15 +572,24 @@ def _write_sheet(sheet_token: str, sheet_id: str, rows: list[list]) -> dict[str,
         params={"insertDataOption": "OVERWRITE"},
     )
     if result is None:
-        return {"ok": False, "reason": "values_append 失败 (权限不足或 sheet_id 错误)"}
-    table_range = result.get("tableRange") or result.get("updatedRange") or ""
+        return {"ok": False, "reason": "values_append 失败 (sheet_id 错误或权限不足, 查 feishu_docs debug 日志)"}
+    updated_range = result.get("updatedRange") or result.get("tableRange") or ""
     return {
         "ok": True,
         "action": "append_sheet",
         "appended": len(rows),
-        "range": table_range,
+        "range": updated_range,
         "cols": max_cols,
     }
+
+
+def _col_letter(n: int) -> str:
+    """列序号 → Excel 列字母 (1→A, 26→Z, 27→AA)。range 范围用。"""
+    result = ""
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        result = chr(65 + rem) + result
+    return result
 
 
 def _append_docx(doc_token: str, text: str) -> dict[str, Any]:

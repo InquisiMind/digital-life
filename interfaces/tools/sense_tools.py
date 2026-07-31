@@ -2062,3 +2062,101 @@ registry.register(
     check_fn=lambda: True,
     emoji="📎",
 )
+
+
+# ════════════════════════════════════════════════════════════════
+# 飞书文档写入 — 两步确认 (preview → confirm)
+# ════════════════════════════════════════════════════════════════
+
+
+def _handle_write_feishu_doc(args: Dict[str, Any], **_) -> str:
+    """写飞书文档 (追加行/追加段落/导出)。两步确认: 首次只 preview, confirm=true 才执行。
+
+    依赖 user_access_token (需 docx:document + sheets:spreadsheet + drive:drive scope)。
+    """
+    url = str(args.get("url") or "").strip()
+    action = str(args.get("action") or "").strip()
+    confirm = bool(args.get("confirm"))
+    if not url:
+        return _j({"ok": False, "reason": "url 必填"})
+    if not action:
+        return _j({"ok": False, "reason": "action 必填 (append_sheet/append_docx/export)"})
+
+    # 解析可选参数
+    kwargs: dict[str, Any] = {"confirm": confirm}
+    if action == "append_sheet":
+        rows = args.get("rows")
+        if not isinstance(rows, list):
+            return _j({"ok": False, "reason": "append_sheet 需要 rows (二维数组)"})
+        kwargs["sheet_id"] = str(args.get("sheet_id") or "").strip()
+        kwargs["rows"] = rows
+    elif action == "append_docx":
+        kwargs["text"] = str(args.get("text") or "")
+    elif action == "export":
+        kwargs["fmt"] = str(args.get("format") or args.get("fmt") or "").strip()
+    else:
+        return _j({"ok": False, "reason": f"未知 action: {action}"})
+
+    try:
+        from interfaces.social.feishu_docs import write_feishu_url
+        result = write_feishu_url(url, action, **kwargs)
+        return _j(result)
+    except Exception as e:
+        return _j({"ok": False, "reason": f"{type(e).__name__}: {e}"})
+
+
+registry.register(
+    name="write_feishu_doc",
+    toolset="actions",
+    schema={
+        "name": "write_feishu_doc",
+        "description": (
+            "写飞书文档。两步确认机制: 首次调用只返回 preview (目标文档+将写入内容), "
+            "确认无误后加 confirm=true 再次调用才真正执行。改的是真实飞书文档, 慎用。\n"
+            "三种 action:\n"
+            "  append_sheet — 往电子表格追加行 (需 sheet_id + rows 二维数组)\n"
+            "  append_docx  — 往文档追加纯文本段落 (需 text)\n"
+            "  export       — 导出为 PDF/xlsx 到本地 (需 format?, 默认按文档类型)"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "飞书文档链接 (wiki/docx/sheets/base)",
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["append_sheet", "append_docx", "export"],
+                    "description": "写入动作",
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "description": "false(默认)=只 preview; true=执行写入。必须先 preview 再 confirm",
+                },
+                "sheet_id": {
+                    "type": "string",
+                    "description": "append_sheet 时必填: 目标 sheet 的 ID (preview 阶段会列出可选值)",
+                },
+                "rows": {
+                    "type": "array",
+                    "items": {"type": "array"},
+                    "description": "append_sheet 时必填: 要追加的行 (二维数组, 如 [[\"a\",\"b\"],[\"c\",\"d\"]])",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "append_docx 时必填: 要追加的段落文本",
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["pdf", "xlsx", "docx"],
+                    "description": "export 时可选: 导出格式。默认 sheet→xlsx, docx/bitable→pdf",
+                },
+            },
+            "required": ["url", "action"],
+        },
+    },
+    handler=_handle_write_feishu_doc,
+    check_fn=lambda: True,
+    emoji="✏️",
+)

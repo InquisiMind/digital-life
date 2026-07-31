@@ -22,6 +22,8 @@ CORE_TOOLS = [
     "sense_feishu_doc",
     # 文件
     "write_file",
+    # 飞书写入 (两步确认)
+    "write_feishu_doc",
     # 行动
     "express_to_human", "rest", "terminal", "execute_code", "process",
     "register_attachment", "register_tool",

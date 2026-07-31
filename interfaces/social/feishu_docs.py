@@ -532,9 +532,35 @@ def read_feishu_url(url: str) -> dict[str, Any]:
     return {"ok": False, "reason": f"未知类型 {kind}"}
 
 
+# ── 授权检测 (feishu_call 工具的 check_fn 用) ────────────────────
+
+def is_feishu_authorized() -> bool:
+    """当前实例是否已 OAuth 授权 (social.env 有 refresh_token)。
+
+    用于 feishu_call 工具的 per-tool gating: 没授权时工具不暴露给模型。
+    只读文件, 不发网络请求, 不刷 token — 轻量检测。
+    """
+    try:
+        from infrastructure.config import get_instance_dir, get_app_instance_id
+        iid = get_app_instance_id() or ""
+        if not iid:
+            return False
+        env = get_instance_dir(iid) / "config" / "social.env"
+        if not env.exists():
+            return False
+        for line in env.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("FEISHU_USER_REFRESH_TOKEN="):
+                return bool(line.split("=", 1)[1].strip())
+        return False
+    except Exception:
+        return False
+
+
 __all__ = [
     "read_feishu_url",
     "parse_feishu_url",
     "_api_request",
     "_resolve_wiki_obj",
+    "is_feishu_authorized",
 ]

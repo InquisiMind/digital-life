@@ -2105,6 +2105,15 @@ registry.register(
         },
     },
     handler=_handle_feishu_call,
-    check_fn=lambda: True,
+    check_fn=lambda: _feishu_check_authorized(),
     emoji="🔌",
 )
+
+
+def _feishu_check_authorized() -> bool:
+    """feishu_call 可用性检查: 当前实例是否已 OAuth 全接管授权。没授权则隐藏工具。"""
+    try:
+        from interfaces.social.feishu_docs import is_feishu_authorized
+        return is_feishu_authorized()
+    except Exception:
+        return False

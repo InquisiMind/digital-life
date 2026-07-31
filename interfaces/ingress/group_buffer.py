@@ -19,14 +19,13 @@ from typing import Any, Awaitable, Callable, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# 慢 timer: 固定窗 + random
-SLOW_BASE_S = 20
-SLOW_JITTER_S = 10
+# 慢 timer: 群消息合并窗口 (V6 缩短: 20→12s)
+SLOW_BASE_S = 12
+SLOW_JITTER_S = 3  # 12~15s
 
-# 快 timer: 纯 random
-# 快 timer jitter 缩短到 0 → fast timer = 固定值, 便于多条 @ 合入同一窗口
-# 但也不宜太长(用户等不起)。实测 8s 是平衡点: 同窗口内几秒内连发多条@不会分批
-FAST_BASE_S = 8
+# 快 timer: @/关键词消息优先触发 (V6 缩短: 8→2s)
+# 多条 @ 在 2s 窗口内合入同一 batch, 不分批
+FAST_BASE_S = 2
 FAST_JITTER_S = 0
 
 

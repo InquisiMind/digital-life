@@ -1998,3 +1998,67 @@ registry.register(
     check_fn=lambda: True,
     emoji="📝",
 )
+
+
+# ════════════════════════════════════════════════════════════════
+# 飞书文档读取 — 以 user 身份读 wiki/docx/sheet/bitable 链接内容
+# ════════════════════════════════════════════════════════════════
+
+
+def _handle_sense_feishu_doc(args: Dict[str, Any], **_) -> str:
+    """读飞书文档链接内容。自动识别 wiki/docx/sheet/bitable。
+
+    依赖 user_access_token (OAuth 授权)。权限域:
+      wiki:wiki:readonly + docx:document:readonly + sheets:spreadsheet:readonly
+    """
+    url = str(args.get("url") or "").strip()
+    if not url:
+        return _j({"ok": False, "reason": "url 必填"})
+    try:
+        from interfaces.social.feishu_docs import read_feishu_url
+        result = read_feishu_url(url)
+        if not result.get("ok"):
+            return _j(result)
+        # 内容超长截断 (避免单次塞爆上下文)
+        content = result.get("content", "") or ""
+        truncated = False
+        if len(content) > 12000:
+            content = content[:12000]
+            truncated = True
+        return _j({
+            "ok": True,
+            "type": result.get("type"),
+            "title": result.get("title", ""),
+            "content": content,
+            "length": result.get("length", len(content)),
+            "truncated": truncated,
+        })
+    except Exception as e:
+        return _j({"ok": False, "reason": f"{type(e).__name__}: {e}"})
+
+
+registry.register(
+    name="sense_feishu_doc",
+    toolset="senses",
+    schema={
+        "name": "sense_feishu_doc",
+        "description": (
+            "读取飞书文档/表格链接的内容。支持 wiki 知识库节点、docx 文档、"
+            "sheets 电子表格、base 多维表格。传入飞书链接即可自动识别类型并拉取内容。"
+            "示例: https://xxx.feishu.cn/wiki/xxxxx"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "飞书文档链接 (wiki/docx/sheets/base)",
+                },
+            },
+            "required": ["url"],
+        },
+    },
+    handler=_handle_sense_feishu_doc,
+    check_fn=lambda: True,
+    emoji="📎",
+)

@@ -178,6 +178,7 @@ def get_oauth_url(instance_id: str, redirect_uri: str = "http://localhost:8642/o
         # IM 类: 读群/消息/资源/联系人
         # V6 全接管: 加 group_msg/p2p_msg get_as_user (以用户身份读全量消息)
         #         + search:message (搜索消息, 发现私聊对象)
+        # 文档类: 以用户身份读 wiki/docx/sheet (sense_feishu_doc 工具用)
         "scope": (
             "im:chat:readonly "
             "im:message "
@@ -186,7 +187,10 @@ def get_oauth_url(instance_id: str, redirect_uri: str = "http://localhost:8642/o
             "im:message.p2p_msg:get_as_user "      # 全量私聊消息
             "im:resource "
             "contact:user.base:readonly "
-            "bitable:app"
+            "bitable:app "
+            "wiki:wiki:readonly "                  # 读 wiki 节点
+            "docx:document:readonly "              # 读 docx 文档
+            "sheets:spreadsheet:readonly"          # 读电子表格
         ),
     })
     return f"https://open.feishu.cn/open-apis/authen/v1/authorize?{params}"

@@ -23,6 +23,54 @@ POLL_INTERVAL = 1800  # 30 分钟拉一轮(只是入库, 不等于触发)
 FEISHU_BASE = "https://open.feishu.cn/open-apis"
 
 
+def _extract_msg_text(body: Any, msg_type: str) -> str:
+    """从消息 body 提取可读文本。支持 text/share/post。
+
+    - text: body.text
+    - share (文档卡片): body.share.{title,url} → "[文档] 标题 URL"
+    - post (富文本): 遍历 zh_cn/en_us 的 content, 提取 text/a 标签, a 标签带 href
+    其他类型: fallback 到 body.content 或 body.text
+    """
+    if not isinstance(body, dict):
+        return str(body or "")
+    if msg_type == "text":
+        return body.get("text", "") or body.get("content", "")
+    if msg_type == "share":
+        share = body.get("share") or {}
+        title = share.get("title", "")
+        url = share.get("url", "")
+        # type: doc/sheet/bitable/folder...
+        kind = share.get("type", "")
+        prefix = f"[文档分享:{kind}]" if kind else "[文档分享]"
+        return f"{prefix} {title} {url}".strip()
+    if msg_type == "post":
+        # post 按 locale 分组 (zh_cn / en_us / ...), 取第一个 locale
+        parts: list[str] = []
+        for locale_key in ("zh_cn", "en_us", "en"):
+            locale = body.get(locale_key)
+            if locale:
+                title = locale.get("title", "")
+                if title:
+                    parts.append(title)
+                for paragraph in locale.get("content", []):
+                    if not isinstance(paragraph, list):
+                        continue
+                    for tag in paragraph:
+                        if not isinstance(tag, dict):
+                            continue
+                        t = tag.get("tag")
+                        if t == "text":
+                            parts.append(tag.get("text", ""))
+                        elif t == "a":
+                            parts.append(f"{tag.get('text', '')}({tag.get('href', '')})")
+                        elif t == "at":
+                            parts.append(f"@{tag.get('user_name', tag.get('user_id', ''))}")
+                break  # 只取一个 locale
+        return " ".join(p for p in parts if p)
+    # 其他类型 (image/file/interactive...) fallback
+    return body.get("text", "") or body.get("content", "") or ""
+
+
 def _get_app_creds() -> tuple[str, str]:
     """从环境变量 → 实例 secrets.env → 实例 app.yaml 读飞书 app_id + app_secret。
 
@@ -335,12 +383,13 @@ class FeishuSocialTakeover:
             msg_id = item.get("message_id", "")
             if not msg_id or msg_id in self._seen_ids:
                 continue
+            msg_type = item.get("msg_type", "text")
             # 解析 body
             body_raw = item.get("body", {}).get("content", "{}")
             try:
                 import json
                 body = json.loads(body_raw) if isinstance(body_raw, str) else body_raw
-                text = body.get("text", "") or body.get("content", "")
+                text = _extract_msg_text(body, msg_type)
             except Exception:
                 text = str(body_raw)[:200]
             # 解析 sender
@@ -368,8 +417,8 @@ class FeishuSocialTakeover:
                 if mt_name and mt_id:
                     self._name_cache[mt_id] = mt_name
 
-            msg_type = item.get("msg_type", "text")
-            if msg_type == "text" and text:
+            # 放开 msg_type: text/share/post 都收, _extract_msg_text 已统一转成文本
+            if text:
                 messages.append({
                     "message_id": msg_id,
                     "chat_id": chat_id,
@@ -382,8 +431,8 @@ class FeishuSocialTakeover:
                     "at_me": at_me,
                     "at_all": at_all,
                     "mentions": mentions_raw,
+                    "msg_type": msg_type,
                 })
-        return messages
         return messages
 
     def _emit_command(self, msg: dict) -> None:

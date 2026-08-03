@@ -74,6 +74,87 @@ def _cog_audit(action: str, chunk_id: int | None, **fields) -> None:
     logger.info("[cognition_audit] %s %s %s", action, cid_repr, tail)
 
 
+# ───────────────────── 重复检测公共函数 ─────────────────────
+# 两层策略 (2026-08-03 修正认知重复召回):
+#   1. 完全一致 → 拦截写入, 返回 skipped (不是 warning)
+#      判据: jaccard(token 集合) ≥ 0.92。不依赖 cosine——cosine 衡量语义相似,
+#      但"同句话少了一段排版"的 cos 可能比"补了增量细节的演进"还低, 会误杀。
+#   2. 相似 → 提醒但继续写 (保持原 warning 行为)
+#      判据: cosine ≥ 0.85 但 jaccard < 0.92。语义相关但非完全重复。
+#
+# 实测验证 (c2a5c8e8 实例):
+#   组1 真重复 (#12584 vs #13062): jaccard=0.959 → 拦截 ✓
+#   组2 演进 (#19076 vs #19077): jaccard=0.886 → 放行 ✓
+#
+# 被 promote_one 和 add_cognition_direct 共用, 保证两条写入路径行为一致。
+
+import re as _re
+
+_TOKEN_RE = _re.compile(r"[\u4e00-\u9fff]|[a-zA-Z0-9]+")
+
+
+def _tokenize(text: str) -> set[str]:
+    """中文按单字 + 英文/数字按词, 返回 token 集合 (用于 jaccard)。"""
+    if not text:
+        return set()
+    return set(_TOKEN_RE.findall(text))
+
+
+def _text_jaccard(text_a: str, text_b: str) -> float:
+    """两段文本的 token 集合 jaccard 相似度。0~1, 越大越接近完全一致。"""
+    ta, tb = _tokenize(text_a), _tokenize(text_b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+# 拦截阈值: jaccard ≥ 此值视为"完全一致", 拦截写入。
+# 0.92 是基于实测的分界 (真重复 0.959 vs 演进 0.886), 留了余量。
+_EXACT_DUP_JACCARD = 0.92
+# 相似阈值: cosine ≥ 此值但 jaccard < 拦截值 → 只 warning 不拦截。
+_SIMILAR_COS = 0.85
+
+
+def find_exact_duplicate(
+    summary: str,
+    q_emb,
+    *,
+    exclude_ids: set[int] | None = None,
+    limit: int = 5,
+) -> dict | None:
+    """检测 summary 是否与已存在 cognition 完全一致 (jaccard ≥ 阈值)。
+
+    先用 embedding 召回 top-N 候选 (cosine 高的更可能是重复),
+    再逐个算 jaccard。返回第一个完全一致的, 或 None。
+
+    返回: {"chunk_id", "text", "jaccard", "cos"} 或 None。
+    exclude_ids: 排除的 chunk id (如 derived_from 自身)。
+    """
+    if not summary or not q_emb:
+        return None
+    exclude_ids = exclude_ids or set()
+    try:
+        from domain.memory.memory.recall.vector import lookup_cognition_similarities
+        cands = lookup_cognition_similarities(q_emb, limit=limit)
+    except Exception as e:
+        logger.debug("find_exact_duplicate lookup failed: %s", e)
+        return None
+    for c in cands:
+        cid = c.get("chunk_id")
+        if cid in exclude_ids:
+            continue
+        c_text = c.get("text", "") or ""
+        jac = _text_jaccard(summary, c_text)
+        if jac >= _EXACT_DUP_JACCARD:
+            return {
+                "chunk_id": cid,
+                "text": c_text[:120],
+                "jaccard": round(jac, 3),
+                "cos": round(c.get("raw_cos", 0), 3),
+            }
+    return None
+
+
 # ───────────────────── slice 持久化基础 ─────────────────────
 
 def _persist_slice(db, slice: Slice) -> int | None:
@@ -316,7 +397,37 @@ def promote_one(
                         "dedup_action": "weak_link",
                     })
 
-    # ── V3 改动: dedup 仅作 warning, 不再拦截写入 (Alpha 反馈: 被误拦的痛点) ──
+    # ── 完全一致拦截 (2026-08-03): jaccard ≥ 阈值 → 不写入, 报错返回 ──
+    # 无论有没有 cog_key 都检测: cog_key 不同但文本完全一致 (如改了 key 名重写)
+    # 也该拦截。判据是 token 集合 jaccard, 不依赖 cosine (cosine 在此场景不可靠)。
+    try:
+        from domain.memory.memory.recall.vector import _embed_single
+        _q_emb = _embed_single(summary[:512])
+    except Exception as e:
+        logger.debug("promote embed for exact-dup check failed: %s", e)
+        _q_emb = None
+    if _q_emb:
+        exact_dup = find_exact_duplicate(
+            summary, _q_emb,
+            exclude_ids={experience_chunk_id} if experience_chunk_id else None,
+        )
+        if exact_dup:
+            _cog_audit("promote_blocked_exact_dup", None,
+                       summary=summary[:80], dup=exact_dup["chunk_id"],
+                       jaccard=exact_dup["jaccard"])
+            return {
+                "ok": False,
+                "error": "exact_duplicate",
+                "reason": (
+                    f"已存在完全一致的认知 #{exact_dup['chunk_id']} "
+                    f"(jaccard={exact_dup['jaccard']}, cos={exact_dup['cos']})。"
+                    f"如需覆盖请调 supersede_one({exact_dup['chunk_id']}, ...) 替代它。"
+                ),
+                "duplicate_chunk_id": exact_dup["chunk_id"],
+                "cog_key": cog_key,
+            }
+
+    # ── 相似提醒 (保持原 warning 行为, 不拦截): 上面的 similar_cognitions 已收集 ──
     entity_links = [entity_name] if entity_name else list(exp.entity_links)
     new_cog = promote(exp, summary=summary, derived_from_ids=[experience_chunk_id],
                       entity_links=entity_links)
@@ -729,6 +840,27 @@ def add_cognition_direct(
         emb = None
     if not emb:
         return {"ok": False, "reason": "无法生成 embedding(文本太短或 API 失败)"}
+
+    # ── 完全一致拦截 (2026-08-03): jaccard ≥ 阈值 → 不写入, 报错返回 ──
+    # 与 promote_one 共用 find_exact_duplicate。无论有无 cog_key 都检测,
+    # 防止"改了 key 名/没填 key 但文本完全一致"的重复写入。
+    exact_dup = find_exact_duplicate(text, emb)
+    if exact_dup:
+        _cog_audit("add.blocked_exact_dup", None,
+                   text=text[:80], dup=exact_dup["chunk_id"],
+                   jaccard=exact_dup["jaccard"])
+        return {
+            "ok": False,
+            "error": "exact_duplicate",
+            "reason": (
+                f"已存在完全一致的认知 #{exact_dup['chunk_id']} "
+                f"(jaccard={exact_dup['jaccard']}, cos={exact_dup['cos']})。"
+                f"如需覆盖请调 update_cognition(action=supersede, old_id={exact_dup['chunk_id']})。"
+                f"如要加固已有认知, 用 add_cognition 写不同角度的内容, 不要重复同一条。"
+            ),
+            "duplicate_chunk_id": exact_dup["chunk_id"],
+            "cog_key": cog_key,
+        }
 
     # 构造 Slice + 持久化
     db = _get_db()

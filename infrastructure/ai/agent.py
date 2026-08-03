@@ -342,21 +342,19 @@ class AIAgent:
                     continue
 
                 # ── rest 兜底注入 (走 sys_tool_call 模式, 不污染 user message slot) ──
-                # 模型这一轮没调任何工具, 也没 pending 事件——若它说过"准备休息/
-                # 待命/没事做"之类语义却又没真的调 rest, 注入一条 sys_nudge 假工具结果
-                # 提示: rest 是工具调用, 不是文本意图。
+                # 模型这一轮没调任何工具就打算结束 —— 不管它说了什么(休息话/空 content/
+                # 别的文案), 只要"没工具调用就想收尾", 都提示它: 要么 rest 要么继续做事。
                 # 第二次仍空转就放行(_noop_warn_count >= 1 时不再注入), 尊重模型判断。
-                if self._noop_warn_count < 1 and self._looks_like_idle_intent(content):
+                if self._noop_warn_count < 1:
                     self._noop_warn_count += 1
                     nudge = (
-                        "⚠️ 系统提示：你这一轮没调用任何工具就结束了。"
-                        "在 Digital Life 里，**休息 = 调用 `rest` 工具**——你说"
-                        "\"准备休息\"\"等下醒来再说\"之类的文本不会让躯壳进入休息，"
-                        "只会继续空转耗电直到精力耗尽被强制中断。\n\n"
+                        "⚠️ 系统提示：你这一轮没有调用任何工具就打算结束。"
+                        "在 Digital Life 里，你的每一个反应都必须是工具调用——"
+                        "不调工具就结束等于什么都没做，躯壳不会进入休息，只会被判定为空转。\n\n"
                         "请明确选择：\n"
                         "- 如果本醒的工作告一段落 → 调用 `rest`（带 `mental_context` 给未来的自己留话）；\n"
                         "- 如果还有事没做完 → 立刻调相应工具去做（不要只写文字）。\n\n"
-                        "下一轮如果还空转，系统将不再提醒，直接结束本次醒。"
+                        "下一轮如果还不调工具，系统将不再提醒，直接结束本次醒。"
                     )
                     # 走 _sys_tool_call 模式: 不占 user message 槽, 与 entity_recall /
                     # wake_signal 等系统提示同构(双写 audit 便于前端排查)。
@@ -1798,28 +1796,6 @@ class AIAgent:
                 except Exception:
                     logger.debug("Failed to dual-write wake_signal", exc_info=True)
 
-
-    # 休息/待命意图关键字——当模型说完这些语义又不调 rest 工具时, 系统兜底提示一次。
-    # 故意宽匹配, 宁可多提示一次也别让空转溜过去。
-    _IDLE_INTENT_KEYWORDS = (
-        "休息", "待命", "待机", "睡觉", "睡了", "先休", "等一下", "等到", "等下",
-        "等明天", "等闹钟", "等timer", "等 timer", "暂停", "停一下", "稍后",
-        "待会儿", "稍后处理", "进入休", "准备休", "进入待",
-        "rest", "wait", "pending", "hold", "standby", "pause", "no action",
-        "nothing to", "no further", "no more", "all done", "已完成全部",
-        "无事可做", "无待", "无任务",
-    )
-
-    def _looks_like_idle_intent(self, content: str) -> bool:
-        """判断模型最后 assistant content 是否表达"准备休息/待命/等"等空转语义。
-
-        触发场景: 模型说"我准备 rest 了 / 等下个闹钟 / 待命" 等意图性文案
-        但实际没调 rest 工具就结束本轮。这种情况应触发兜底让模型明确做选择。
-        """
-        if not content or not isinstance(content, str):
-            return False
-        text = content.lower()
-        return any(kw.lower() in text for kw in self._IDLE_INTENT_KEYWORDS)
 
     def _notify_manual_events(self, events: list[dict], messages: list[dict[str, Any]]) -> None:
         """Notify about non-message events as tool result (no auto-consume)."""

@@ -105,12 +105,12 @@ def handler(args: Dict[str, Any], **kwargs: Any) -> str:
     except Exception as exc:
         return {"ok": False, "reason": f"write failed {full_path}: {exc}"}
 
-    # Update manifest
+    # Update manifest (含 parameters, 启动时重建 schema 需要)
     store.upsert_manifest_entry(
         scope, "tools",
         name=name, description=description[:200],
         instance_id=instance_id, project_id=project_id,
-        extra={"emoji": emoji, "file": str(rel_path)},
+        extra={"emoji": emoji, "file": str(rel_path), "parameters": parameters},
     )
 
     # Hot-load into runtime ToolRegistry
@@ -175,6 +175,45 @@ def _hot_load_tool(
         return {"ok": True}
     except Exception as exc:
         return {"ok": False, "reason": f"hot-load failed: {exc}", "traceback": traceback.format_exc()}
+
+
+def load_registered_tools(instance_id: str = "") -> dict[str, int]:
+    """启动时从 manifest 重建所有已注册的工具到 registry。
+
+    扫 personal + shared + project 的 tools manifest, 对每个条目调 _hot_load_tool。
+    在 _ensure_tools_loaded 末尾调用, 确保重启后工具不丢失。
+
+    返回 {"loaded": N, "failed": M}。
+    """
+    from domain.capability.store import _read_all_manifests_for_instance
+    root = project_root()
+
+    items = _read_all_manifests_for_instance("tools", instance_id)
+    loaded = 0
+    failed = 0
+    for item in items:
+        name = item.get("name", "")
+        rel_file = item.get("file", "")
+        if not name or not rel_file:
+            continue
+        full_path = root / rel_file
+        if not full_path.exists():
+            logger.debug("load_registered_tools: %s file missing (%s), skip", name, full_path)
+            failed += 1
+            continue
+        tool_full_name = f"app_{name}"
+        description = item.get("description", name)
+        parameters = item.get("parameters") or {"type": "object", "properties": {}}
+        emoji = item.get("emoji", "🔧")
+        result = _hot_load_tool(full_path, tool_full_name, description, parameters, emoji)
+        if result.get("ok"):
+            loaded += 1
+        else:
+            logger.warning("load_registered_tools: %s failed: %s", name, result.get("reason", ""))
+            failed += 1
+    if loaded:
+        logger.info("load_registered_tools: %d loaded, %d failed", loaded, failed)
+    return {"loaded": loaded, "failed": failed}
 
 
 # ── Skill registration ───────────────────────────────────────────────────────

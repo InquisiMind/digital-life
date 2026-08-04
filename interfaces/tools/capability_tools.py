@@ -132,7 +132,15 @@ def _handle_sense_my_tools(args: Dict[str, Any], **kwargs: Any) -> str:
     """List all tools and skills the instance has registered."""
     _burn(0.1)
     from domain.capability.store import list_my_tools_and_skills
+    from interfaces.tools.registry import registry
     inv = list_my_tools_and_skills(_get_instance_id())
+    # 校验: manifest 有但 registry 没有的标 "⚠️未加载"
+    registry_names = set(registry.get_all_tool_names(include_retired=True))
+    for tool in inv.get("tools", []):
+        full_name = f"app_{tool.get('name', '')}"
+        tool["loaded"] = full_name in registry_names
+        if not tool["loaded"]:
+            tool["note"] = "⚠️未加载(重启后丢失?) — 重新注册即可恢复"
     return _j(inv)
 
 

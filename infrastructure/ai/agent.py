@@ -932,6 +932,15 @@ class AIAgent:
             except Exception:
                 logger.warning("Tool module load failed: %s", module_name, exc_info=True)
 
+        # 加载 register_tool 注册的工具 (从 manifest 重建, 防重启丢失)
+        try:
+            from domain.capability.lifecycle import load_registered_tools
+            from infrastructure.config import get_app_instance_id
+            iid = get_app_instance_id() or ""
+            load_registered_tools(iid)
+        except Exception:
+            logger.debug("load_registered_tools failed (non-critical)", exc_info=True)
+
     def _append_message(self, session_id: str, role: str, content: str | None, **kwargs: Any) -> None:
         if not self.session_db:
             return

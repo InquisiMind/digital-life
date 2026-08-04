@@ -17,6 +17,22 @@ from interfaces.tools.registry import registry
 logger = logging.getLogger(__name__)
 
 
+# ── tool_calls 压缩白名单 (旧轮的这些工具参数不压缩, 保留完整) ──
+# 理由: 这些工具的入参内容对 agent 回看有持续价值——发了什么消息、写了什么认知、
+# 留了什么 mental_context。压了会导致 agent 丢失"我之前做过什么"的记忆。
+# 不在白名单的工具 (execute_code/terminal/feishu_call/sense_* 等) 入参执行完即过期,
+# 压成指针即可, 需要原文时调 recall_tool_result。
+TOOL_CALLS_COMPACT_WHITELIST: frozenset[str] = frozenset({
+    # ── sys 环境注入 (每轮重新注入, 旧值有参考价值) ──
+    "my_context", "social_context", "session_digest", "entity_recall",
+    "wake_signal", "schedule", "workspace", "social_feed",
+    "system_context", "sense_status", "sense_schedule",
+    # ── 写操作 (agent 要回看"我做了什么") ──
+    "express_to_human", "rest", "add_cognition", "record_thought",
+    "update_cognition", "supersede_memory", "register_tool", "register_skill",
+})
+
+
 @dataclass
 class AIAgent:
     model: str = ""
@@ -1348,10 +1364,12 @@ class AIAgent:
     def _compact_old_tool_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """就地压缩 payload 里的旧 tool 消息——只改 content，不动 DB。
 
-        条件（AND）：真实 tool 行 且 > depth 轮之前 且 len(content) > min_chars。
-        fake（sys_/narrative_/fake_ 前缀）一律跳过。
+        两层压缩:
+        1. tool response 的 content → CMP 指针 (原有)
+        2. assistant 的 tool_calls 参数 → 摘要指针 (新增, 白名单豁免)
 
-        返回新 list（不修改入参，与 _maybe_compress_messages 范式一致）。
+        条件（AND）：真实 tool 行 且 > depth 轮之前。
+        fake（sys_/narrative_/fake_ 前缀）一律跳过。
         """
         depth = self._get_tool_history_depth()
         min_chars = self._get_tool_compact_min_chars()
@@ -1374,24 +1392,71 @@ class AIAgent:
         if not candidates_to_compress:
             return list(messages)
 
-        result: list[dict[str, Any]] = []
-        for idx, m in enumerate(messages):
-            if idx not in candidates_to_compress or m.get("role") != "tool":
-                result.append(m)
-                continue
-            content = str(m.get("content") or "")
-            if len(content) <= min_chars:
-                # 短结果保留——压成 ~150 字符指针反而扩大上下文
-                result.append(m)
-                continue
+        # ── 收集旧轮 tool_call_id → 工具名映射 (用于关联 assistant 的 tool_calls) ──
+        # 一个 assistant 消息的 tool_calls 里有多个调用, 每个有 id;
+        # 对应的 tool response 也有 tool_call_id。如果某个 tool_call_id
+        # 对应的 response 在压缩候选里, 那这个 tool_call 的入参也该压。
+        old_call_ids_compressible: set[str] = set()  # 可压缩的 tool_call_id
+        for idx in candidates_to_compress:
+            m = messages[idx]
             tid = str(m.get("tool_call_id") or "")
             name = str(m.get("name") or "")
-            result.append({
-                "role": "tool",
-                "tool_call_id": tid,
-                "name": name,
-                "content": self._render_tool_pointer(m, tid, name),
-            })
+            if tid and name and name not in TOOL_CALLS_COMPACT_WHITELIST:
+                old_call_ids_compressible.add(tid)
+
+        result: list[dict[str, Any]] = []
+        for idx, m in enumerate(messages):
+            role = m.get("role")
+            # ── Layer 1: 压缩 tool response content (原有) ──
+            if idx in candidates_to_compress and role == "tool":
+                content = str(m.get("content") or "")
+                if len(content) <= min_chars:
+                    # 短结果保留——压成 ~150 字符指针反而扩大上下文
+                    result.append(m)
+                    continue
+                tid = str(m.get("tool_call_id") or "")
+                name = str(m.get("name") or "")
+                result.append({
+                    "role": "tool",
+                    "tool_call_id": tid,
+                    "name": name,
+                    "content": self._render_tool_pointer(m, tid, name),
+                })
+                continue
+
+            # ── Layer 2: 压缩旧轮 assistant 的 tool_calls 入参 (新增) ──
+            if role == "assistant" and m.get("tool_calls"):
+                tc_list = m["tool_calls"]
+                # 检查这个 assistant 的 tool_calls 有没有在可压缩集合里
+                has_compressible = any(
+                    str(tc.get("id") or "") in old_call_ids_compressible
+                    for tc in tc_list
+                )
+                if has_compressible:
+                    new_tc = []
+                    for tc in tc_list:
+                        tid = str(tc.get("id") or "")
+                        fn = tc.get("function") or {}
+                        name = fn.get("name") or ""
+                        if tid in old_call_ids_compressible:
+                            # 压成指针: 保留工具名 + 入参摘要
+                            new_tc.append({
+                                "id": tid,
+                                "type": "function",
+                                "function": {
+                                    "name": name,
+                                    "arguments": self._render_tool_call_args_pointer(name, fn.get("arguments", "")),
+                                },
+                            })
+                        else:
+                            # 白名单工具 or depth 内的 → 保留原样
+                            new_tc.append(dict(tc))
+                    new_m = dict(m)
+                    new_m["tool_calls"] = new_tc
+                    result.append(new_m)
+                    continue
+
+            result.append(m)
         return result
 
     @staticmethod
@@ -1416,6 +1481,40 @@ class AIAgent:
         preview = raw[:40].replace("\n", " ").strip()
 
         return f"{{CMP}} name={name} id={tid} pv={preview!r} → recall_tool_result({tid})"
+
+    @staticmethod
+    def _render_tool_call_args_pointer(name: str, args_str: str) -> str:
+        """把旧轮 assistant tool_calls 的入参压成摘要指针。
+
+        和 _render_tool_pointer (压 tool response) 配对:
+        - _render_tool_pointer 压的是 tool 返回结果 (role=tool 的 content)
+        - 本方法压的是 tool 调用入参 (assistant 的 tool_calls.function.arguments)
+
+        格式: {"_cmp": "name=X hint=..."}  — 短 JSON, 模型一看就懂。
+        hint 按工具类型取关键字段前 N 字:
+          - code/terminal: 只记长度 (代码执行完就没用了)
+          - 其他: 取第一个值的前 30 字
+        """
+        import json as _j
+        try:
+            args = _j.loads(args_str) if args_str else {}
+        except Exception:
+            args = {}
+        if not isinstance(args, dict):
+            args = {}
+        # 按工具类型生成 hint
+        hint = ""
+        if name in ("execute_code", "terminal"):
+            # 代码/命令: 只记长度
+            code_len = len(str(args.get("code") or args.get("command") or ""))
+            hint = f"~{code_len}c"
+        elif args:
+            # 取第一个有值的字段, 前30字
+            for k, v in args.items():
+                vstr = str(v)[:30].replace("\n", " ")
+                hint = f"{k}={vstr}"
+                break
+        return _j.dumps({"_cmp": f"{name} {hint}"}, ensure_ascii=False)
 
     def _split_by_user_message(self, messages: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
         """按 user 消息切分段。

@@ -59,16 +59,22 @@ def set_alarm(
     with _conn() as conn:
         # V6 闹钟去重: 同一 fire_at 只保留一个, 不管 event_kind
         # (之前只按 event_kind+fire_at 去重, 导致 routine 闹钟和 rest timer 在同一时间点重复)
+        #
+        # V6.1 (2026-08-04): 去重也查"今天已触发的"同 fire_at timer。
+        # 之前只查 fired_at IS NULL → 已触发的 timer 不参与去重 →
+        # 模型反复 rest(until=14:45) 时, 每次醒来都创建新的, 同一时间点累积 9 个。
+        # 修法: 同 fire_at 的 timer (无论是否已触发) 存在时, 复用 (清 fired_at + 更新 payload)。
         existing = conn.execute(
-            "SELECT id FROM timers WHERE fire_at = ? AND fired_at IS NULL",
+            "SELECT id, fired_at FROM timers WHERE fire_at = ? ORDER BY id DESC LIMIT 1",
             (fire_at,),
         ).fetchone()
         if existing:
+            # 复用: 清掉 fired_at (让它重新 pending) + 更新 payload + event_kind
             conn.execute(
-                "UPDATE timers SET payload_json = ? WHERE id = ?",
-                (payload_json, existing[0]),
+                "UPDATE timers SET fired_at = NULL, payload_json = ?, event_kind = ? WHERE id = ?",
+                (payload_json, event_kind, existing[0]),
             )
-            logger.debug("Alarm deduped: id=%d kind=%s fire_at=%s", existing[0], event_kind, fire_at)
+            logger.debug("Alarm deduped (reactivated): id=%d kind=%s fire_at=%s", existing[0], event_kind, fire_at)
             return existing[0]
 
         cur = conn.execute(
@@ -115,14 +121,19 @@ def cancel_alarms_by_filter(
 ) -> int:
     """按条件取消闹钟。payload_filter 中的 key=value 对必须在 payload 中匹配。
 
-    用于 task_runtime 清除特定 task_id 的 task_reminder 闹钟。
+    用于 express_to_human 清除同通道旧 awaiting_reply + task_runtime 清特定 task_id。
+
+    V6.1 (2026-08-04): 不再只清 fired_at IS NULL 的, 已触发的也清。
+    之前只清 pending → 已触发的旧 awaiting_reply 留在表里 →
+    express 发新消息时 cancel 清不到旧的 → set_alarm 又建新的 →
+    同 channel 累积十几个 awaiting_reply timer。
     """
     if not payload_filter:
         return cancel_alarms_by_kind(kind)
 
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT id, payload_json FROM timers WHERE event_kind = ? AND fired_at IS NULL",
+            "SELECT id, payload_json FROM timers WHERE event_kind = ?",
             (kind,),
         ).fetchall()
 

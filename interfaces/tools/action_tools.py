@@ -2851,7 +2851,7 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
     overlap_alarm_id = 0
     overlap_alarm_fire_at = ""
     overlap_alarm_reason = ""
-    for a in list_pending_alarms():  # V6: 查所有类型 (含 routine), 不只 timer
+    for a in list_pending_alarms("timer") + list_pending_alarms("routine"):  # V6.1: 不含 awaiting_reply (语义不同, 不该互相干扰)
         fa = a.get("fire_at") or ""
         if not fa:
             continue

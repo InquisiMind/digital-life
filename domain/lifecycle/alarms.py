@@ -97,6 +97,24 @@ def cancel_alarm(alarm_id: int) -> bool:
         return ok
 
 
+def update_alarm_payload(alarm_id: int, payload: Dict[str, Any]) -> bool:
+    """直接更新闹钟的 payload（不 cancel + rebuild）。
+
+    用于 rest(reuse=X) 合并 mental_context: 只改 payload, 不动 id/fired_at/fire_at。
+    之前用 cancel_alarm + set_alarm 组合更新 payload, 会导致 timer 重复创建。
+    """
+    payload_json = json.dumps(payload, ensure_ascii=False)
+    with _conn() as conn:
+        cur = conn.execute(
+            "UPDATE timers SET payload_json = ? WHERE id = ?",
+            (payload_json, alarm_id),
+        )
+        ok = cur.rowcount > 0
+        if ok:
+            logger.debug("Alarm payload updated: id=%d", alarm_id)
+        return ok
+
+
 def cancel_alarms_by_kind(event_kind: str) -> int:
     """按事件类型批量取消未触发的闹钟。返回取消数量。
 

@@ -1490,31 +1490,62 @@ class AIAgent:
         - _render_tool_pointer 压的是 tool 返回结果 (role=tool 的 content)
         - 本方法压的是 tool 调用入参 (assistant 的 tool_calls.function.arguments)
 
-        格式: {"_cmp": "name=X hint=..."}  — 短 JSON, 模型一看就懂。
-        hint 按工具类型取关键字段前 N 字:
-          - code/terminal: 只记长度 (代码执行完就没用了)
-          - 其他: 取第一个值的前 30 字
+        格式: {"_cmp": "name key1=val1 key2=val2"} — 短 JSON, 模型能看出做了什么。
+        hint 按工具类型提取关键字段, 不是无脑取第一个:
+          - execute_code: 提取代码里的 import/def/关键函数名 (而非只记长度)
+          - terminal: 提取命令前缀 (curl/git/python/ls 等)
+          - feishu_call: method + path 后缀
+          - sense_*/其他: 第一个有值字段前 30 字
         """
         import json as _j
+        import re as _re
         try:
             args = _j.loads(args_str) if args_str else {}
         except Exception:
             args = {}
         if not isinstance(args, dict):
             args = {}
-        # 按工具类型生成 hint
+
+        def _short(s: str, n: int = 30) -> str:
+            return str(s)[:n].replace("\n", " ").strip()
+
         hint = ""
-        if name in ("execute_code", "terminal"):
-            # 代码/命令: 只记长度
-            code_len = len(str(args.get("code") or args.get("command") or ""))
-            hint = f"~{code_len}c"
-        elif args:
-            # 取第一个有值的字段, 前30字
+        if name == "execute_code":
+            code = str(args.get("code") or "")
+            # 提取 import 行 + def/class 名 + 关键 URL/API 调用
+            imports = _re.findall(r'(?:import|from)\s+(\S+)', code)[:3]
+            defs = _re.findall(r'def\s+(\w+)|class\s+(\w+)', code)[:2]
+            urls = _re.findall(r'https?://\S+', code)[:1]
+            parts = []
+            if urls: parts.append(_short(urls[0], 40))
+            if imports: parts.append(",".join(imports))
+            if defs: parts.append("/".join(d[0] or d[1] for d in defs))
+            hint = " ".join(parts) if parts else f"~{len(code)}c"
+        elif name == "terminal":
+            cmd = str(args.get("command") or "")
+            # 取命令前缀 (第一个词) + 关键参数
+            first_word = cmd.split()[0] if cmd.split() else ""
+            hint = _short(first_word + " " + " ".join(cmd.split()[1:3]), 40)
+        elif name == "feishu_call":
+            method = args.get("method", "")
+            path = str(args.get("path") or "")
+            # path 取最后有意义的一段 (如 values_append)
+            path_tail = path.rstrip("/").split("/")[-1] if path else ""
+            hint = f"{method} {path_tail}".strip()
+        elif name in ("recall_memory", "recall_cognition_by_key", "search_history"):
+            query_fields = []
+            for k in ("query", "subject", "predicate", "keyword"):
+                if args.get(k): query_fields.append(f"{k}={_short(args[k], 25)}")
+            hint = " ".join(query_fields)
+        else:
+            # 通用: 取前 2 个有值字段
+            parts = []
             for k, v in args.items():
-                vstr = str(v)[:30].replace("\n", " ")
-                hint = f"{k}={vstr}"
-                break
-        return _j.dumps({"_cmp": f"{name} {hint}"}, ensure_ascii=False)
+                if v: parts.append(f"{k}={_short(v, 25)}")
+                if len(parts) >= 2: break
+            hint = " ".join(parts)
+
+        return _j.dumps({"_cmp": f"{name} {hint}".strip()}, ensure_ascii=False)
 
     def _split_by_user_message(self, messages: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
         """按 user 消息切分段。

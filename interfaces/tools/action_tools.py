@@ -2752,11 +2752,23 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
         if mental:
             new_mental = (previous_mental + ("\n\n" if previous_mental else "") + mental).strip()
             # 把合并后的 mental_context 写回闹钟 payload
+            # V6.1 (2026-08-04): 直接 UPDATE payload, 不 cancel+rebuild。
+            # 之前 cancel_alarm + set_alarm 的组合:
+            #   1. cancel 把 timer 标 fired_at (不是 DELETE)
+            #   2. set_alarm 去重只查 fired_at IS NULL → 看不到刚 cancel 的 → 新建
+            #   3. 结果: 同 fire_at 累积多个 timer, 每个被下一次 reuse cancel
             new_payload = dict(existing_payload)
             new_payload["mental_context"] = new_mental
             try:
-                cancel_alarm(target_alarm.get("id"))
-                set_alarm("timer", fire_at=target_fire_at, payload=new_payload)
+                from domain.lifecycle.alarms import _conn as _alarm_conn
+                import json as _j_update
+                import time as _t_update
+                with _alarm_conn() as _c:
+                    _c.execute(
+                        "UPDATE timers SET payload_json = ? WHERE id = ?",
+                        (_j_update.dumps(new_payload, ensure_ascii=False), reuse_id),
+                    )
+                logger.debug("rest reuse: updated timer #%d payload (mental_context merge)", reuse_id)
             except Exception as exc:
                 logger.warning("rest: reuse merge mental_context failed: %s", exc)
 

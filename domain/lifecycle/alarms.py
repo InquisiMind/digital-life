@@ -60,21 +60,19 @@ def set_alarm(
         # V6 闹钟去重: 同一 fire_at 只保留一个, 不管 event_kind
         # (之前只按 event_kind+fire_at 去重, 导致 routine 闹钟和 rest timer 在同一时间点重复)
         #
-        # V6.1 (2026-08-04): 去重也查"今天已触发的"同 fire_at timer。
-        # 之前只查 fired_at IS NULL → 已触发的 timer 不参与去重 →
-        # 模型反复 rest(until=14:45) 时, 每次醒来都创建新的, 同一时间点累积 9 个。
-        # 修法: 同 fire_at 的 timer (无论是否已触发) 存在时, 复用 (清 fired_at + 更新 payload)。
+        # 注意: 只查 pending (fired_at IS NULL) 的。已触发/已取消的 timer 已过期,
+        # 不该被复用——14:45 的 timer 触发后, 时间点已过, rest(until=14:45) 无意义。
+        # 如果模型反复 rest 到同一过期时间, 根因在 rest 逻辑或模型判断, 不是去重。
         existing = conn.execute(
-            "SELECT id, fired_at FROM timers WHERE fire_at = ? ORDER BY id DESC LIMIT 1",
+            "SELECT id FROM timers WHERE fire_at = ? AND fired_at IS NULL",
             (fire_at,),
         ).fetchone()
         if existing:
-            # 复用: 清掉 fired_at (让它重新 pending) + 更新 payload + event_kind
             conn.execute(
-                "UPDATE timers SET fired_at = NULL, payload_json = ?, event_kind = ? WHERE id = ?",
-                (payload_json, event_kind, existing[0]),
+                "UPDATE timers SET payload_json = ? WHERE id = ?",
+                (payload_json, existing[0]),
             )
-            logger.debug("Alarm deduped (reactivated): id=%d kind=%s fire_at=%s", existing[0], event_kind, fire_at)
+            logger.debug("Alarm deduped: id=%d kind=%s fire_at=%s", existing[0], event_kind, fire_at)
             return existing[0]
 
         cur = conn.execute(

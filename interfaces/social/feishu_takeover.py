@@ -417,6 +417,15 @@ class FeishuSocialTakeover:
                 if mt_name and mt_id:
                     self._name_cache[mt_id] = mt_name
 
+            # 用 mentions 的 {key: name} 替换 text 里的 @_user_N 占位符
+            if mentions_raw and text:
+                for mt in mentions_raw:
+                    if isinstance(mt, dict):
+                        mt_key = mt.get('key', '')
+                        mt_name = mt.get('name', '')
+                        if mt_key and mt_name:
+                            text = text.replace(mt_key, f'@{mt_name}')
+
             # 放开 msg_type: text/share/post 都收, _extract_msg_text 已统一转成文本
             if text:
                 messages.append({

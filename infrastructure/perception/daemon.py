@@ -66,10 +66,10 @@ def _play_sound(key: str) -> None:
 def _feedback(kind: str, *, message: str = "") -> None:
     """统一反馈入口。kind ∈ start/stop/done/fail。任一路失败静默。"""
     titles = {
-        "start": ("感知 · 录制中", "开始录屏 + 录音"),
-        "stop": ("感知 · 已结束", message or "正在处理..."),
-        "done": ("感知 · 已送达", message or "感知信号已注入"),
-        "fail": ("感知 · 失败", message or "请查看日志"),
+        "start": ("🔴 录制中", "录屏 + 录音"),
+        "stop": ("⏹ 已结束", message or "正在处理..."),
+        "done": ("✅ 已送达", message or "已通知数字生命"),
+        "fail": ("❌ 失败", message or "请查看日志"),
     }
     title, msg = titles.get(kind, (kind, message))
     _macos_notify(title, msg)
@@ -155,10 +155,8 @@ class _Recorder:
                             threading.Thread(target=self.on_auto_stop, daemon=True).start()
                         break
                     import mss.tools  # type: ignore
-                    # 截最前台窗口（而非整个屏幕，避免截到壁纸）
-                    monitor = _frontmost_window_bounds() or (
-                        sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
-                    )
+                    # 截整个主屏（而非前台窗口，确保截到屏幕上所有可见内容）
+                    monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
                     shot = sct.grab(monitor)
                     p = self.out_dir / f"frame_{idx:04d}.png"
                     try:
@@ -372,20 +370,35 @@ class PerceptionDaemon:
         logger.info("perception daemon stopped: instance=%s", self.instance_id[:8])
 
     def _toggle(self) -> None:
-        # 防抖：Carbon RegisterEventHotKey 在按住/松开 modifier 时可能连续触发，
-        # 500ms 内的重复触发忽略（人类不可能 500ms 内按两次）。
+        # busy 锁：_finish_recording 是同步阻塞的（recorder.stop 要 join 线程），
+        # 期间新的触发不能进来（否则 stop 中途 is_recording=False → 又 START）。
+        if getattr(self, "_busy", False):
+            logger.debug("toggle ignored: busy (finishing previous recording)")
+            return
+
+        # 防抖：Carbon 可能在一次按键时发多次回调，
+        # 800ms 内的重复触发忽略。
         now = time.time()
-        if hasattr(self, "_last_toggle_ts") and now - getattr(self, "_last_toggle_ts", 0) < 0.5:
+        if hasattr(self, "_last_toggle_ts") and now - getattr(self, "_last_toggle_ts", 0) < 0.8:
             logger.debug("toggle debounced (interval=%.2fs)", now - getattr(self, "_last_toggle_ts", 0))
             return
         self._last_toggle_ts = now
 
         if self._recorder.is_recording:
-            self._finish_recording(auto=False)
+            # 停止：设 busy 锁，异步 finish（不阻塞 helper 的读线程）
+            self._busy = True
+            threading.Thread(target=self._finish_with_unlock, args=(False,), daemon=True).start()
         else:
             self._recorder.start()
             _feedback("start")
             _write_state(self.instance_id, last_capture_at=time.time())
+
+    def _finish_with_unlock(self, auto: bool) -> None:
+        """异步结束录制 + 解除 busy 锁。"""
+        try:
+            self._finish_recording(auto=auto)
+        finally:
+            self._busy = False
 
     def _finish_recording(self, *, auto: bool) -> None:
         if not self._recorder.is_recording:

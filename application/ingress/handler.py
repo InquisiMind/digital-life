@@ -214,7 +214,7 @@ async def handle_message(*, adapter: IngressAdapter, msg: NormalizedMessage) -> 
             except ValueError:
                 pass
         try:
-            await adapter.send(msg.chat_id, f"👁️ 观察中（{seconds}s）…", reply_to=msg.message_id)
+            await adapter.send(msg.chat_id, f"👁️ 看看这个（{seconds}s）…", reply_to=msg.message_id)
         except Exception:
             pass
         # 异步触发感知（不阻塞飞书 handler）
@@ -344,7 +344,7 @@ async def _trigger_perception_capture(instance_id: str, seconds: int, chat_id: s
         result = await asyncio.to_thread(_capture_and_report)
         summary = result.summary or "（无内容）"
         try:
-            await adapter.send(chat_id, f"👁️ 观察完成：{summary[:200]}")
+            await adapter.send(chat_id, f"👁️ 已看到：{summary[:200]}")
         except Exception:
             pass
     except Exception as exc:

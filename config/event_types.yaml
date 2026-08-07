@@ -696,10 +696,10 @@ event_types:
       include_recent_sent: true
       include_vector_recall: true
   perception_signal:
-    display_name: 感知信号
+    display_name: 人类呼唤
     trigger_type: external
-    trigger_description: 人类按快捷键触发录屏录音（或模型主动观察）后，视觉/ASR 模型理解完注入的感知信号
-    priority: 7
+    trigger_description: 人类按快捷键录屏录音（或发 /observe）后，视觉/ASR 理解完注入——"看看这个"
+    priority: 10
     payload_schema:
       source: string
       summary: string
@@ -707,17 +707,17 @@ event_types:
       transcript: string?
       media_path: string?
       ok: boolean?
-    description: 感知系统（视觉/音频）经过独立小模型消化后注入的结构化理解——它"看到/听到"了什么
+    description: 人类主动呼唤数字生命看一眼当前屏幕——"看看这个"，附带视觉+语音理解
     debounce_window_s: 0
     merge_policy: latest
     consumption_policy: on_trigger
-    wake_prompt: '👁️ 感知信号
+    wake_prompt: '👁️ 人类呼唤：看看这个
 
 
-      音频转写：{transcript}
+      语音：{transcript}
 
 
-      音视频理解：{summary}
+      画面理解：{summary}
 
 
       详情：{details}

@@ -24,8 +24,8 @@ from typing import Iterable
 logger = logging.getLogger(__name__)
 
 # 单张图片 base64 化后的软上限（bytes）。超了则降低 JPEG 质量。
-_MAX_DATAURI_BYTES = 1_500_000  # ~1.5MB，12 张 ≈ 18MB payload，可控
-_JPEG_QUALITY_STEPS = (85, 70, 55, 40)
+_MAX_DATAURI_BYTES = 500_000  # ~500KB/帧，4 张 ≈ 2MB payload（快速上传 + 不超时）
+_JPEG_QUALITY_STEPS = (60, 40, 30)  # 更激进压缩（屏幕文字 60 质量够读）
 
 
 def _encode_image_bytes(img_bytes: bytes, mime: str = "image/jpeg") -> str:

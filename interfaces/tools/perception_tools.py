@@ -38,17 +38,14 @@ logger = logging.getLogger(__name__)
 def _capture_screen_once(dest_path: Path) -> bool:
     """截一张屏幕图到 dest_path，成功返回 True。需要 mss。"""
     try:
-        import mss  # type: ignore
-        import mss.tools  # type: ignore
-    except ImportError:
-        return False
-    try:
-        with mss.mss() as sct:
-            monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
-            shot = sct.grab(monitor)
-            dest_path.parent.mkdir(parents=True, exist_ok=True)
-            mss.tools.to_png(shot.rgb, shot.size, output=str(dest_path))
-        return True
+        import subprocess
+
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            ["screencapture", "-x", str(dest_path)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+        )
+        return result.returncode == 0 and dest_path.exists()
     except Exception as exc:
         logger.warning("capture screen failed: %s", exc)
         return False

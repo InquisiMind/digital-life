@@ -19,15 +19,16 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # ── 默认值（与 vision_tool.py 对齐）─────────────────────────────────────────
-DEFAULT_VISION_MODEL = "glm-4.6v"
+DEFAULT_VISION_MODEL = "glm-4.6v-flash"  # 免费快速版，2s vs glm-4.6v 的 18s
 DEFAULT_ASR_MODEL = "glm-asr-2512"
 DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
-# 录屏抽帧：画面变化慢，2-3fps 足够还原操作流（spec FR-004）
-DEFAULT_FRAME_FPS = 2.0
-# 空间降采样到 720p 宽（spec FR-004）
-DEFAULT_FRAME_MAX_WIDTH = 1280
-# 单次视觉调用最多携带的图片帧数（控体积 + token）
-DEFAULT_MAX_FRAMES = 12
+# 录屏抽帧：画面变化慢，1-2fps 足够还原操作流
+DEFAULT_FRAME_FPS = 1.5
+# 空间降采样（800 宽够看屏幕内容，base64 体积小 3x → 视觉调用快）
+DEFAULT_FRAME_MAX_WIDTH = 800
+# 单次视觉调用只发 1 帧（最新画面）。GLM-4.6V 多图极慢（4图63s vs 1图3s），
+# 人类呼唤只需要"看一眼当前屏幕"，不需要看操作流。
+DEFAULT_MAX_FRAMES = 1
 # ASR 单次硬限 30s（glm-asr-2512 官方约束）
 ASR_SEGMENT_SECONDS = 30
 # 最大录制时长（秒）—— 超时自动结束（spec US1-AC5 / FR-002）

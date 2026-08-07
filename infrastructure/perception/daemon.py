@@ -139,33 +139,46 @@ class _Recorder:
         }
 
     def _screen_loop(self) -> None:
-        try:
-            import mss  # type: ignore
-        except ImportError:
-            logger.warning("mss 未安装，跳过录屏（仅录音）")
-            return
         interval = 1.0 / self.fps if self.fps > 0 else 1.0
         idx = 0
         try:
-            with mss.mss() as sct:
-                while not self._stop_event.is_set():
-                    if time.time() - self._start_ts > self.max_seconds:
-                        logger.info("reached max_capture_seconds, auto-stop")
-                        if self.on_auto_stop:
-                            threading.Thread(target=self.on_auto_stop, daemon=True).start()
-                        break
-                    import mss.tools  # type: ignore
-                    # 截整个主屏（而非前台窗口，确保截到屏幕上所有可见内容）
-                    monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
-                    shot = sct.grab(monitor)
-                    p = self.out_dir / f"frame_{idx:04d}.png"
+            while not self._stop_event.is_set():
+                if time.time() - self._start_ts > self.max_seconds:
+                    logger.info("reached max_capture_seconds, auto-stop")
+                    if self.on_auto_stop:
+                        threading.Thread(target=self.on_auto_stop, daemon=True).start()
+                    break
+                import subprocess
+                import tempfile
+
+                # screencapture 截全屏 → 裁剪到主窗口区域（去掉壁纸）
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False, dir="/tmp") as tmp:
+                    tmp_full = tmp.name
+                subprocess.run(["screencapture", "-x", tmp_full],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+
+                bounds = _frontmost_window_bounds()
+                p = self.out_dir / f"frame_{idx:04d}.png"
+                try:
+                    from PIL import Image
+
+                    im = Image.open(tmp_full)
+                    if bounds:
+                        im = im.crop((bounds["left"], bounds["top"],
+                                       bounds["left"] + bounds["width"],
+                                       bounds["top"] + bounds["height"]))
+                    im.save(str(p))
+                    self._frames.append(p)
+                    idx += 1
+                except Exception as exc:
+                    logger.debug("frame %d save failed: %s", idx, exc)
+                finally:
                     try:
-                        mss.tools.to_png(shot.rgb, shot.size, output=str(p))
-                        self._frames.append(p)
-                        idx += 1
-                    except Exception as exc:
-                        logger.debug("frame %d save failed: %s", idx, exc)
-                    self._stop_event.wait(interval)
+                        import os as _os
+                        _os.unlink(tmp_full)
+                    except Exception:
+                        pass
+                self._stop_event.wait(interval)
         except Exception as exc:
             logger.warning("screen loop error: %s", exc)
 
@@ -455,22 +468,18 @@ def _is_silent(wav_path: str, *, threshold: int = 100) -> bool:
 
 
 def _frontmost_window_bounds() -> dict | None:
-    """获取最前台窗口的区域（left/top/width/height），供 mss.grab 用。
+    """获取最前台窗口的区域，供 mss.grab 用。
 
-    用 Quartz CGWindowList 找当前最前台 app 的窗口区域，
-    避免截到整个桌面（含壁纸）。失败返回 None（调用方 fallback 到全屏）。
+    优先找最前台 app 的窗口；失败返回 None。
     """
     try:
         import Quartz
 
-        # 找最前台的 app
         ws = Quartz.NSWorkspace.sharedWorkspace()
         front_app = ws.frontmostApplication()
         if not front_app:
             return None
         pid = front_app.processIdentifier()
-
-        # 查这个 PID 的窗口
         window_list = Quartz.CGWindowListCopyWindowInfo(
             Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
             Quartz.kCGNullWindowID,
@@ -479,15 +488,48 @@ def _frontmost_window_bounds() -> dict | None:
             if w.get("kCGWindowOwnerPID") == pid and w.get("kCGWindowBounds"):
                 b = w["kCGWindowBounds"]
                 bounds = {
-                    "left": int(b["X"]),
-                    "top": int(b["Y"]),
-                    "width": int(b["Width"]),
-                    "height": int(b["Height"]),
+                    "left": int(b["X"]), "top": int(b["Y"]),
+                    "width": int(b["Width"]), "height": int(b["Height"]),
                 }
                 if bounds["width"] > 100 and bounds["height"] > 100:
                     return bounds
     except Exception as exc:
         logger.debug("frontmost window bounds failed: %s", exc)
+    return None
+
+
+def _find_main_window_bounds() -> dict | None:
+    """找屏幕上最大的非桌面窗口区域（避免截到壁纸）。
+
+    不依赖前台 app——枚举所有可见窗口（排除桌面/Dock），找最大的。
+    这样不管用户在哪个 app 按快捷键，都能截到"正在看的内容"。
+    """
+    try:
+        import Quartz
+
+        window_list = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
+            Quartz.kCGNullWindowID,
+        )
+        best = None
+        best_area = 0
+        for w in window_list:
+            layer = w.get("kCGWindowLayer", 1)
+            if layer != 0:  # 只看正常窗口层（排除 Dock/菜单栏等）
+                continue
+            b = w.get("kCGWindowBounds", {})
+            area = int(b.get("Width", 0)) * int(b.get("Height", 0))
+            if area > best_area and area > 50000:  # 最小 50000px²（排除小窗口）
+                best = {
+                    "left": int(b["X"]), "top": int(b["Y"]),
+                    "width": int(b["Width"]), "height": int(b["Height"]),
+                }
+                best_area = area
+        if best:
+            logger.debug("main window bounds: %s (%dx%d)", best, best["width"], best["height"])
+        return best
+    except Exception as exc:
+        logger.debug("find main window bounds failed: %s", exc)
     return None
 
 

@@ -60,25 +60,10 @@ def _default_question_prompt() -> str:
     不是泛泛描述画面，而是具体读出文字、识别应用、判断行为、发现关注点。
     """
     return (
-        "你是一个观察者，能看到用户屏幕的截图和用户说的话（录音转写）。\n"
-        "用户说的话是最直接的意图——优先理解他想表达什么，再结合屏幕画面补充上下文。\n\n"
-        "## 分析要求\n"
-        "1. 理解意图：用户说了什么？他想干什么？（如果有录音转写）\n"
-        "2. 识别场景：屏幕上是什么应用/网页？关键文字内容是什么？\n"
-        "3. 结合判断：用户说的话 + 屏幕画面 = 他正在做什么？需要什么帮助？\n"
-        "4. 发现关注点：有没有异常/机会/风险/需要主意识关注的事？\n"
-        "5. 关联背景：结合上方背景（主意识正在做的事），相关性如何？\n\n"
-        "## 输出 JSON\n"
-        '{\n'
-        '  "summary": "具体描述（结合语音+画面，<=100字。不要泛泛，要具体内容）",\n'
-        '  "user_intent": "用户想表达/想做什么（基于录音转写）",\n'
-        '  "app_or_scene": "识别到的应用/场景",\n'
-        '  "key_texts": ["屏幕上读到的关键文字，最多5条"],\n'
-        '  "notable": "值得注意的内容，没有则null",\n'
-        '  "related_to_background": "与主意识任务的关联，没有则null",\n'
-        '  "should_notify": true/false\n'
-        '}\n'
-        "只输出JSON。如果有录音转写，summary必须体现用户说的话。"
+        "你看了一眼用户屏幕，同时听到了用户说的话。简短描述你看到了什么。\n\n"
+        "用 JSON 输出：\n"
+        '{"summary": "一句话描述画面内容（结合用户说的话）"}\n'
+        "只输出 JSON。简短、具体、不要读菜单栏等无关细节。"
     )
 
 
@@ -160,6 +145,8 @@ def call_vision(
         "model": cfg.vision_model,
         "messages": messages,
         "max_tokens": 1000,
+        # 禁用 reasoning（GLM-4.6V 的思考会吃光 token 导致 content 为空）
+        "thinking": {"type": "disabled"},
     }
     # 结构化输出指令放在 system，避免污染 user 的多模态 content
     sys_text = question_prompt or _default_question_prompt()

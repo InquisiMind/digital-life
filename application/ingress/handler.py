@@ -287,22 +287,20 @@ async def _trigger_perception_capture(instance_id: str, seconds: int, chat_id: s
         frames: list[str] = []
         audio_path: str | None = None
 
-        # 截图（mss，不依赖辅助功能）
+        # 截图（用 screencapture 命令，不需要屏幕录制 TCC 权限）
         try:
-            import mss
-            import mss.tools
-            with mss.mss() as sct:
-                monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
-                # 按 fps 截几帧
-                n_frames = max(1, min(int(seconds * cfg.frame_fps), cfg.max_frames))
-                interval = seconds / n_frames if n_frames > 0 else 0.5
-                for i in range(n_frames):
-                    shot = sct.grab(monitor)
-                    p = out_dir / f"observe_{ts}_{i:03d}.png"
-                    mss.tools.to_png(shot.rgb, shot.size, output=str(p))
+            import subprocess
+
+            n_frames = max(1, min(int(seconds * cfg.frame_fps), cfg.max_frames))
+            interval = seconds / n_frames if n_frames > 0 else 0.5
+            for i in range(n_frames):
+                p = out_dir / f"observe_{ts}_{i:03d}.png"
+                subprocess.run(["screencapture", "-x", str(p)],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                if p.exists():
                     frames.append(str(p))
-                    if i < n_frames - 1:
-                        time.sleep(interval)
+                if i < n_frames - 1:
+                    time.sleep(interval)
         except Exception as exc:
             logger.warning("/observe screenshot failed: %s", exc)
 

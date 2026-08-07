@@ -56,26 +56,10 @@ class PipelineResult:
         return payload
 
     def _format_details(self) -> str:
-        """把 details dict 格式化成可读文本（供 wake_prompt 渲染）。"""
+        """把 details 格式化成可读文本（供 wake_prompt 渲染）。"""
         if not self.details:
-            return "（无）"
-        lines = []
-        label_map = {
-            "user_intent": "意图",
-            "app_or_scene": "场景",
-            "key_texts": "屏幕文字",
-            "notable": "关注点",
-            "related_to_background": "与任务关联",
-            "should_notify": "值得通知",
-        }
-        for k, v in self.details.items():
-            if v is None or v == "":
-                continue
-            label = label_map.get(k, k)
-            if isinstance(v, list):
-                v = "、".join(str(i) for i in v)
-            lines.append(f"{label}：{v}")
-        return "\n".join(lines) if lines else "（无）"
+            return ""
+        return str(self.details)
 
 
 def run_pipeline(
@@ -169,20 +153,8 @@ def run_pipeline(
         parsed = vis.get("parsed") or {}
         if parsed:
             result.summary = parsed.get("summary", "") or vis.get("raw", "")
-            # 收集结构化详情（新 prompt 的字段）
-            details: dict[str, Any] = {}
-            for k in ("user_intent", "app_or_scene", "key_texts", "notable"):
-                v = parsed.get(k)
-                if v is not None and v != "":
-                    details[k] = v
-            if parsed.get("related_to_background"):
-                details["related_to_background"] = parsed["related_to_background"]
-            details["should_notify"] = parsed.get("should_notify", True)
-            result.details = details
         else:
-            # JSON 解析失败，用 raw 当 summary
             result.summary = (vis.get("raw") or "")[:200]
-            result.details = {"parse_failed": True, "raw": vis.get("raw", "")}
 
         if not vis.get("ok"):
             result.error = result.error or vis.get("error", "视觉调用失败")

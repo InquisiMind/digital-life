@@ -711,16 +711,13 @@ event_types:
     debounce_window_s: 0
     merge_policy: latest
     consumption_policy: on_trigger
-    wake_prompt: '👁️ 人类呼唤：看看这个
+    wake_prompt: '👁️ 人类在呼唤你
 
 
-      语音：{transcript}
+      你的听觉信号：{transcript}
 
 
-      画面理解：{summary}
-
-
-      {details}
+      你的视觉信号：{summary}
 
 
       这次来自语音呼唤，你可以直接用语音回复。

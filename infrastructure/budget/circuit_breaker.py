@@ -58,6 +58,39 @@ MAX_RETRY_AFTER_SEC = float(os.getenv("DIGITAL_LIFE_CB_MAX_RETRY_AFTER", "3600")
 _FINGERPRINT_LEN = 16
 
 
+# ── GLM 429 错误码分类（docs.bigmodel.cn/cn/api/api-code）──────────────────────
+# 429 状态码本身无法区分"限流"与"欠费"，必须解析响应体 ``error.code``。
+# 分两类，决定熔断时长策略：
+#
+#   1. 硬故障（充值前重试必败）：余额不足 / 套餐失效。等几分钟没用，必须人工
+#      充值/续费。熔断时间拉到 MAX（默认 1h），避免到期重试又撞 429 反复刷新
+#      expires_at（曾观察到的现象：expires_at 从 03:14:13 一路涨到 03:14:44）。
+#   2. 软限流（窗口过后自愈）：QPM/并发超限、平台过载、周期用量上限。Retry-After
+#      头通常已给合理窗口，保持现有 resolve_retry_after 逻辑。
+#
+# 以 code 数字为唯一判据——message 文案会变（实测 "余额不足或无可用资源包"
+# 与官方现文案 "您的账户已欠费" 不一致），不能靠字符串匹配。
+
+# 硬故障：等也没用，熔断拉满（充值/续费后到期前 clear() 手动解，或等 MAX 自然过期）。
+HARD_FAILURE_CODES: frozenset[str] = frozenset({
+    "1113",  # 账户欠费 / 余额不足 / 无可用资源包
+    "1314",  # 企业套餐已失效
+    "1311",  # 当前订阅套餐未开放该模型权限（非临时，需升级套餐）
+})
+
+# 软限流：保持 Retry-After / 默认窗口。这里不穷举——1302/1305/1308/1310/1313
+# 以及 1316-1321（用量上限+余额不足的复合码）都按"软"处理，因为即便复合了
+# 余额不足，超长熔断也无意义（用户充值前不会停）。复合码会在 trip reason
+# 里留痕，方便运维看。
+SOFT_LIMIT_CODES: frozenset[str] = frozenset({
+    "1302",  # 账户已达到速率限制（QPM/并发）
+    "1305",  # 该模型当前访问量过大（平台过载）
+    "1308",  # 达到 number unit 使用上限
+    "1310",  # 达到每周/每月使用上限
+    "1313",  # 违反公平使用规则
+})
+
+
 def _repo_root() -> Path:
     """仓库根目录。本文件是 <root>/infrastructure/budget/circuit_breaker.py。"""
     return Path(__file__).resolve().parents[2]
@@ -163,6 +196,77 @@ def resolve_retry_after(header_value: str | None) -> float:
 
     # 非法格式 → 兜底
     return DEFAULT_RETRY_AFTER_SEC
+
+
+def extract_glm_error_code(body: Any) -> str | None:
+    """从 GLM 429 响应体提取 ``error.code``。
+
+    body 形如 ``{"error":{"code":"1113","message":"..."}}``。解析失败/结构
+    不符返回 None（调用方按"未知 code"处理，保守沿用 Retry-After 逻辑）。
+    """
+    if not body:
+        return None
+    if isinstance(body, (bytes, bytearray)):
+        import json as _json
+
+        try:
+            body = _json.loads(body)
+        except Exception:
+            return None
+    if isinstance(body, str):
+        import json as _json
+
+        try:
+            body = _json.loads(body)
+        except Exception:
+            return None
+    if not isinstance(body, dict):
+        return None
+    err = body.get("error")
+    if not isinstance(err, dict):
+        return None
+    code = err.get("code")
+    return str(code) if code is not None else None
+
+
+def classify_429(error_code: str | None) -> str:
+    """把 GLM 429 的 error.code 归为三类：hard / soft / unknown。
+
+    - hard：硬故障（充值前重试必败），应拉长熔断 → 返回 ``"hard"``
+    - soft：软限流（窗口后自愈），沿用 Retry-After → 返回 ``"soft"``
+    - unknown：未识别 code，保守按 soft 处理 → 返回 ``"unknown"``
+    """
+    if error_code is None:
+        return "unknown"
+    if error_code in HARD_FAILURE_CODES:
+        return "hard"
+    if error_code in SOFT_LIMIT_CODES:
+        return "soft"
+    return "unknown"
+
+
+def resolve_retry_after_for_429(
+    *,
+    retry_after_header: str | None,
+    response_body: Any = None,
+) -> tuple[float, str]:
+    """综合 Retry-After 头 + response body 的 error.code 决定熔断时长。
+
+    返回 ``(retry_after_sec, reason)``。reason 形如 ``"429:hard:1113"`` 或
+    ``"429:soft:1302"`` 或 ``"429:unknown"``，落库留痕便于运维诊断。
+
+    策略：
+      - error.code 命中 HARD_FAILURE_CODES → MAX_RETRY_AFTER_SEC（等也没用，
+        拉满避免反复刷 expires_at；充值后运维 clear() 或等自然过期）。
+      - 否则 → resolve_retry_after(retry_after_header) 维持原逻辑（软限流
+        尊重 Retry-After 头，未知 code 保守用默认窗口）。
+    """
+    code = extract_glm_error_code(response_body)
+    kind = classify_429(code)
+    reason = f"429:{kind}" + (f":{code}" if code else "")
+    if kind == "hard":
+        return (MAX_RETRY_AFTER_SEC, reason)
+    return (resolve_retry_after(retry_after_header), reason)
 
 
 def trip(

@@ -244,6 +244,8 @@ def _report_capture(capture: dict, *, endpoint: str, instance_id: str, source: s
         "audio_path": audio,
         "audio_segment_paths": audio_segs or None,
         "media_path": audio or (frames[0] if frames else ""),
+        # 快捷键来源标记：让下游知道回复应走语音通道（而非飞书）
+        "reply_channel": "voice",
     }
     try:
         with httpx.Client(timeout=300.0) as client:

@@ -117,6 +117,7 @@ async def _run_perception(body: dict[str, Any], instance_id: str) -> web.Respons
             media_path_for_record=body.get("media_path") or "",
             session_id=body.get("session_id"),
             chat_id=body.get("chat_id"),
+            reply_channel=body.get("reply_channel") or "",
         )
 
     payload = pr.to_payload()

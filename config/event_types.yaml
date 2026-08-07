@@ -720,7 +720,10 @@ event_types:
       画面理解：{summary}
 
 
-      详情：{details}
+      {details}
+
+
+      这次来自语音呼唤，你可以直接用语音回复。
 
 
       '

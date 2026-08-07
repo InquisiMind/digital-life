@@ -30,6 +30,7 @@ class PipelineResult:
 
     ok: bool = False
     source: str = ""
+    reply_channel: str = ""  # 快捷键来源标记（"voice" = 回复走语音 TTS）
     summary: str = ""
     details: dict[str, Any] = field(default_factory=dict)
     transcript: str = ""
@@ -41,15 +42,40 @@ class PipelineResult:
     vision_ok: bool | None = None
 
     def to_payload(self) -> dict[str, Any]:
-        """转成 perception_signal 事件 payload（spec FR-013）。"""
-        return {
+        """转成 perception_signal 事件 payload。"""
+        payload = {
             "source": self.source,
             "summary": self.summary or ("感知处理失败：" + self.error) if self.error else self.summary,
-            "details": self.details,
-            "transcript": self.transcript,
+            "details": self._format_details(),
+            "transcript": self.transcript or "（无）",
             "media_path": self.media_path,
             "ok": self.ok,
         }
+        if self.reply_channel:
+            payload["reply_channel"] = self.reply_channel
+        return payload
+
+    def _format_details(self) -> str:
+        """把 details dict 格式化成可读文本（供 wake_prompt 渲染）。"""
+        if not self.details:
+            return "（无）"
+        lines = []
+        label_map = {
+            "user_intent": "意图",
+            "app_or_scene": "场景",
+            "key_texts": "屏幕文字",
+            "notable": "关注点",
+            "related_to_background": "与任务关联",
+            "should_notify": "值得通知",
+        }
+        for k, v in self.details.items():
+            if v is None or v == "":
+                continue
+            label = label_map.get(k, k)
+            if isinstance(v, list):
+                v = "、".join(str(i) for i in v)
+            lines.append(f"{label}：{v}")
+        return "\n".join(lines) if lines else "（无）"
 
 
 def run_pipeline(
@@ -64,6 +90,7 @@ def run_pipeline(
     session_id: str | None = None,
     chat_id: str | None = None,
     question_prompt: str | None = None,
+    reply_channel: str = "",
 ) -> PipelineResult:
     """端到端跑感知流水线。
 
@@ -83,7 +110,7 @@ def run_pipeline(
         :class:`PipelineResult`。
     """
     cfg = config or load_config(instance_id)
-    result = PipelineResult(source=source, media_path=str(media_path_for_record))
+    result = PipelineResult(source=source, media_path=str(media_path_for_record), reply_channel=reply_channel)
 
     # 1. 图片帧 → data URIs（spec FR-004）
     image_uris: list[str] = []

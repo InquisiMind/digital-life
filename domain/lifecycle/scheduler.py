@@ -823,11 +823,27 @@ def _wake_digital_life_inner_safe(
             if _wake_chat_id:
                 break
     _chat_token = None
+    _platform_token = None
     try:
         from domain.lifecycle.runtime_context import set_current_event_chat_id, reset_current_event_chat_id
         _chat_token = set_current_event_chat_id(_wake_chat_id)
     except Exception:
         pass
+
+    # 检测 reply_channel：快捷键来源的 perception_signal 带 reply_channel=voice，
+    # 表示回复应走本地 TTS（而非飞书）。设 event_platform=voice 让 express_to_human
+    # 默认 channel 路由到 voice:speaker。
+    if pending_events:
+        for ev in pending_events:
+            _payload = ev.get("payload") or {}
+            _rc = _payload.get("reply_channel") or ""
+            if _rc == "voice":
+                try:
+                    from domain.lifecycle.runtime_context import set_current_event_platform
+                    _platform_token = set_current_event_platform("voice")
+                except Exception:
+                    pass
+                break
 
     # 启动 AIAgent
     summary = {
@@ -1411,6 +1427,12 @@ def _wake_digital_life_inner_safe(
             try:
                 from domain.lifecycle.runtime_context import reset_current_event_chat_id
                 reset_current_event_chat_id(_chat_token)
+            except Exception:
+                pass
+        if _platform_token is not None:
+            try:
+                from domain.lifecycle.runtime_context import reset_current_event_platform
+                reset_current_event_platform(_platform_token)
             except Exception:
                 pass
         try:

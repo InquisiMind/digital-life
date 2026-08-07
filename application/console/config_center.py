@@ -199,6 +199,16 @@ FIELDS: tuple[ConfigField, ...] = (
         path="perception.context_recent_turns", default=5,
         description="视觉模型带的主意识最近对话轮数（背景）。0 = 无背景纯看画面。",
     ),
+    ConfigField(
+        "perception.tts_enabled", "语音回复", "perception", "yaml", "boolean",
+        path="perception.tts_enabled", default=False,
+        description="开启后，快捷键呼唤的回复通过本地语音播放（macOS say）。需要 macOS。",
+    ),
+    ConfigField(
+        "perception.tts_voice", "TTS 语音", "perception", "yaml",
+        path="perception.tts_voice", default="Tingting",
+        description="macOS 语音名。Tingting（婷婷，中文女声）/ Shelley / Sinji 等。",
+    ),
 )
 
 

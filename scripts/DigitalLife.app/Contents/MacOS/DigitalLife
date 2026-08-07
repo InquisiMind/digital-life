@@ -1,0 +1,15 @@
+#!/bin/bash
+# DigitalLife.app launcher —— 在 bundle 上下文里跑 python 脚本
+export PYTHONPATH="/Users/zhanghaopu/Documents/项目材料/探索项目/数字生命:$PYTHONPATH"
+PYTHON="/Users/zhanghaopu/miniconda3/bin/python3"
+# 默认行为：请求麦克风权限
+SCRIPT="${1:-request_mic_permission}"
+shift 2>/dev/null || true
+case "$SCRIPT" in
+    --request-permissions|-r)
+        exec "$PYTHON" "/Users/zhanghaopu/Documents/项目材料/探索项目/数字生命/scripts/request_mic_permission.py" "$@"
+        ;;
+    *)
+        exec "$PYTHON" "/Users/zhanghaopu/Documents/项目材料/探索项目/数字生命/scripts/${SCRIPT}.py" "$@"
+        ;;
+esac

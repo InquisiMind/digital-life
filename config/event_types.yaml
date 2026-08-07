@@ -695,3 +695,59 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: true
       include_vector_recall: true
+  perception_signal:
+    display_name: 感知信号
+    trigger_type: external
+    trigger_description: 人类按快捷键触发录屏录音（或模型主动观察）后，视觉/ASR 模型理解完注入的感知信号
+    priority: 7
+    payload_schema:
+      source: string
+      summary: string
+      details: object?
+      transcript: string?
+      media_path: string?
+      ok: boolean?
+    description: 感知系统（视觉/音频）经过独立小模型消化后注入的结构化理解——它"看到/听到"了什么
+    debounce_window_s: 0
+    merge_policy: latest
+    consumption_policy: on_trigger
+    wake_prompt: '👁️ 感知到了一些东西（来源：{source}）。
+
+
+      {summary}
+
+
+      这是由感知系统（独立视觉/音频模型）预处理后注入的理解，已经过压缩和结构化，
+
+      不是原始画面/声音。如需回看原始素材，调 sense_media(media_path="{media_path}")。
+
+
+      【同期录音转写】
+
+      {transcript}
+
+
+      （若上方转写为空，表示本次无音频或 ASR 未成功。）
+
+      '
+    allowed_tools:
+    - express_to_human
+    - sense_image
+    - sense_media
+    - sense_status
+    - record_thought
+    - write_file
+    - todo
+    - rest
+    context_policy:
+      include_history: true
+      max_turns: 12
+      include_rules: true
+      include_daily: false
+      include_consciousness: true
+      include_session_digests: true
+      include_entity_recall: true
+      include_self_review: false
+      include_proactive_policy: false
+      include_recent_sent: true
+      include_vector_recall: false

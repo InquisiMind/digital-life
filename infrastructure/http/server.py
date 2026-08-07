@@ -380,6 +380,17 @@ async def run_instance_gateway(instance_id: str) -> None:
     except Exception as exc:
         logger.debug("Instance %s social takeover not started: %s", instance_id[:8], exc)
 
+    # 启动感知 daemon（可选 — 需 app.yaml perception.enabled=true + macOS 权限）
+    # feature 003-perception：快捷键录屏录音 → 视觉理解 → 注入事件
+    perception_daemon = None
+    try:
+        from infrastructure.perception.daemon import start_perception_daemon
+        perception_daemon = start_perception_daemon(instance_id)
+        if perception_daemon:
+            logger.info("Instance %s perception daemon started", instance_id[:8])
+    except Exception as exc:
+        logger.debug("Instance %s perception not started: %s", instance_id[:8], exc)
+
     await stop_event.wait()
     logger.info("Instance %s shutting down...", instance_id[:8])
 
@@ -394,6 +405,11 @@ async def run_instance_gateway(instance_id: str) -> None:
     ck_thread.join(timeout=5)
     if takeover:
         takeover.stop()
+    if perception_daemon:
+        try:
+            perception_daemon.stop()
+        except Exception:
+            pass
     logger.info("Instance %s stopped", instance_id[:8])
 
 
@@ -897,6 +913,14 @@ async def run_master_gateway() -> None:
     # 广播 endpoint:接收 peer 实例的 HTTP 广播(去中心化消息总线 Phase 3)
     from application.api.broadcast_routes import add_broadcast_routes
     add_broadcast_routes(app)
+
+    # 感知 endpoint:接收感知 daemon(独立子进程)的录屏录音理解结果
+    # (feature 003-perception;spec FR-010/FR-012)。daemon 只打 master 8642。
+    try:
+        from application.api.perception_routes import add_perception_routes
+        add_perception_routes(app)
+    except Exception as exc:
+        logger.warning("Perception routes failed (non-fatal): %s", exc)
 
     # 微信消息接收 endpoint: itchat daemon → digital-life
     try:

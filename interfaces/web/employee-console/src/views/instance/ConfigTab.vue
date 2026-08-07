@@ -70,6 +70,23 @@
             <el-select v-else-if="field.options && field.options.length" v-model="draft[field.key]" filterable>
               <el-option v-for="o in field.options" :key="o" :label="o" :value="o" />
             </el-select>
+            <!-- 快捷键录制控件：点击后按下组合键自动捕获 -->
+            <div v-else-if="field.type === 'hotkey'" class="hotkey-input-wrap">
+              <button
+                type="button"
+                class="hotkey-record-btn"
+                :class="{ recording: hotkeyRecording === field.key }"
+                @click="startHotkeyRecord(field.key)"
+                @keydown="hotkeyRecording === field.key ? onHotkeyKeydown($event, field.key) : null"
+                @blur="hotkeyRecording === field.key ? cancelHotkeyRecord() : null"
+                tabindex="0"
+              >
+                <template v-if="hotkeyRecording === field.key">按下组合键…</template>
+                <template v-else-if="draft[field.key]">{{ formatHotkeyDisplay(draft[field.key]) }}</template>
+                <template v-else>点击设置快捷键</template>
+              </button>
+              <span v-if="draft[field.key] && hotkeyRecording !== field.key" class="hotkey-hint mono">{{ draft[field.key] }}</span>
+            </div>
             <el-input v-else v-model="draft[field.key]"
                       :type="field.secret ? 'password' : 'text'"
                       :show-password="field.secret"
@@ -131,6 +148,50 @@ const qrStatus = ref('')
 const allSections = ref([])
 const draft = ref({})
 const baseline = ref({})
+
+// 快捷键录制（hotkey 字段类型）
+const hotkeyRecording = ref(null)  // 正在录制的 field.key，null = 未录制
+
+const HOTKEY_MOD_LABELS = { meta: '⌘', cmd: '⌘', ctrl: '⌃', shift: '⇧', alt: '⌥', option: '⌥' }
+
+function formatHotkeyDisplay(v) {
+  if (!v) return ''
+  return v.split('+').map(k => HOTKEY_MOD_LABELS[k.trim().toLowerCase()] || k.trim().toUpperCase()).join(' + ')
+}
+
+function startHotkeyRecord(fieldKey) {
+  if (hotkeyRecording.value === fieldKey) {
+    hotkeyRecording.value = null
+    return
+  }
+  hotkeyRecording.value = fieldKey
+}
+
+function cancelHotkeyRecord() {
+  hotkeyRecording.value = null
+}
+
+function onHotkeyKeydown(e, fieldKey) {
+  // 阻止默认行为（避免浏览器快捷键触发）
+  e.preventDefault()
+  e.stopPropagation()
+  const parts = []
+  if (e.metaKey) parts.push('cmd')
+  if (e.ctrlKey) parts.push('ctrl')
+  if (e.shiftKey) parts.push('shift')
+  if (e.altKey) parts.push('alt')
+  // 单独按修饰键不算完成（等普通键）
+  const keyName = e.key.toLowerCase()
+  const isModOnly = ['meta', 'control', 'shift', 'alt'].includes(keyName)
+  if (isModOnly && parts.length) return  // 等用户按普通键
+  // 普通键：标准化键名
+  let k = keyName
+  if (k === ' ') k = 'space'
+  if (k.length === 1) k = e.key  // 字母保留原样
+  parts.push(k)
+  draft.value[fieldKey] = parts.join('+')
+  hotkeyRecording.value = null
+}
 
 // V6 微信全接管 (itchat)
 async function startWechatTakeover() {
@@ -233,7 +294,7 @@ async function doWechatLogin() {
 }
 
 // 实例私有：身份 / 飞书凭证 / 模型 / 运行时（token/精力/心跳）/ 任务策略
-const INSTANCE_SECTIONS = ['employee', 'model', 'feishu', 'wechat', 'behavior', 'runtime', 'tasks']
+const INSTANCE_SECTIONS = ['employee', 'model', 'feishu', 'wechat', 'behavior', 'runtime', 'tasks', 'perception']
 
 const instanceSections = computed(() =>
   allSections.value.filter(s => INSTANCE_SECTIONS.includes(s.key))
@@ -321,4 +382,33 @@ async function revokeSocial() {
   align-items: center;
 }
 .field-title { color: var(--text-primary); font-size: 14px; }
+.hotkey-input-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+.hotkey-record-btn {
+  min-width: 160px;
+  padding: 8px 16px;
+  border: 1px solid var(--border-divider);
+  border-radius: 6px;
+  background: var(--bg-elevated, #1a1a2e);
+  color: var(--text-primary);
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  font-family: inherit;
+}
+.hotkey-record-btn:hover { border-color: var(--accent, #00f0ff); }
+.hotkey-record-btn.recording {
+  border-color: var(--accent, #00f0ff);
+  box-shadow: 0 0 0 2px rgba(0, 240, 255, 0.2);
+  animation: hotkey-pulse 1s ease-in-out infinite;
+}
+@keyframes hotkey-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+.hotkey-hint { font-size: 11px; color: var(--text-muted); }
 </style>

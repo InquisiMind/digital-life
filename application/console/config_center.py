@@ -46,6 +46,7 @@ SECTION_META: dict[str, dict[str, str]] = {
     "behavior":  {"label": "群聊行为", "description": "注意关键词 / Owner——与通道无关，是数字生命的行为策略。"},
     "runtime":   {"label": "运行节律 / 精力策略", "description": "心跳、token 上限、精力折算系数。"},
     "tasks":     {"label": "任务执行策略", "description": "最大轮数、推理强度。"},
+    "perception": {"label": "感知系统", "description": "快捷键触发录屏录音，视觉模型理解后注入事件。需授予辅助功能/屏幕录制/麦克风权限。改动后需重启网关。"},
 }
 
 
@@ -165,6 +166,38 @@ FIELDS: tuple[ConfigField, ...] = (
         "agent.reasoning_effort", "推理强度", "tasks", "yaml", "select",
         path="agent.reasoning_effort", default="medium",
         options=("minimal", "low", "medium", "high", "xhigh"),
+    ),
+
+    # ════════════ 感知系统（feature 003-perception）════════════
+    ConfigField(
+        "perception.enabled", "启用感知", "perception", "yaml", "boolean",
+        path="perception.enabled", default=False,
+        description="开启后，本实例启动时自动拉起快捷键 daemon。首次需在 macOS 授予辅助功能/屏幕录制/麦克风权限。",
+    ),
+    ConfigField(
+        "perception.hotkey", "快捷键", "perception", "yaml", "hotkey",
+        path="perception.hotkey", default="cmd+shift+p",
+        description='触发录屏录音的全局快捷键。点击右侧框后按下组合键自动捕获。不同实例配不同键，互不冲突。',
+    ),
+    ConfigField(
+        "perception.vision_model", "视觉模型", "perception", "yaml",
+        path="perception.vision_model", default="glm-4.6v",
+        description="理解录屏画面的视觉模型。glm-4.6v / glm-5v-turbo。",
+    ),
+    ConfigField(
+        "perception.frame_fps", "抽帧帧率", "perception", "yaml", "number",
+        path="perception.frame_fps", default=2.0,
+        description="录屏抽帧频率（帧/秒）。2 即每秒 2 帧，录屏画面变化慢，够用且省体积。",
+    ),
+    ConfigField(
+        "perception.max_capture_seconds", "最大录制时长（秒）", "perception", "yaml", "number",
+        path="perception.max_capture_seconds", default=120,
+        description="单次录制最长秒数。超时自动结束并处理。",
+    ),
+    ConfigField(
+        "perception.context_recent_turns", "视觉上下文轮数", "perception", "yaml", "number",
+        path="perception.context_recent_turns", default=5,
+        description="视觉模型带的主意识最近对话轮数（背景）。0 = 无背景纯看画面。",
     ),
 )
 

@@ -7,7 +7,7 @@
   - 与既有 daemon 线程模式一致
 
 前提（macOS）：instance 进程需被授予"辅助功能/输入监控""屏幕录制""麦克风"权限。
-首次运行时 pynput 会提示 not trusted；授权后重启 digital-life 生效。
+首次运行时 Carbon helper 会注册全局热键（不需要辅助功能权限）。
 详见 docs/operations/perception-setup.md。
 
 对外只暴露 :func:`start_perception_daemon`（工厂）和 :class:`PerceptionDaemon`（实例）。
@@ -282,24 +282,6 @@ def _write_state(instance_id: str, **fields: Any) -> None:
 
 # ── PerceptionDaemon ─────────────────────────────────────────────────────────
 
-# pynput GlobalHotKeys 的 modifier 映射：扁平格式 → 尖括号格式。
-# cmd+shift+z → <cmd>+<shift>+z；ctrl+alt+p → <ctrl>+<alt>+p
-_PYNPUT_MODS = {"cmd", "cmd_l", "cmd_r", "ctrl", "ctrl_l", "ctrl_r",
-                "shift", "shift_l", "shift_r", "alt", "alt_l", "alt_r",
-                "option", "fn", "win", "cmd"}
-
-
-def _to_pynput_combo(combo: str) -> str:
-    """cmd+shift+z → <cmd>+<shift>+z（pynput GlobalHotKeys 要求 modifier 加尖括号）。"""
-    parts = [p.strip().lower() for p in combo.split("+") if p.strip()]
-    out = []
-    for p in parts:
-        if p in _PYNPUT_MODS:
-            out.append(f"<{p}>")
-        else:
-            out.append(p)
-    return "+".join(out)
-
 
 class PerceptionDaemon:
     """一个实例的感知 daemon：监听快捷键 → 录制 → 上报。
@@ -502,7 +484,7 @@ def start_perception_daemon(instance_id: str, *, endpoint: str = DEFAULT_ENDPOIN
 
     照 feishu_takeover.start_takeover_daemon 范式：
       - perception.enabled 为 false → 返回 None（静默跳过）
-      - 缺 pynput 等依赖 → daemon.start() 内部 log warning，但仍返回对象
+      - 缺 helper 二进制 → daemon.start() 内部 log warning，但仍返回对象
         （listener 起不来但对象存在，stop 安全）
     """
     cfg = load_config(instance_id)

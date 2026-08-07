@@ -178,6 +178,29 @@ async def handle_message(*, adapter: IngressAdapter, msg: NormalizedMessage) -> 
         await adapter.send(msg.chat_id, orchestration_reply, reply_to=msg.message_id)
         return True
 
+    # /new 指令：强制下次唤醒开新 session（不接续 15min 内的旧 session，省 token）。
+    #   /new（单独）→ 纯切 session，回复确认，不 emit 不 wake
+    #   /new <正文> → 剥离前缀，用正文开新 session 唤醒
+    # RUNNING 时延后生效：正文注入当前会话，下次唤醒才开新（不打断当前 wake）。
+    _force_new_token = None
+    if text and text.lstrip().startswith("/new"):
+        stripped = text.lstrip()[4:].strip()  # len("/new") == 4
+        from domain.lifecycle.scheduler import set_force_new_session, reset_force_new_session
+        _force_new_token = set_force_new_session(True)
+        if not stripped:
+            # 纯切 session：不 emit、不 wake，直接回复确认
+            try:
+                await adapter.send(
+                    msg.chat_id,
+                    "✂️ 下次唤醒将开新会话（不接续历史）。",
+                    reply_to=msg.message_id,
+                )
+            except Exception:
+                pass
+            reset_force_new_session(_force_new_token)
+            return True
+        text = stripped  # 用剩余正文继续走正常 emit（且 ContextVar 已标 force_new）
+
     if text:
         prev_id = os.environ.get("DIGITAL_LIFE_INSTANCE_ID")
         os.environ["DIGITAL_LIFE_INSTANCE_ID"] = instance_id
@@ -218,6 +241,8 @@ async def handle_message(*, adapter: IngressAdapter, msg: NormalizedMessage) -> 
             reset_instance_context(ctx_token)
             if prev_id:
                 os.environ["DIGITAL_LIFE_INSTANCE_ID"] = prev_id
+            if _force_new_token is not None:
+                reset_force_new_session(_force_new_token)
     return True
 
 

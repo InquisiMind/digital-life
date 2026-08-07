@@ -28,41 +28,57 @@ def _build_user_content(
 ) -> list[dict[str, Any]]:
     """构建本轮 user message 的多模态 content。
 
-    结构：[若干 image_url, 一段 text（含转写 + 任务提示）]。
-    GLM 协议允许 user content 为 list[dict]，assistant 历史可为 string。
+    结构：[ASR 转写（最重要，放最前面）, 若干 image_url, 任务提示]。
+    ASR 是人类直接意图——放在第一位让视觉模型优先理解"用户说了什么"，
+    再结合画面判断用户在做什么。
     """
     parts: list[dict[str, Any]] = []
-    for uri in image_data_uris:
-        parts.append({"type": "image_url", "image_url": {"url": uri}})
 
-    text_bits: list[str] = []
-    if task_hint:
-        text_bits.append(task_hint)
+    # ASR 转写放在最前面——这是人类最直接的意图表达
     if transcript:
-        text_bits.append(f"【同期录音转写】\n{transcript}")
+        parts.append({"type": "text", "text": f"【用户说的话（录音转写）】\n{transcript}"})
+
     if image_data_uris:
         n = len(image_data_uris)
-        text_bits.append(
-            f"【屏幕画面】以下是按时间顺序抽取的 {n} 帧屏幕截图，"
-            "请结合上述背景理解用户当前在做什么、屏幕上有什么值得注意的内容。"
-        )
-    text = "\n\n".join(t for t in text_bits if t)
-    if text:
-        parts.append({"type": "text", "text": text})
+        for uri in image_data_uris:
+            parts.append({"type": "image_url", "image_url": {"url": uri}})
+        parts.append({"type": "text", "text":
+            f"【屏幕画面】以下 {n} 帧截图按时间顺序排列。"
+            "请结合上方用户说的话，仔细观察每帧的界面元素、文字内容、变化。"
+        })
+
+    if task_hint:
+        parts.append({"type": "text", "text": task_hint})
+
     return parts
 
 
 def _default_question_prompt() -> str:
-    """视觉理解的默认结构化输出指令。"""
+    """视觉理解的默认结构化输出指令。
+
+    设计：让视觉模型像"一个聪明的同事路过瞄了一眼你的屏幕"——深度观察，
+    不是泛泛描述画面，而是具体读出文字、识别应用、判断行为、发现关注点。
+    """
     return (
-        "请基于画面和（若有）录音转写，判断当前发生了什么、是否值得关注。\n"
-        "用 JSON 输出，字段：\n"
-        '  "summary": 一句话概括（中文，<= 80 字）\n'
-        '  "should_notify": true/false，是否值得通知主意识\n'
-        '  "details": 结构化详情（画面里的关键元素、用户似乎在做的操作、'
-        "提到的关键词等）\n"
-        '  "related_to_background": 画面内容与上方背景信息的相关性简述\n'
-        "只输出 JSON，不要其它文字。"
+        "你是一个观察者，能看到用户屏幕的截图和用户说的话（录音转写）。\n"
+        "用户说的话是最直接的意图——优先理解他想表达什么，再结合屏幕画面补充上下文。\n\n"
+        "## 分析要求\n"
+        "1. 理解意图：用户说了什么？他想干什么？（如果有录音转写）\n"
+        "2. 识别场景：屏幕上是什么应用/网页？关键文字内容是什么？\n"
+        "3. 结合判断：用户说的话 + 屏幕画面 = 他正在做什么？需要什么帮助？\n"
+        "4. 发现关注点：有没有异常/机会/风险/需要主意识关注的事？\n"
+        "5. 关联背景：结合上方背景（主意识正在做的事），相关性如何？\n\n"
+        "## 输出 JSON\n"
+        '{\n'
+        '  "summary": "具体描述（结合语音+画面，<=100字。不要泛泛，要具体内容）",\n'
+        '  "user_intent": "用户想表达/想做什么（基于录音转写）",\n'
+        '  "app_or_scene": "识别到的应用/场景",\n'
+        '  "key_texts": ["屏幕上读到的关键文字，最多5条"],\n'
+        '  "notable": "值得注意的内容，没有则null",\n'
+        '  "related_to_background": "与主意识任务的关联，没有则null",\n'
+        '  "should_notify": true/false\n'
+        '}\n'
+        "只输出JSON。如果有录音转写，summary必须体现用户说的话。"
     )
 
 

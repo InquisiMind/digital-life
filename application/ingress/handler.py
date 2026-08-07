@@ -201,6 +201,27 @@ async def handle_message(*, adapter: IngressAdapter, msg: NormalizedMessage) -> 
             return True
         text = stripped  # 用剩余正文继续走正常 emit（且 ContextVar 已标 force_new）
 
+    # /observe 指令：触发一次屏幕+麦克风感知（等效快捷键，但不依赖辅助功能权限）。
+    # 绕过 pynput 全局快捷键的 TCC 限制——飞书发 /observe 即可触发录制。
+    #   /observe        → 截图 + 录 5 秒音 → 视觉+ASR → 注入 perception_signal
+    #   /observe 10     → 录 10 秒（可选秒数，默认 5）
+    if text and text.lstrip().startswith("/observe"):
+        parts = text.lstrip().split()
+        seconds = 5
+        if len(parts) > 1:
+            try:
+                seconds = max(2, min(int(parts[1]), 30))
+            except ValueError:
+                pass
+        try:
+            await adapter.send(msg.chat_id, f"👁️ 观察中（{seconds}s）…", reply_to=msg.message_id)
+        except Exception:
+            pass
+        # 异步触发感知（不阻塞飞书 handler）
+        import asyncio
+        asyncio.create_task(_trigger_perception_capture(instance_id, seconds, msg.chat_id, adapter))
+        return True
+
     if text:
         prev_id = os.environ.get("DIGITAL_LIFE_INSTANCE_ID")
         os.environ["DIGITAL_LIFE_INSTANCE_ID"] = instance_id
@@ -244,6 +265,94 @@ async def handle_message(*, adapter: IngressAdapter, msg: NormalizedMessage) -> 
             if _force_new_token is not None:
                 reset_force_new_session(_force_new_token)
     return True
+
+
+async def _trigger_perception_capture(instance_id: str, seconds: int, chat_id: str, adapter) -> None:
+    """/observe 命令的异步执行：截图+录音 → pipeline → emit perception_signal。
+
+    截图用 mss（只需屏幕录制权限，已授权），录音用 sounddevice（需麦克风权限）。
+    不依赖 pynput/辅助功能——绕过全局快捷键的 TCC 限制。
+    """
+    import asyncio
+
+    def _capture_and_report():
+        import time
+        from pathlib import Path
+        from infrastructure.perception.config import load_config, media_dir
+        from infrastructure.perception.pipeline import run_pipeline
+
+        cfg = load_config(instance_id)
+        out_dir = media_dir(instance_id)
+        ts = int(time.time())
+        frames: list[str] = []
+        audio_path: str | None = None
+
+        # 截图（mss，不依赖辅助功能）
+        try:
+            import mss
+            import mss.tools
+            with mss.mss() as sct:
+                monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
+                # 按 fps 截几帧
+                n_frames = max(1, min(int(seconds * cfg.frame_fps), cfg.max_frames))
+                interval = seconds / n_frames if n_frames > 0 else 0.5
+                for i in range(n_frames):
+                    shot = sct.grab(monitor)
+                    p = out_dir / f"observe_{ts}_{i:03d}.png"
+                    mss.tools.to_png(shot.rgb, shot.size, output=str(p))
+                    frames.append(str(p))
+                    if i < n_frames - 1:
+                        time.sleep(interval)
+        except Exception as exc:
+            logger.warning("/observe screenshot failed: %s", exc)
+
+        # 录音（sounddevice）
+        try:
+            import wave
+            import sounddevice as sd
+            sr = 16000
+            audio_path = str(out_dir / f"observe_{ts}.wav")
+            data = sd.rec(int(seconds * sr), samplerate=sr, channels=1, dtype="int16")
+            sd.wait()
+            # 静音检测
+            import numpy as np
+            if int(np.abs(data).max()) < 100:
+                logger.info("/observe audio is silent, skipping ASR")
+                audio_path = None
+            else:
+                with wave.open(audio_path, "wb") as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(sr)
+                    wf.writeframes(data.tobytes())
+        except Exception as exc:
+            logger.warning("/observe audio capture failed: %s", exc)
+            audio_path = None
+
+        # 走 pipeline
+        result = run_pipeline(
+            instance_id=instance_id,
+            source="observe_command",
+            frame_image_paths=frames,
+            audio_path=audio_path,
+            media_path_for_record=frames[0] if frames else "",
+            config=cfg,
+        )
+        return result
+
+    try:
+        result = await asyncio.to_thread(_capture_and_report)
+        summary = result.summary or "（无内容）"
+        try:
+            await adapter.send(chat_id, f"👁️ 观察完成：{summary[:200]}")
+        except Exception:
+            pass
+    except Exception as exc:
+        logger.error("/observe failed: %s", exc)
+        try:
+            await adapter.send(chat_id, f"❌ 观察失败：{exc}")
+        except Exception:
+            pass
 
 
 def _build_orchestration_reply(text: str) -> str | None:

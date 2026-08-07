@@ -104,8 +104,11 @@ async def _run_perception(body: dict[str, Any], instance_id: str) -> web.Respons
             media_path=str(direct_result.get("media_path") or body.get("media_path") or ""),
         )
     else:
-        # 媒体路径模式 → 跑 pipeline
-        pr = run_pipeline(
+        # 媒体路径模式 → 跑 pipeline（用 to_thread 避免阻塞 master event loop）
+        import asyncio
+
+        pr = await asyncio.to_thread(
+            run_pipeline,
             instance_id=instance_id,
             source=source,
             frame_image_paths=body.get("frame_paths") or [],

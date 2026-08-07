@@ -711,23 +711,17 @@ event_types:
     debounce_window_s: 0
     merge_policy: latest
     consumption_policy: on_trigger
-    wake_prompt: '👁️ 感知到了一些东西（来源：{source}）。
+    wake_prompt: '👁️ 感知信号
 
 
-      {summary}
+      音频转写：{transcript}
 
 
-      这是由感知系统（独立视觉/音频模型）预处理后注入的理解，已经过压缩和结构化，
-
-      不是原始画面/声音。如需回看原始素材，调 sense_media(media_path="{media_path}")。
+      音视频理解：{summary}
 
 
-      【同期录音转写】
+      详情：{details}
 
-      {transcript}
-
-
-      （若上方转写为空，表示本次无音频或 ASR 未成功。）
 
       '
     allowed_tools:

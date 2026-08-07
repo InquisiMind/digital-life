@@ -142,14 +142,16 @@ def run_pipeline(
         parsed = vis.get("parsed") or {}
         if parsed:
             result.summary = parsed.get("summary", "") or vis.get("raw", "")
-            details = parsed.get("details") or {}
-            if isinstance(details, dict):
-                result.details = details
-            else:
-                result.details = {"raw_details": details}
+            # 收集结构化详情（新 prompt 的字段）
+            details: dict[str, Any] = {}
+            for k in ("user_intent", "app_or_scene", "key_texts", "notable"):
+                v = parsed.get(k)
+                if v is not None and v != "":
+                    details[k] = v
             if parsed.get("related_to_background"):
-                result.details["related_to_background"] = parsed["related_to_background"]
-            result.details["should_notify"] = parsed.get("should_notify", True)
+                details["related_to_background"] = parsed["related_to_background"]
+            details["should_notify"] = parsed.get("should_notify", True)
+            result.details = details
         else:
             # JSON 解析失败，用 raw 当 summary
             result.summary = (vis.get("raw") or "")[:200]

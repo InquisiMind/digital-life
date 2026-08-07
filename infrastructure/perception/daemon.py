@@ -66,10 +66,10 @@ def _play_sound(key: str) -> None:
 def _feedback(kind: str, *, message: str = "") -> None:
     """统一反馈入口。kind ∈ start/stop/done/fail。任一路失败静默。"""
     titles = {
-        "start": ("🔴 录制中", "开始录屏 + 录音"),
-        "stop": ("⏹ 已结束", message or "正在处理..."),
-        "done": ("✅ 已送达", message or "感知信号已注入"),
-        "fail": ("❌ 上报失败", message or "请查看日志"),
+        "start": ("感知 · 录制中", "开始录屏 + 录音"),
+        "stop": ("感知 · 已结束", message or "正在处理..."),
+        "done": ("感知 · 已送达", message or "感知信号已注入"),
+        "fail": ("感知 · 失败", message or "请查看日志"),
     }
     title, msg = titles.get(kind, (kind, message))
     _macos_notify(title, msg)
@@ -148,7 +148,6 @@ class _Recorder:
         idx = 0
         try:
             with mss.mss() as sct:
-                monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
                 while not self._stop_event.is_set():
                     if time.time() - self._start_ts > self.max_seconds:
                         logger.info("reached max_capture_seconds, auto-stop")
@@ -156,6 +155,10 @@ class _Recorder:
                             threading.Thread(target=self.on_auto_stop, daemon=True).start()
                         break
                     import mss.tools  # type: ignore
+                    # 截最前台窗口（而非整个屏幕，避免截到壁纸）
+                    monitor = _frontmost_window_bounds() or (
+                        sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
+                    )
                     shot = sct.grab(monitor)
                     p = self.out_dir / f"frame_{idx:04d}.png"
                     try:
@@ -314,37 +317,72 @@ class PerceptionDaemon:
             out_dir=media_dir(instance_id),
             on_auto_stop=lambda: self._finish_recording(auto=True),
         )
-        self._listener: Any = None  # pynput Listener
+        self._helper_proc: Any = None  # Swift hotkey helper subprocess
+        self._helper_reader: threading.Thread | None = None
         self._started_at = time.time()
 
+    def _helper_path(self) -> Path:
+        """Swift hotkey helper 的路径（scripts/hotkey_helper）。"""
+        return Path(__file__).resolve().parents[2] / "scripts" / "hotkey_helper"
+
     def start(self) -> None:
-        """启动快捷键监听。失败（缺 pynput / 权限）只 log，不抛。"""
-        try:
-            from pynput import keyboard  # type: ignore
-        except ImportError:
-            logger.warning("pynput 未安装，感知 daemon 无法监听快捷键（pip install pynput）")
-            return
+        """启动快捷键监听（用 Carbon Swift helper，不依赖辅助功能权限）。
+
+        helper 是一个编译好的 Swift 二进制，用 RegisterEventHotKey 注册全局热键。
+        它输出 READY（注册成功）/ TRIGGERED（热键按下）到 stdout。
+        daemon spawn 它并读 stdout。
+        """
         combo = self.config.hotkey
+        helper = self._helper_path()
+        if not helper.exists():
+            logger.warning("hotkey helper 不存在: %s（需要 swiftc 编译）", helper)
+            return
+
+        # 解析 hotkey: "cmd+shift+z" → key="z" mods="cmd+shift"
+        parts = combo.split("+")
+        key_part = parts[-1].strip()
+        mod_part = "+".join(p.strip() for p in parts[:-1]) or "cmd"
         try:
-            # pynput GlobalHotKeys 要求 modifier 用尖括号：<cmd>+<shift>+z
-            # 用户配置的是 cmd+shift+z（扁平格式），需转换
-            pynput_combo = _to_pynput_combo(combo)
-            self._listener = keyboard.GlobalHotKeys({pynput_combo: self._toggle})
-            self._listener.daemon = True
-            self._listener.start()
-            _write_state(self.instance_id, running=True, pid=_pid(),
-                         started_at=self._started_at, hotkey=combo)
-            logger.info("perception daemon started: instance=%s hotkey=%s (pynput=%s)",
-                        self.instance_id[:8], combo, pynput_combo)
+            import subprocess
+
+            self._helper_proc = subprocess.Popen(
+                [str(helper), key_part, mod_part],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, bufsize=1,
+            )
         except Exception as exc:
-            logger.warning("perception daemon listener failed: %s", exc)
+            logger.warning("hotkey helper 启动失败: %s", exc)
+            return
+
+        # 读 stdout 的线程：等 READY / TRIGGERED
+        def _read_loop():
+            assert self._helper_proc is not None
+            for line in self._helper_proc.stdout:
+                line = line.strip()
+                if line.startswith("READY"):
+                    logger.info("perception daemon ready: instance=%s hotkey=%s (Carbon)",
+                                self.instance_id[:8], combo)
+                elif line == "TRIGGERED":
+                    logger.info("hotkey TRIGGERED: instance=%s", self.instance_id[:8])
+                    self._toggle()
+
+        self._helper_reader = threading.Thread(target=_read_loop, daemon=True)
+        self._helper_reader.start()
+        _write_state(self.instance_id, running=True, pid=_pid(),
+                     started_at=self._started_at, hotkey=combo)
+        logger.info("perception daemon started: instance=%s hotkey=%s (Carbon helper)",
+                    self.instance_id[:8], combo)
 
     def stop(self) -> None:
-        if self._listener:
+        if self._helper_proc:
             try:
-                self._listener.stop()
+                self._helper_proc.terminate()
+                self._helper_proc.wait(timeout=3)
             except Exception:
-                pass
+                try:
+                    self._helper_proc.kill()
+                except Exception:
+                    pass
         # 录制中则强制结束
         if self._recorder.is_recording:
             self._finish_recording(auto=False)
@@ -352,6 +390,14 @@ class PerceptionDaemon:
         logger.info("perception daemon stopped: instance=%s", self.instance_id[:8])
 
     def _toggle(self) -> None:
+        # 防抖：Carbon RegisterEventHotKey 在按住/松开 modifier 时可能连续触发，
+        # 500ms 内的重复触发忽略（人类不可能 500ms 内按两次）。
+        now = time.time()
+        if hasattr(self, "_last_toggle_ts") and now - getattr(self, "_last_toggle_ts", 0) < 0.5:
+            logger.debug("toggle debounced (interval=%.2fs)", now - getattr(self, "_last_toggle_ts", 0))
+            return
+        self._last_toggle_ts = now
+
         if self._recorder.is_recording:
             self._finish_recording(auto=False)
         else:
@@ -409,6 +455,43 @@ def _is_silent(wav_path: str, *, threshold: int = 100) -> bool:
         return int(np.abs(data).max()) < threshold if len(data) else True
     except Exception:
         return False  # 检测失败不阻断（保守地认为非静音）
+
+
+def _frontmost_window_bounds() -> dict | None:
+    """获取最前台窗口的区域（left/top/width/height），供 mss.grab 用。
+
+    用 Quartz CGWindowList 找当前最前台 app 的窗口区域，
+    避免截到整个桌面（含壁纸）。失败返回 None（调用方 fallback 到全屏）。
+    """
+    try:
+        import Quartz
+
+        # 找最前台的 app
+        ws = Quartz.NSWorkspace.sharedWorkspace()
+        front_app = ws.frontmostApplication()
+        if not front_app:
+            return None
+        pid = front_app.processIdentifier()
+
+        # 查这个 PID 的窗口
+        window_list = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
+            Quartz.kCGNullWindowID,
+        )
+        for w in window_list:
+            if w.get("kCGWindowOwnerPID") == pid and w.get("kCGWindowBounds"):
+                b = w["kCGWindowBounds"]
+                bounds = {
+                    "left": int(b["X"]),
+                    "top": int(b["Y"]),
+                    "width": int(b["Width"]),
+                    "height": int(b["Height"]),
+                }
+                if bounds["width"] > 100 and bounds["height"] > 100:
+                    return bounds
+    except Exception as exc:
+        logger.debug("frontmost window bounds failed: %s", exc)
+    return None
 
 
 # ── 工厂（instance 启动时调用）────────────────────────────────────────────────

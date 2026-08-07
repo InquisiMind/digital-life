@@ -142,43 +142,32 @@ class _Recorder:
         interval = 1.0 / self.fps if self.fps > 0 else 1.0
         idx = 0
         try:
-            while not self._stop_event.is_set():
-                if time.time() - self._start_ts > self.max_seconds:
-                    logger.info("reached max_capture_seconds, auto-stop")
-                    if self.on_auto_stop:
-                        threading.Thread(target=self.on_auto_stop, daemon=True).start()
-                    break
-                import subprocess
-                import tempfile
-
-                # screencapture 截全屏 → 裁剪到主窗口区域（去掉壁纸）
-                with tempfile.NamedTemporaryFile(suffix=".png", delete=False, dir="/tmp") as tmp:
-                    tmp_full = tmp.name
-                subprocess.run(["screencapture", "-x", tmp_full],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
-
-                bounds = _frontmost_window_bounds()
-                p = self.out_dir / f"frame_{idx:04d}.png"
-                try:
-                    from PIL import Image
-
-                    im = Image.open(tmp_full)
-                    if bounds:
-                        im = im.crop((bounds["left"], bounds["top"],
-                                       bounds["left"] + bounds["width"],
-                                       bounds["top"] + bounds["height"]))
-                    im.save(str(p))
-                    self._frames.append(p)
-                    idx += 1
-                except Exception as exc:
-                    logger.debug("frame %d save failed: %s", idx, exc)
-                finally:
+            import mss  # type: ignore
+        except ImportError:
+            logger.warning("mss 未安装，跳过录屏（仅录音）")
+            return
+        try:
+            with mss.mss() as sct:
+                while not self._stop_event.is_set():
+                    if time.time() - self._start_ts > self.max_seconds:
+                        logger.info("reached max_capture_seconds, auto-stop")
+                        if self.on_auto_stop:
+                            threading.Thread(target=self.on_auto_stop, daemon=True).start()
+                        break
+                    import mss.tools  # type: ignore
+                    # 截前台窗口区域（避免壁纸）
+                    monitor = _frontmost_window_bounds() or (
+                        sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
+                    )
+                    shot = sct.grab(monitor)
+                    p = self.out_dir / f"frame_{idx:04d}.png"
                     try:
-                        import os as _os
-                        _os.unlink(tmp_full)
-                    except Exception:
-                        pass
-                self._stop_event.wait(interval)
+                        mss.tools.to_png(shot.rgb, shot.size, output=str(p))
+                        self._frames.append(p)
+                        idx += 1
+                    except Exception as exc:
+                        logger.debug("frame %d save failed: %s", idx, exc)
+                    self._stop_event.wait(interval)
         except Exception as exc:
             logger.warning("screen loop error: %s", exc)
 

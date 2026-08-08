@@ -24,21 +24,43 @@ DEFAULT_ENABLED = os.getenv("DIGITAL_LIFE_TTS", "0") == "1"
 def _clean_text_for_tts(text: str) -> str:
     """清理文本里的标记，让 TTS 读起来自然。
 
-    - 去掉 <at user_id="ou_xxx"></at> 标签 → 纯文本
+    - 去掉 <at user_id="ou_xxx"></at> 标签
     - 去掉 markdown 格式标记（**、#、`、| 等）
+    - 去掉 URL（http/https 开头的链接）
+    - 去掉文件路径（/Users/xxx 或 ~/xxx）
+    - 去掉代码块（``` 包裹的内容）
+    - 去掉 JSON/dict 格式（{...}）
+    - 去掉 markdown 表格（| xxx | yyy |）
     - 去掉过长空白
+    - 截断超长文本（TTS 不适合读长篇大论）
     """
     # 去 @ 标签
     text = re.sub(r"<at[^>]*>.*?</at>", "", text)
     text = re.sub(r"<at[^>]*/>", "", text)
-    # 去 markdown 粗体/代码/标题
-    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    # 去代码块
+    text = re.sub(r"```[\s\S]*?```", "（代码省略）", text)
+    # 去行内代码
     text = re.sub(r"`([^`]+)`", r"\1", text)
+    # 去 URL
+    text = re.sub(r"https?://\S+", "", text)
+    # 去文件路径
+    text = re.sub(r"[/~]\S+", "", text)
+    # 去 JSON/dict
+    text = re.sub(r"\{[^}]*\}", "", text)
+    # 去 markdown 表格行
+    text = re.sub(r"^\|.*\|$", "", text, flags=re.MULTILINE)
+    # 去 markdown 粗体/标题/列表
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
-    text = re.sub(r"\|", " ", text)  # 表格分隔符
-    # 去多余空白
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+    text = re.sub(r"^[-*]\s+", "", text, flags=re.MULTILINE)
+    # 去多余空白和空行
+    text = re.sub(r"\n{3,}", "\n", text)
+    text = re.sub(r"  +", " ", text)
+    text = text.strip()
+    # 截断（TTS 不适合读超过 200 字）
+    if len(text) > 200:
+        text = text[:200] + "。"
+    return text
 
 
 def speak(text: str, *, voice: str = DEFAULT_VOICE, rate: str = "+0%") -> bool:

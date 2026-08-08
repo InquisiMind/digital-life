@@ -3054,11 +3054,14 @@ def _send_voice_local(
     context: dict,
     mention_user_ids: list,
 ) -> str:
-    """语音输出通道：用 macOS TTS 本地播放文本。
+    """语音输出通道：用 edge-tts 本地播放文本。
 
-    不依赖飞书/微信 API，直接用 /usr/bin/say 播放。
+    不依赖飞书/微信 API，直接 TTS 播放。
     写 conversation_log（platform=voice）维护语音对话历史。
     返回和飞书/微信路径一致的 JSON 格式。
+
+    注意：语音通道适合简短口语化回复。URL、文件路径、代码等技术细节
+    应通过飞书等其他渠道发送——模型在收到 voice 通道时自行注意。
     """
     from interfaces.tools import registry
 
@@ -3117,6 +3120,8 @@ def _send_voice_local(
             pass
 
     note = "已通过语音播放。" if sent else f"语音播放失败（{err}）。"
+    if sent:
+        note += " 这是语音通道——用户在听你说，不是在读。URL、文件路径、代码等技术细节不适合语音，如需发送请另用飞书。"
     note += " 沉默是你的默认状态 — 没必要每件事都发言。"
 
     return _j({

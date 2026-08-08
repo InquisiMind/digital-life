@@ -98,6 +98,7 @@ class _Recorder:
         self._audio_thread: threading.Thread | None = None
         self._frames: list[Path] = []
         self._audio_path: Path | None = None
+        self._audio_proc: Any = None  # /usr/bin/python3 录音子进程
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
 
@@ -172,35 +173,103 @@ class _Recorder:
             logger.warning("screen loop error: %s", exc)
 
     def _audio_loop(self) -> None:
-        try:
-            import sounddevice as sd  # type: ignore
-        except ImportError:
-            logger.warning("sounddevice 未安装，跳过录音（仅录屏）")
-            return
-        sample_rate = 16000
+        """录音——通过 /usr/bin/python3 子进程（它有有效的麦克风 TCC 权限）。
+
+        miniconda python 没有 TCC 麦克风权限（hardened runtime 无 entitlement），
+        但 /usr/bin/python3（Apple 签名的 Xcode shim）在系统设置里有麦克风授权。
+        所以录音走 /usr/bin/python3 子进程，录完读 wav 文件。
+        """
         ts = int(time.time())
         audio_path = self.out_dir / f"audio_{ts}.wav"
-        max_frames = int(self.max_seconds * sample_rate)
+        max_seconds = self.max_seconds
+        sample_rate = 16000
+
+        # 内联录音脚本（用 /usr/bin/python3 跑）
+        record_script = f'''
+import wave, sys, time, threading
+sr = {sample_rate}
+secs = {max_seconds}
+path = r"{audio_path}"
+try:
+    import sounddevice as sd
+    import numpy as np
+    data = sd.rec(int(secs * sr), samplerate=sr, channels=1, dtype="int16")
+    # 等待停止信号（父进程写文件）或超时
+    import os
+    stop_file = path + ".stop"
+    for i in range(secs * 10):
+        if os.path.exists(stop_file):
+            os.unlink(stop_file)
+            break
+        time.sleep(0.1)
+    sd.stop()
+    with wave.open(path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(data[:sd.rec.__self__.channels if False else len(data)].tobytes() if len(data) > 0 else b"")
+    # 检查静音
+    mx = int(np.abs(data).max())
+    if mx < 100:
+        print("SILENT", file=sys.stderr)
+    else:
+        print(f"OK maxval={mx}", file=sys.stderr)
+except Exception as e:
+    print(f"ERROR: {{e}}", file=sys.stderr)
+'''
+
         try:
+            import subprocess
+            import tempfile
+
             self._audio_path = audio_path
             audio_path.parent.mkdir(parents=True, exist_ok=True)
-            wf = wave.open(str(audio_path), "wb")
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(sample_rate)
-            block = int(0.2 * sample_rate)
-            recorded = 0
-            stream = sd.InputStream(samplerate=sample_rate, channels=1, dtype="int16")
-            stream.start()
+
+            # 写脚本到临时文件
+            script_file = audio_path.parent / f"record_{ts}.py"
+            script_file.write_text(record_script, encoding="utf-8")
+
+            # 用 /usr/bin/python3 跑（有麦克风权限）
+            self._audio_proc = subprocess.Popen(
+                ["/usr/bin/python3", str(script_file)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+
+            # 等待停止信号
+            self._stop_event.wait()
+
+            # 通知子进程停止
+            stop_file = str(audio_path) + ".stop"
             try:
-                while not self._stop_event.is_set() and recorded < max_frames:
-                    chunk, _ = stream.read(block)
-                    wf.writeframes(chunk.tobytes())
-                    recorded += len(chunk)
-            finally:
-                stream.stop()
-                stream.close()
-                wf.close()
+                with open(stop_file, "w") as f:
+                    f.write("stop")
+            except Exception:
+                pass
+
+            # 等子进程结束
+            try:
+                self._audio_proc.wait(timeout=5)
+            except Exception:
+                self._audio_proc.kill()
+
+            # 清理
+            try:
+                script_file.unlink()
+            except Exception:
+                pass
+            import os as _os
+            try:
+                _os.unlink(stop_file)
+            except Exception:
+                pass
+
+            # 检查结果
+            if not audio_path.exists() or audio_path.stat().st_size < 1000:
+                logger.warning("audio recording failed or empty")
+                self._audio_path = None
+            else:
+                logger.info("audio recorded via /usr/bin/python3: %s", audio_path.name)
+
         except Exception as exc:
             logger.warning("audio loop error: %s", exc)
             self._audio_path = None

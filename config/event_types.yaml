@@ -717,9 +717,6 @@ event_types:
       你的听觉信号：{transcript}
 
 
-      你的视觉信号：{summary}
-
-
       这次来自语音呼唤，你可以直接用语音回复。
 
 

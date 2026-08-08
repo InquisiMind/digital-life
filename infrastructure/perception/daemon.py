@@ -445,23 +445,59 @@ class PerceptionDaemon:
             return
         cap = self._recorder.stop()
         _feedback("stop", message="已达最大时长，自动结束" if auto else "")
-        has_video = bool(cap.get("frames"))
         has_audio = bool(cap.get("audio"))
-        # 静音检测：录音文件存在但内容全 0（macOS 无麦克风权限时常见）→ 不送 ASR
+
+        # 静音检测
         if has_audio and _is_silent(cap["audio"]):
-            logger.warning(
-                "录制的音频是静音（全0），可能缺少麦克风权限——跳过 ASR，仅走视觉。"
-                "详见 docs/operations/perception-setup.md"
-            )
+            logger.warning("音频静音，跳过")
             cap["audio"] = None
             has_audio = False
-        src = "hotkey_both" if (has_video and has_audio) else ("hotkey_screen" if has_video else "hotkey_audio")
+
+        if not has_audio:
+            logger.warning("无音频，不触发事件")
+            return
+
+        # 纯音频模式：直接 ASR + emit 事件（不走 pipeline 视觉）
         threading.Thread(
-            target=_report_capture,
-            kwargs=dict(capture=cap, endpoint=self.endpoint,
-                        instance_id=self.instance_id, source=src),
+            target=self._asr_and_report,
+            args=(cap["audio"],),
             daemon=True,
         ).start()
+
+    def _asr_and_report(self, audio_path: str) -> None:
+        """快速路径：ASR 转写 → 直传事件到 endpoint（不跑 pipeline）。"""
+        import httpx
+
+        # ASR（短音频不分段，直接调一次）
+        transcript = ""
+        try:
+            from infrastructure.perception.config import load_config
+            from infrastructure.perception.asr import transcribe_file
+            cfg = load_config(self.instance_id)
+            out = transcribe_file(audio_path, config=cfg, segment_paths=None)
+            transcript = out.get("text", "")
+            logger.info("ASR: %s", transcript[:60])
+        except Exception as exc:
+            logger.warning("ASR failed: %s", exc)
+
+        # 直传结果到 endpoint（跳过 pipeline）
+        body = {
+            "instance_id": self.instance_id,
+            "source": "hotkey_audio",
+            "result": {
+                "summary": transcript or "（语音转写为空）",
+                "transcript": transcript,
+                "ok": bool(transcript),
+            },
+            "reply_channel": "voice",
+            "media_path": audio_path,
+        }
+        try:
+            with httpx.Client(timeout=30) as client:
+                r = client.post(self.endpoint, json=body)
+                logger.info("reported: %s %s", r.status_code, r.json().get("event_id"))
+        except Exception as exc:
+            logger.error("report failed: %s", exc)
 
 
 def _pid() -> int:

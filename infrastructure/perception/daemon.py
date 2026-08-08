@@ -224,12 +224,17 @@ except Exception as e:
 
             self._stop_event.wait()
 
-            # 直接 SIGTERM 停止（快，不轮询）
+            # 直接 SIGTERM 停止（os.kill 比 proc.terminate 更可靠）
             try:
-                self._audio_proc.terminate()
+                import os as _os
+                import signal as _sig
+                _os.kill(self._audio_proc.pid, _sig.SIGTERM)
                 self._audio_proc.wait(timeout=3)
             except Exception:
-                self._audio_proc.kill()
+                try:
+                    self._audio_proc.kill()
+                except Exception:
+                    pass
 
             if not audio_path.exists() or audio_path.stat().st_size < 1000:
                 logger.warning("audio recording failed or empty")
@@ -465,10 +470,7 @@ class PerceptionDaemon:
         ).start()
 
     def _asr_and_report(self, audio_path: str) -> None:
-        """快速路径：ASR 转写 → 直传事件到 endpoint（不跑 pipeline）。"""
-        import httpx
-
-        # ASR（短音频不分段，直接调一次）
+        """极简快速路径：ASR → 直接 emit_event（跳过 HTTP endpoint + pipeline）。"""
         transcript = ""
         try:
             from infrastructure.perception.config import load_config
@@ -476,28 +478,31 @@ class PerceptionDaemon:
             cfg = load_config(self.instance_id)
             out = transcribe_file(audio_path, config=cfg, segment_paths=None)
             transcript = out.get("text", "")
-            logger.info("ASR: %s", transcript[:60])
+            logger.info("ASR result: %s", transcript[:60])
         except Exception as exc:
             logger.warning("ASR failed: %s", exc)
 
-        # 直传结果到 endpoint（跳过 pipeline）
-        body = {
-            "instance_id": self.instance_id,
-            "source": "hotkey_audio",
-            "result": {
+        # 直接 emit_event（不走 HTTP endpoint，不走 pipeline）
+        try:
+            from domain.lifecycle.events import emit_event
+            from infrastructure.config import set_current_instance_id
+            from domain.lifecycle.events import set_instance_context
+
+            set_current_instance_id(self.instance_id)
+            set_instance_context(self.instance_id)
+
+            event_id = emit_event("perception_signal", {
+                "source": "hotkey_audio",
                 "summary": transcript or "（语音转写为空）",
                 "transcript": transcript,
+                "media_path": audio_path,
                 "ok": bool(transcript),
-            },
-            "reply_channel": "voice",
-            "media_path": audio_path,
-        }
-        try:
-            with httpx.Client(timeout=30) as client:
-                r = client.post(self.endpoint, json=body)
-                logger.info("reported: %s %s", r.status_code, r.json().get("event_id"))
+                "reply_channel": "voice",
+            })
+            logger.info("perception_signal emitted: event_id=%d transcript=%s",
+                        event_id, transcript[:40])
         except Exception as exc:
-            logger.error("report failed: %s", exc)
+            logger.error("emit failed: %s", exc)
 
 
 def _pid() -> int:

@@ -116,9 +116,9 @@ class _Recorder:
             self._audio_path = None
             self._stop_event.clear()
             logger.info("recording STARTED")
-            self._screen_thread = threading.Thread(target=self._screen_loop, daemon=True)
+            # 纯音频模式：不启动截图线程（省时间 + 不需要视觉）
+            self._screen_thread = None
             self._audio_thread = threading.Thread(target=self._audio_loop, daemon=True)
-            self._screen_thread.start()
             self._audio_thread.start()
 
     def stop(self) -> dict:
@@ -128,13 +128,12 @@ class _Recorder:
             self._recording = False
             self._stop_event.set()
             duration = time.time() - self._start_ts
-        if self._screen_thread:
-            self._screen_thread.join(timeout=5)
+        # 只 join 音频线程（不截图了，省 2-3 秒）
         if self._audio_thread:
-            self._audio_thread.join(timeout=5)
-        logger.info("recording STOPPED duration=%.1fs frames=%d", duration, len(self._frames))
+            self._audio_thread.join(timeout=8)
+        logger.info("recording STOPPED duration=%.1fs", duration)
         return {
-            "frames": [str(p) for p in self._frames],
+            "frames": [],
             "audio": str(self._audio_path) if self._audio_path else None,
             "duration": duration,
         }
@@ -231,10 +230,11 @@ class _Recorder:
                 import os as _os
                 import signal as _sig
                 _os.kill(self._audio_proc.pid, _sig.SIGTERM)
-                self._audio_proc.wait(timeout=3)
+                self._audio_proc.wait(timeout=8)
             except Exception:
                 try:
                     self._audio_proc.kill()
+                    self._audio_proc.wait(timeout=2)
                 except Exception:
                     pass
 

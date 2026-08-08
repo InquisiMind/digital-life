@@ -178,45 +178,47 @@ class _Recorder:
         audio_path = self.out_dir / f"audio_{ts}.wav"
         max_seconds = self.max_seconds
 
-        # 极简录音脚本（SIGTERM 停止，不轮询文件）
-        record_script = f'''import wave, sys, time, signal
-sr = 16000
-path = r"{audio_path}"
-recording = [True]
-def stop(s, f):
-    recording[0] = False
-signal.signal(signal.SIGTERM, stop)
-try:
-    import sounddevice as sd
-    import numpy as np
-    data = sd.rec(int({max_seconds} * sr), samplerate=sr, channels=1, dtype="int16")
-    while recording[0]:
-        time.sleep(0.05)
-    sd.stop()
-    actual = int(len(data) * 0.95)  # 近似实际录制量
-    data = data[:actual]
-    mx = int(np.abs(data).max())
-    if mx < 100:
-        print("SILENT", file=sys.stderr)
-    else:
-        with wave.open(path, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(sr)
-            wf.writeframes(data.tobytes())
-        print(f"OK maxval={{mx}}", file=sys.stderr)
-except Exception as e:
-    print(f"ERROR: {{e}}", file=sys.stderr)
-'''
+        # 录音脚本写到文件（不用 f-string 避免缩进/转义问题）
+        script_file = audio_path.parent / f"record_{ts}.py"
+        script_file.parent.mkdir(parents=True, exist_ok=True)
+        script_file.write_text(
+            "import wave, sys, time, signal\n"
+            "import sounddevice as sd\n"
+            "import numpy as np\n"
+            "sr = 16000\n"
+            f'path = r"{audio_path}"\n'
+            f"max_secs = {max_seconds}\n"
+            "recording = [True]\n"
+            "start_t = time.time()\n"
+            "def on_stop(sig, frame):\n"
+            "    recording[0] = False\n"
+            "signal.signal(signal.SIGTERM, on_stop)\n"
+            "data = sd.rec(int(max_secs * sr), samplerate=sr, channels=1, dtype='int16')\n"
+            "while recording[0]:\n"
+            "    time.sleep(0.05)\n"
+            "sd.stop()\n"
+            "elapsed = time.time() - start_t\n"
+            "actual = int(elapsed * sr)\n"
+            "if actual > len(data): actual = len(data)\n"
+            "if actual < sr: actual = sr\n"
+            "data = data[:actual]\n"
+            "mx = int(np.abs(data).max())\n"
+            "if mx < 100:\n"
+            "    print('SILENT', file=sys.stderr)\n"
+            "else:\n"
+            "    with wave.open(path, 'wb') as wf:\n"
+            "        wf.setnchannels(1)\n"
+            "        wf.setsampwidth(2)\n"
+            "        wf.setframerate(sr)\n"
+            "        wf.writeframes(data.tobytes())\n"
+            "    print(f'OK maxval={mx}', file=sys.stderr)\n",
+            encoding="utf-8",
+        )
 
         try:
             import subprocess
 
             self._audio_path = audio_path
-            audio_path.parent.mkdir(parents=True, exist_ok=True)
-            script_file = audio_path.parent / f"record_{ts}.py"
-            script_file.write_text(record_script, encoding="utf-8")
-
             self._audio_proc = subprocess.Popen(
                 ["/usr/bin/python3", str(script_file)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -224,7 +226,7 @@ except Exception as e:
 
             self._stop_event.wait()
 
-            # 直接 SIGTERM 停止（os.kill 比 proc.terminate 更可靠）
+            # SIGTERM 停止
             try:
                 import os as _os
                 import signal as _sig
@@ -235,6 +237,15 @@ except Exception as e:
                     self._audio_proc.kill()
                 except Exception:
                     pass
+
+            # 读 stderr 看 ASR 结果
+            stderr = self._audio_proc.stderr.read().decode() if self._audio_proc.stderr else ""
+            logger.info("audio proc stderr: %s", stderr.strip()[-100:])
+
+            try:
+                script_file.unlink()
+            except Exception:
+                pass
 
             if not audio_path.exists() or audio_path.stat().st_size < 1000:
                 logger.warning("audio recording failed or empty")

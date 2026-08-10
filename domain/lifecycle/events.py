@@ -522,6 +522,30 @@ def _inject_to_running_session(event_id: int, instance_id: str) -> None:
             )
         except Exception as exc:
             logger.debug("signal_new_events failed: %s", exc)
+
+        # 语音呼唤注入 RUNNING session 时，也要把 event_platform 切到 voice，
+        # 否则 express_to_human 默认走飞书（用户的语音会被飞书文字回复）。
+        # wake 启动路径在 scheduler._wake_digital_life_inner 里检测 reply_channel，
+        # 但 inject 不走那条路——这里补上。
+        #
+        # 注意：必须同时写 ContextVar + 全局 _REPLY_CONTEXT mirror。
+        # ContextVar 跨线程不可见（inject 在 emit 线程，LLM tool call 在 agent 线程），
+        # 只有全局 dict 能跨线程传递。
+        if payload.get("reply_channel") == "voice":
+            try:
+                from domain.lifecycle.runtime_context import set_current_event_platform
+                set_current_event_platform("voice")
+            except Exception:
+                pass
+            try:
+                # 全局 mirror（跨线程可见，action_tools._get_runtime_channel_prefix 的 fallback）
+                from interfaces.tools.action_tools import _REPLY_CONTEXT
+                from infrastructure.config import get_app_instance_id
+                _iid = get_app_instance_id() or instance_id
+                _REPLY_CONTEXT.setdefault(_iid, {})["platform"] = "voice"
+                logger.info("mid-session inject: event_platform=voice (reply_channel=voice, event %d)", eid)
+            except Exception as exc:
+                logger.debug("set event_platform=voice on inject failed: %s", exc)
     except Exception as exc:
         logger.warning("mid-session inject failed for event %d: %s", event_id, exc)
 

@@ -218,7 +218,6 @@ async def handle_message(*, adapter: IngressAdapter, msg: NormalizedMessage) -> 
         except Exception:
             pass
         # 异步触发感知（不阻塞飞书 handler）
-        import asyncio
         asyncio.create_task(_trigger_perception_capture(instance_id, seconds, msg.chat_id, adapter))
         return True
 

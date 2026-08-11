@@ -153,6 +153,11 @@ class VADSegmenter:
         self._sess = ort.InferenceSession(mp, providers=["CPUExecutionProvider"])
         self._state = np.zeros((2, 1, 128), dtype=np.float32)
         self._sr_arr = np.array(sample_rate, dtype=np.int64)
+        # Silero VAD 要求在每帧前拼 64 样本的"上下文"（上一帧的最后 64 样本）。
+        # 官方 Python API 的 __call__ 里做了 x = cat([context, x])。
+        # 没这个 context padding，模型输出恒为 ~0.0005（全判静音）。
+        self._context_size = 64  # 16kHz 时的 context 大小
+        self._context = np.zeros((1, self._context_size), dtype=np.float32)
 
         # 状态机
         self._in_speech = False
@@ -186,16 +191,20 @@ class VADSegmenter:
 
     def _process_block(self, block: np.float32) -> None:
         """判定一帧（512 样本）并更新状态机。"""
+        # 官方 API 的关键预处理：在 512 样本前拼 64 样本的上下文 → 576 样本输入
+        x = np.concatenate([self._context, block.reshape(1, -1)], axis=1).astype(np.float32)
         out = self._sess.run(
             ["output", "stateN"],
             {
-                "input": block.reshape(1, -1).astype(np.float32),
+                "input": x,
                 "state": self._state,
                 "sr": self._sr_arr,
             },
         )
         prob = float(out[0][0].flatten()[0])
         self._state = out[1]  # 状态传递给下一帧（关键：VAD 是有状态的）
+        # 更新 context（当前帧的最后 64 样本）
+        self._context = block.reshape(1, -1)[:, -self._context_size:].astype(np.float32)
 
         is_speech = prob >= self.threshold
         # 保存原始 int16（用于落盘），从 float 还原（避免精度问题，块都来自 int16 源）

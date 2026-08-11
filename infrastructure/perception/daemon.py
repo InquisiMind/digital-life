@@ -493,6 +493,12 @@ class PerceptionDaemon:
         except Exception as exc:
             logger.warning("ASR failed: %s", exc)
 
+        # 转写为空或纯噪声（# 等单符号）→ 不 emit，避免无意义唤醒 + session 混乱
+        clean = (transcript or "").strip()
+        if not clean or (len(clean) <= 2 and not any(c.isalpha() or c.isdigit() for c in clean)):
+            logger.info("ASR result too short/noise (%r), skip emit", transcript)
+            return
+
         # 直接 emit_event（不走 HTTP endpoint，不走 pipeline）
         try:
             from domain.lifecycle.events import emit_event

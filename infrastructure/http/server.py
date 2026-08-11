@@ -922,6 +922,13 @@ async def run_master_gateway() -> None:
     except Exception as exc:
         logger.warning("Perception routes failed (non-fatal): %s", exc)
 
+    # 语音感知控制 endpoint:实例 voice_focus 工具 / 外部按键 → 控制 AudioSenseService 状态
+    try:
+        from application.api.voice_sense_routes import add_voice_sense_routes
+        add_voice_sense_routes(app)
+    except Exception as exc:
+        logger.warning("Voice sense routes failed (non-fatal): %s", exc)
+
     # 微信消息接收 endpoint: itchat daemon → digital-life
     try:
         from application.api.wechat_ingest_routes import add_wechat_ingest_routes
@@ -950,6 +957,21 @@ async def run_master_gateway() -> None:
     supervisor = InstanceSupervisor()
     app["supervisor"] = supervisor  # 暴露给 HTTP routes，用于 toggle active 时联动 spawn/stop
     await supervisor.start()
+
+    # 启动 AudioSenseService（持续语音感知，master 级，可选）
+    # 读 config/voice_sense.yaml，enabled=false 时跳过
+    voice_sense_svc = None
+    try:
+        from infrastructure.perception.audio_sense.service import (
+            AudioSenseService, load_voice_sense_config,
+        )
+        from application.api.voice_sense_routes import set_voice_sense_service
+        vs_cfg = load_voice_sense_config()
+        voice_sense_svc = AudioSenseService(vs_cfg)
+        voice_sense_svc.start()
+        set_voice_sense_service(voice_sense_svc)
+    except Exception as exc:
+        logger.warning("AudioSenseService failed to start (non-fatal): %s", exc)
 
     # restart 物理触发：POST /api/system/gateway/restart 写 var/run/.restart_requested，
     # 本 watcher 检测到后 spawn 一个独立的 `digital-life restart` 进程完成
@@ -1027,6 +1049,11 @@ async def run_master_gateway() -> None:
     await stop_event.wait()
     logger.info("Master shutting down...")
 
+    if voice_sense_svc:
+        try:
+            voice_sense_svc.stop()
+        except Exception:
+            pass
     await supervisor.stop()
     await runner.cleanup()
     logger.info("Master stopped")

@@ -182,6 +182,8 @@ class AudioSenseService:
         self._vad = VADSegmenter(
             on_segment=self._on_vad_segment,
             on_speech_start=self._on_speech_start,
+            silence_frames=32,  # ~1s 静默才切段（默认 16=0.5s 太短，说话中途停顿就切了）
+            min_speech_frames=3,
         )
 
         # ── 关键词 map（实例路由用）──
@@ -210,12 +212,6 @@ class AudioSenseService:
     # ── PCM 块回调（capture 读循环线程）──────────────────────────────────
     def _on_chunk(self, pcm: np.ndarray) -> None:
         """收到一块 PCM(~100ms), feed VAD and KWS."""
-        self._dbg = getattr(self, '_dbg', 0) + 1
-        if self._dbg % 100 == 0:
-            import numpy as _np
-            logger.info("on_chunk: c=%d max=%d dtype=%s shape=%s",
-                        self._dbg, int(_np.abs(pcm).max()), pcm.dtype, pcm.shape)
-
         # 喂 VAD（L1-L3：能量→语音→端点）
         if self._vad:
             self._vad.feed(pcm)

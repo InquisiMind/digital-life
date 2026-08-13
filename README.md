@@ -2,6 +2,8 @@
 
 [English](README.en.md) | 中文
 
+> ⚠️ **平台 & 模型适配**：本项目当前在 **macOS + GLM-5.2（智谱）** 上开发验证。其他操作系统（Linux / Windows）和 LLM 模型理论上可运行，但需要自行适配——主要改 `infrastructure/ai/` 的模型调用层和 `interfaces/ingress/` 的通道适配器。语音感知（持续监听 / VAD / 唤醒词 / TTS）依赖 macOS 专有 API（Carbon 快捷键 / TCC 权限 / edge-tts），切换平台需额外替换。
+
 Digital Life 不是一个聊天机器人，也不是一个 coding agent，而是一个**让 LLM 像生命一样持续存在的运行时框架**。它有作息、有记忆代谢、有自主决策，能跨天、跨会话、跨场景地维持"昨天的我跟今天的我是同一个"。
 
 ---
@@ -382,6 +384,16 @@ digital-life start
 ### 4. 进阶
 
 项目 / 待办 / 事件 / 多 Agent 协作等，见 [如何玩转数字生命](docs/showcase/how-to-play.zh.md)。
+
+### 5. 语音感知（macOS，实验性）
+
+数字生命支持语音交互——快捷键单次问答（`cmd+shift+r`）或持续对话（唤醒词 + VAD 自动分段 + TTS 回复）。一键安装：
+
+```bash
+bash scripts/setup_perception.sh
+```
+
+详见 [感知系统配置指南](docs/operations/perception-setup.md)。
 
 ---
 

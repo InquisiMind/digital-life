@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>DigitalLife</string>
+    <key>CFBundleDisplayName</key>
+    <string>Digital Life</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.digital-life.agent</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleExecutable</key>
+    <string>DigitalLife</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.14</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Digital Life 感知系统需要麦克风权限来录制音频，用于语音转写后注入给数字生命。</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Digital Life 感知系统需要屏幕录制权限来截取屏幕画面，供视觉模型理解。</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Digital Life 需要发送 Apple 事件来触发系统功能。</string>
+</dict>
+</plist>

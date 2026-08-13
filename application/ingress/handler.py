@@ -178,6 +178,49 @@ async def handle_message(*, adapter: IngressAdapter, msg: NormalizedMessage) -> 
         await adapter.send(msg.chat_id, orchestration_reply, reply_to=msg.message_id)
         return True
 
+    # /new 指令：强制下次唤醒开新 session（不接续 15min 内的旧 session，省 token）。
+    #   /new（单独）→ 纯切 session，回复确认，不 emit 不 wake
+    #   /new <正文> → 剥离前缀，用正文开新 session 唤醒
+    # RUNNING 时延后生效：正文注入当前会话，下次唤醒才开新（不打断当前 wake）。
+    _force_new_token = None
+    if text and text.lstrip().startswith("/new"):
+        stripped = text.lstrip()[4:].strip()  # len("/new") == 4
+        from domain.lifecycle.scheduler import set_force_new_session, reset_force_new_session
+        _force_new_token = set_force_new_session(True)
+        if not stripped:
+            # 纯切 session：不 emit、不 wake，直接回复确认
+            try:
+                await adapter.send(
+                    msg.chat_id,
+                    "✂️ 下次唤醒将开新会话（不接续历史）。",
+                    reply_to=msg.message_id,
+                )
+            except Exception:
+                pass
+            reset_force_new_session(_force_new_token)
+            return True
+        text = stripped  # 用剩余正文继续走正常 emit（且 ContextVar 已标 force_new）
+
+    # /observe 指令：触发一次屏幕+麦克风感知（等效快捷键，但不依赖辅助功能权限）。
+    # 绕过 pynput 全局快捷键的 TCC 限制——飞书发 /observe 即可触发录制。
+    #   /observe        → 截图 + 录 5 秒音 → 视觉+ASR → 注入 perception_signal
+    #   /observe 10     → 录 10 秒（可选秒数，默认 5）
+    if text and text.lstrip().startswith("/observe"):
+        parts = text.lstrip().split()
+        seconds = 5
+        if len(parts) > 1:
+            try:
+                seconds = max(2, min(int(parts[1]), 30))
+            except ValueError:
+                pass
+        try:
+            await adapter.send(msg.chat_id, f"👁️ 看看这个（{seconds}s）…", reply_to=msg.message_id)
+        except Exception:
+            pass
+        # 异步触发感知（不阻塞飞书 handler）
+        asyncio.create_task(_trigger_perception_capture(instance_id, seconds, msg.chat_id, adapter))
+        return True
+
     if text:
         prev_id = os.environ.get("DIGITAL_LIFE_INSTANCE_ID")
         os.environ["DIGITAL_LIFE_INSTANCE_ID"] = instance_id
@@ -218,7 +261,95 @@ async def handle_message(*, adapter: IngressAdapter, msg: NormalizedMessage) -> 
             reset_instance_context(ctx_token)
             if prev_id:
                 os.environ["DIGITAL_LIFE_INSTANCE_ID"] = prev_id
+            if _force_new_token is not None:
+                reset_force_new_session(_force_new_token)
     return True
+
+
+async def _trigger_perception_capture(instance_id: str, seconds: int, chat_id: str, adapter) -> None:
+    """/observe 命令的异步执行：截图+录音 → pipeline → emit perception_signal。
+
+    截图用 mss（只需屏幕录制权限，已授权），录音用 sounddevice（需麦克风权限）。
+    不依赖 pynput/辅助功能——绕过全局快捷键的 TCC 限制。
+    """
+    import asyncio
+
+    def _capture_and_report():
+        import time
+        from pathlib import Path
+        from infrastructure.perception.config import load_config, media_dir
+        from infrastructure.perception.pipeline import run_pipeline
+
+        cfg = load_config(instance_id)
+        out_dir = media_dir(instance_id)
+        ts = int(time.time())
+        frames: list[str] = []
+        audio_path: str | None = None
+
+        # 截图（用 screencapture 命令，不需要屏幕录制 TCC 权限）
+        try:
+            import subprocess
+
+            n_frames = max(1, min(int(seconds * cfg.frame_fps), cfg.max_frames))
+            interval = seconds / n_frames if n_frames > 0 else 0.5
+            for i in range(n_frames):
+                p = out_dir / f"observe_{ts}_{i:03d}.png"
+                subprocess.run(["screencapture", "-x", str(p)],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                if p.exists():
+                    frames.append(str(p))
+                if i < n_frames - 1:
+                    time.sleep(interval)
+        except Exception as exc:
+            logger.warning("/observe screenshot failed: %s", exc)
+
+        # 录音（sounddevice）
+        try:
+            import wave
+            import sounddevice as sd
+            sr = 16000
+            audio_path = str(out_dir / f"observe_{ts}.wav")
+            data = sd.rec(int(seconds * sr), samplerate=sr, channels=1, dtype="int16")
+            sd.wait()
+            # 静音检测
+            import numpy as np
+            if int(np.abs(data).max()) < 100:
+                logger.info("/observe audio is silent, skipping ASR")
+                audio_path = None
+            else:
+                with wave.open(audio_path, "wb") as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(sr)
+                    wf.writeframes(data.tobytes())
+        except Exception as exc:
+            logger.warning("/observe audio capture failed: %s", exc)
+            audio_path = None
+
+        # 走 pipeline
+        result = run_pipeline(
+            instance_id=instance_id,
+            source="observe_command",
+            frame_image_paths=frames,
+            audio_path=audio_path,
+            media_path_for_record=frames[0] if frames else "",
+            config=cfg,
+        )
+        return result
+
+    try:
+        result = await asyncio.to_thread(_capture_and_report)
+        summary = result.summary or "（无内容）"
+        try:
+            await adapter.send(chat_id, f"👁️ 已看到：{summary[:200]}")
+        except Exception:
+            pass
+    except Exception as exc:
+        logger.error("/observe failed: %s", exc)
+        try:
+            await adapter.send(chat_id, f"❌ 观察失败：{exc}")
+        except Exception:
+            pass
 
 
 def _build_orchestration_reply(text: str) -> str | None:

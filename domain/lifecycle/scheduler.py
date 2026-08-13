@@ -14,6 +14,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+import contextvars
 from contextvars import copy_context
 from typing import Any
 
@@ -52,6 +53,26 @@ WAKE_ZOMBIE_SECONDS = float(os.environ.get("DIGITAL_LIFE_WAKE_ZOMBIE_SECONDS", "
 # 上轮结束 <15min 内的下一次唤醒复用同一 session（接上对话，而非新建）。
 _last_session_end: dict[str, dict] = {}  # instance_id → {"session_id": str, "at": datetime}
 CONTINUATION_WINDOW_S = 15 * 60
+
+# 强制不接续标志（/new 指令）。handler 检测到 /new 时 set True，
+# _check_continuation 读到即 return None（开新 session）。
+# 用 ContextVar 而非形参透传：asyncio.to_thread 自动 copy context，
+# _bg_wake 的 threading.Thread 需显式捕获并 set（见 events.py）。
+_force_new_session_var: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "force_new_session", default=False,
+)
+
+
+def set_force_new_session(value: bool = True) -> "contextvars.Token[bool]":
+    """标记本次唤醒链路应开新 session（不接续 15min 内的旧 session）。
+
+    返回 Token，调用方在 finally 里 ``reset_force_new_session(token)`` 恢复。
+    """
+    return _force_new_session_var.set(value)
+
+
+def reset_force_new_session(token: "contextvars.Token[bool]") -> None:
+    _force_new_session_var.reset(token)
 
 # 接续时 prev_history 的时间折叠阈值：同 session 的历史 segment（= 历史 wake）
 # 若其最后一条消息距「本次 wake 开始」超过此 gap，原文折叠为摘要后回灌，
@@ -129,7 +150,13 @@ def _check_continuation(instance_id: str):
     """上轮 session 结束 <15min → 返回可复用的 session_id，否则 None。
 
     先查内存 _last_session_end，丢失时（进程重启）回退到 DB 查询 sessions 表。
+
+    若 ContextVar ``_force_new_session_var`` 为 True（用户发了 /new），
+    直接返回 None——强制开新 session，不接续（省 token）。
     """
+    if _force_new_session_var.get():
+        logger.debug("continuation skipped: force_new_session set (instance=%s)", instance_id[:8])
+        return None
     from domain.lifecycle.clock import now_dt
     prev = _last_session_end.get(instance_id or "")
     if prev:
@@ -796,11 +823,27 @@ def _wake_digital_life_inner_safe(
             if _wake_chat_id:
                 break
     _chat_token = None
+    _platform_token = None
     try:
         from domain.lifecycle.runtime_context import set_current_event_chat_id, reset_current_event_chat_id
         _chat_token = set_current_event_chat_id(_wake_chat_id)
     except Exception:
         pass
+
+    # 检测 reply_channel：快捷键来源的 perception_signal 带 reply_channel=voice，
+    # 表示回复应走本地 TTS（而非飞书）。设 event_platform=voice 让 express_to_human
+    # 默认 channel 路由到 voice:speaker。
+    if pending_events:
+        for ev in pending_events:
+            _payload = ev.get("payload") or {}
+            _rc = _payload.get("reply_channel") or ""
+            if _rc == "voice":
+                try:
+                    from domain.lifecycle.runtime_context import set_current_event_platform
+                    _platform_token = set_current_event_platform("voice")
+                except Exception:
+                    pass
+                break
 
     # 启动 AIAgent
     summary = {
@@ -1384,6 +1427,12 @@ def _wake_digital_life_inner_safe(
             try:
                 from domain.lifecycle.runtime_context import reset_current_event_chat_id
                 reset_current_event_chat_id(_chat_token)
+            except Exception:
+                pass
+        if _platform_token is not None:
+            try:
+                from domain.lifecycle.runtime_context import reset_current_event_platform
+                reset_current_event_platform(_platform_token)
             except Exception:
                 pass
         try:

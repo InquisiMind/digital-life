@@ -695,3 +695,47 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: true
       include_vector_recall: true
+  perception_signal:
+    display_name: 人类呼唤
+    trigger_type: external
+    trigger_description: 人类按快捷键录屏录音（或发 /observe）后，视觉/ASR 理解完注入——"看看这个"
+    priority: 10
+    payload_schema:
+      source: string
+      summary: string
+      details: object?
+      transcript: string?
+      media_path: string?
+      ok: boolean?
+    description: 人类主动呼唤数字生命看一眼当前屏幕——"看看这个"，附带视觉+语音理解
+    debounce_window_s: 0
+    merge_policy: latest
+    consumption_policy: on_trigger
+    wake_prompt: '👁️ 人类在呼唤你
+
+
+      你的听觉信号：{transcript}
+
+
+      '
+    allowed_tools:
+    - express_to_human
+    - sense_image
+    - sense_media
+    - sense_status
+    - record_thought
+    - write_file
+    - todo
+    - rest
+    context_policy:
+      include_history: true
+      max_turns: 12
+      include_rules: true
+      include_daily: false
+      include_consciousness: true
+      include_session_digests: true
+      include_entity_recall: true
+      include_self_review: false
+      include_proactive_policy: false
+      include_recent_sent: true
+      include_vector_recall: false

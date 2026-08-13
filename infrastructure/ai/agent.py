@@ -750,9 +750,13 @@ class AIAgent:
         # unreachable
 
     def _trip_circuit_breaker(self, response: "httpx.Response") -> None:
-        """收到 429 时触发账号级熔断（按 api_key 分区，跨实例共享）。
+        """收到 429 时触发账号级熔断（按 api_key 分区，跨进程共享）。
 
-        从 429 响应头读 Retry-After 并按 resolve_retry_after 解析出熔断时长，
+        综合 Retry-After 头 + 响应体 ``error.code`` 决定熔断时长：
+          - 余额不足/套餐失效（code 1113/1314/1311）→ 拉到 MAX（等也没用，
+            充值前重试必败，长熔断避免反复刷 expires_at）。
+          - 限流（code 1302/1305/...）→ 沿用 Retry-After 头。
+          - 未知 code → 保守沿用 Retry-After / 默认窗口。
         写入共享 circuit_breaker.db（WAL，跨进程可见）。同 key 的其它实例
         下次在 cron / _wake_or_inject / _chat 入口读到熔断即停止打 API。
 
@@ -760,12 +764,25 @@ class AIAgent:
         正常的 429 重试链改成抛异常（同 _record_token_usage 的 swallow 策略）。
         """
         try:
-            from infrastructure.budget.circuit_breaker import trip, resolve_retry_after
+            from infrastructure.budget.circuit_breaker import (
+                trip, resolve_retry_after_for_429,
+            )
             ra = response.headers.get("Retry-After") or response.headers.get("retry-after")
+            # 解析 body 的 error.code 做硬/软故障分类（429 状态码本身无法区分）
+            body: Any = None
+            try:
+                body = response.json()
+            except Exception:
+                body = response.text or None
+            retry_after_sec, reason = resolve_retry_after_for_429(
+                retry_after_header=ra,
+                response_body=body,
+            )
             trip(
                 self.api_key or "",
-                retry_after_sec=resolve_retry_after(ra),
+                retry_after_sec=retry_after_sec,
                 instance_id=self.instance_id or "",
+                reason=reason,
             )
         except Exception as exc:
             logger.debug("circuit breaker trip failed: %s", exc)
@@ -921,6 +938,7 @@ class AIAgent:
             "interfaces.tools.skills_tool",
             "interfaces.tools.capability_tools",
             "interfaces.tools.vision_tool",
+            "interfaces.tools.perception_tools",
             "interfaces.tools.memory_cognition_tools",
             "domain.todos.tools",
             "domain.project.tools",
@@ -1869,7 +1887,7 @@ class AIAgent:
 
         for ev in new_events:
             kind = ev.get("kind", "")
-            if kind in ("message", "group_message"):
+            if kind in _AUTO_CONSUME_SIGNAL_KINDS:
                 auto_consume_events.append(ev)
                 consumed_normal = True
             else:
@@ -2237,6 +2255,18 @@ class AIAgent:
         return out
 
 
+# mid-session 注入时"展示全文 + 自动消费"的事件类型。
+# 这些 kind 的事件已经是给模型看的成品内容（消息正文 / 感知系统预处理后的
+# 结构化理解），应当直接渲染进 wake_signal 并标记已读——不需要模型再调
+# sense_event_detail 二次查询。其它 kind（routine/timer/...）保持 manual，
+# 只显示 ID+类型，由模型按需查详情。
+_AUTO_CONSUME_SIGNAL_KINDS: frozenset[str] = frozenset({
+    "message",
+    "group_message",
+    "perception_signal",  # feature 003：感知信号已是结构化理解，直接展示
+})
+
+
 def _render_signal_message(ev: dict[str, Any]) -> str:
     """渲染 mid-session 注入的消息事件为 wake_signal 提示文本（模块级 helper，便于测试）。
 
@@ -2253,7 +2283,7 @@ def _render_signal_message(ev: dict[str, Any]) -> str:
 
     # 1. 走 yaml 模板（同源 wake_prompt）
     rendered_body = ""
-    if kind in ("message", "group_message"):
+    if kind in _AUTO_CONSUME_SIGNAL_KINDS:
         try:
             from domain.lifecycle.heartbeat import _resolve_event_prompt
             rendered_body = _resolve_event_prompt(kind, [ev]).strip()

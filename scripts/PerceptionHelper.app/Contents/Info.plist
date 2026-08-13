@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>PerceptionHelper</string>
+    <key>CFBundleDisplayName</key>
+    <string>Digital Life Perception</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.digital-life.perception-helper</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleExecutable</key>
+    <string>perception_helper</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Digital Life 感知系统需要麦克风来录制音频。</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Digital Life 感知系统需要屏幕录制来截取画面。</string>
+</dict>
+</plist>

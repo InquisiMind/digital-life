@@ -33,6 +33,13 @@ capabilities = [
     "pillow>=10.0",
     "pyttsx3>=2.90",
     "SpeechRecognition>=3.10",
+    # 感知/语音：快捷键触发录屏录音 + 视觉理解 + ASR 转写
+    "sounddevice>=0.4",      # 麦克风采集（/usr/bin/python3 子进程，Apple 签名 + TCC 麦克风授权）
+    "edge-tts>=6.1",         # 神经 TTS（云端，云希男声）
+    # 实时语音会话 VAD：silero-vad 自带 ONNX 模型（data/silero_vad.onnx），
+    # 我们直接用 onnxruntime 加载，避免拉 torch（沙箱无网/体积大）。
+    "onnxruntime>=1.17",
+    "silero-vad>=5.1",       # 仅取其打包的 ONNX 权重；运行时不 import 该包（它顶层 import torch）
 ]
 dev = [
     "pytest>=8.0",

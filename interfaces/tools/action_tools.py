@@ -548,27 +548,31 @@ def _handle_express_to_human(args: Dict[str, Any], **context) -> str:
     # 通道兜底（仅限 wake 入口显式设置的 reply context；不再从 contacts 表「猜」群）。
     # 设计原则：目标通道必须明确。reply context 是 wake 根据 reason 正确 set 的上下文，
     # 属合法兜底；contacts 表自动挑一个群属于无依据猜测（曾导致发错通道），已移除。
-    _default_markers = ("lark:default", "feishu:default", "wechat:default")
+    _default_markers = ("lark:default", "feishu:default", "wechat:default", "voice:default")
     if channel in _default_markers:
-        _dm = _get_dm_reply_chat_id()
-        _grp = _get_group_reply_chat_id()
-        if _dm:
-            channel = f"{_pf}:{_dm}"
-        elif _grp:
-            channel = f"{_pf}:{_grp}"
+        # voice:default → 固定本地扬声器，不需要找 chat_id
+        if channel == "voice:default":
+            channel = "voice:speaker"
         else:
-            # 兜底仍拿不到目标 → 显式拒绝，引导模型主动查 ID（不让系统盲猜发错通道）。
-            _candidates = _list_contact_candidates()
-            return _j({
-                "sent": False,
-                "channel": f"{_pf}:default",
-                "text": text,
-                "error": (
-                    "你没有指定发给谁，且本次唤醒也没有明确的回复上下文。"
-                    "请显式传 chat_id（oc_xxx 群 / ou_xxx 私聊），或先调 sense_contacts 按名字查到 ID 再发。"
-                ),
-                "candidates": _candidates,
-            })
+            _dm = _get_dm_reply_chat_id()
+            _grp = _get_group_reply_chat_id()
+            if _dm:
+                channel = f"{_pf}:{_dm}"
+            elif _grp:
+                channel = f"{_pf}:{_grp}"
+            else:
+                # 兜底仍拿不到目标 → 显式拒绝，引导模型主动查 ID（不让系统盲猜发错通道）。
+                _candidates = _list_contact_candidates()
+                return _j({
+                    "sent": False,
+                    "channel": f"{_pf}:default",
+                    "text": text,
+                    "error": (
+                        "你没有指定发给谁，且本次唤醒也没有明确的回复上下文。"
+                        "请显式传 chat_id（oc_xxx 群 / ou_xxx 私聊），或先调 sense_contacts 按名字查到 ID 再发。"
+                    ),
+                    "candidates": _candidates,
+                })
 
     # ── awaiting_reply 自动策略(在 channel 确定后, mention 解析完) ──
     # wait_minutes=-1 表示模型选了 "auto", 需要根据通道+@情况自动判定
@@ -601,6 +605,10 @@ def _handle_express_to_human(args: Dict[str, Any], **context) -> str:
     # ── WeChat (ClawBot) 发送路径 —— 按 channel 前缀分发 ──
     if channel.startswith("wechat:"):
         return _send_wechat_clawbot(channel, text, context, mention_user_ids)
+
+    # ── 语音输出路径（本地 TTS 播放，不依赖飞书）──
+    if channel.startswith("voice:"):
+        return _send_voice_local(channel, text, context, mention_user_ids)
 
     # Send via feishu direct API (primary path)
     sent = False
@@ -3035,6 +3043,96 @@ registry.register(
 
 
 __all__ = []
+
+
+# ── 语音输出（express_to_human 的 voice 路径）──────────────────────────
+
+
+def _send_voice_local(
+    channel: str,
+    text: str,
+    context: dict,
+    mention_user_ids: list,
+) -> str:
+    """语音输出通道：用 edge-tts 本地播放文本。
+
+    不依赖飞书/微信 API，直接 TTS 播放。
+    写 conversation_log（platform=voice）维护语音对话历史。
+    返回和飞书/微信路径一致的 JSON 格式。
+
+    注意：语音通道适合简短口语化回复。URL、文件路径、代码等技术细节
+    应通过飞书等其他渠道发送——模型在收到 voice 通道时自行注意。
+    """
+    from interfaces.tools import registry
+
+    if not text.strip():
+        return registry.tool_error("voice: 文本为空")
+
+    # TTS 播放
+    sent = False
+    err = None
+    try:
+        from infrastructure.config import get_app_instance_id
+        from infrastructure.perception.voice_output import speak, is_tts_enabled, get_tts_voice
+
+        iid = get_app_instance_id() or ""
+        if not is_tts_enabled(iid):
+            return registry.tool_error(
+                "voice: TTS 未启用（app.yaml perception.tts_enabled: true）"
+            )
+        voice = get_tts_voice(iid)
+        sent = speak(text, voice=voice)
+    except FileNotFoundError:
+        err = "/usr/bin/say not found（仅支持 macOS）"
+    except Exception as exc:
+        err = f"voice TTS error: {exc}"
+
+    # 写 conversation_log（维护语音对话历史，sense_conversation 可查）
+    if sent:
+        try:
+            from domain.lifecycle.conversation_log import log_conversation
+            from infrastructure.config import get_instance_display_name
+
+            out_sender = ""
+            try:
+                out_sender = (get_instance_display_name() or "").strip()
+            except Exception:
+                pass
+            if not out_sender:
+                out_sender = "你"
+
+            log_conversation(
+                platform="voice",
+                conversation_id="voice_local_speaker",
+                chat_type="dm",
+                direction="out",
+                text=text[:2000],  # 截断防 prompt 膨胀
+                sender_name=out_sender,
+            )
+        except Exception as exc:
+            logger.debug("voice conversation_log failed: %s", exc)
+
+        # 撤收条（和飞书路径一致）
+        try:
+            from application.ingress.reaction_state import clear_all_reactions_sync
+            clear_all_reactions_sync()
+        except Exception:
+            pass
+
+    note = "已通过语音播放。" if sent else f"语音播放失败（{err}）。"
+    if sent:
+        note += " 这是语音通道——用户在听你说，不是在读。URL、文件路径、代码等技术细节不适合语音，如需发送请另用飞书。"
+    note += " 沉默是你的默认状态 — 没必要每件事都发言。"
+
+    return _j({
+        "sent": sent,
+        "channel": channel,
+        "text_length": len(text),
+        "error": err,
+        "note": note,
+        "segments_sent": 1 if sent else 0,
+        "segments_total": 1,
+    })
 
 
 # ── WeChat ClawBot 发送（express_to_human 的 wechat 路径）──────────────

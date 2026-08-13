@@ -1,0 +1,17 @@
+enabled: false
+kws:
+  model_dir: models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01
+  keywords_file: config/voice_keywords.txt
+  threshold: 0.2
+  use_int8: true
+asr:
+  engine: cloud
+dialog:
+  timeout_seconds: 120
+focus:
+  timeout_seconds: 60
+  retention_days: 3
+quiet_hours:
+  start: '23:00'
+  end: 08:00
+default_instance: ''

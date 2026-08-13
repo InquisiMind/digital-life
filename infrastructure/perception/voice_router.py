@@ -1,25 +1,22 @@
 """语音会话段路由 —— 转写文本 → 实例 → emit_event。
 
-持续语音会话里，VAD 切出一段话、ASR 转写完，这一段要送给谁？
-本模块回答这个问题：
+配置入口唯一化：每个实例的 app.yaml ``perception.wake_words`` 是唯一真相来源。
+不再维护全局 voice_keywords.txt 的关键词→实例映射。
 
-  1. ``build_instance_keyword_map()`` —— 启动会话时调一次，遍历所有活跃实例，
-     读各自 app.yaml 的 ``group_chat.attention_keywords``，构建
-     ``{instance_id: [关键词...]}`` 映射。
-  2. ``match_instance(transcript, keyword_map)`` —— 每段调一次：转写文本里
-     是否包含某实例的关键词（子串、大小写不敏感）？命中则返回该实例 id。
-  3. ``emit_segment_to_instance(...)`` —— 命中后把段作为 perception_signal 事件
-     发给目标实例（设两个 ContextVar → emit_event）。
+  1. ``build_instance_keyword_map()`` —— 读各实例 ``perception.wake_words``
+     （fallback 到 ``group_chat.attention_keywords``），构建
+     ``{instance_id: [wake_words]}`` 映射。
+  2. ``build_keyword_to_instance_map()`` —— 反向映射 ``{keyword: instance_id}``，
+     KWS 命中时直接查（不需要 ASR + match_instance 再绕一圈）。
+  3. ``match_instance(transcript, keyword_map)`` —— ASR 转写后用子串匹配。
+  4. ``emit_segment_to_instance(...)`` —— emit perception_signal 到目标实例。
 
-为什么是纯函数 + 显式注入：
-  match_instance 不读 app.yaml、不碰 ContextVar，只做"文本里有没有这些词"
-  的判定，输入输出确定，单测零 mock。副作用（读配置、emit）拆到另外两个函数，
-  测试时分别 mock。
-
-ASR 变体怎么处理：
-  ASR 可能把 "zero" 听成 "zeros"/"吉洛"/"塞罗" 等。这些变体**不写死在代码里**——
-  用户在 app.yaml 的 attention_keywords 里加，build_instance_keyword_map 自然读到。
-  例：``attention_keywords: [zero, Zero, 吉洛, 塞罗]``
+配置示例（实例 app.yaml）：
+  perception:
+    wake_words:
+      - zero        # 英文原名
+      - 塞罗         # ASR 中文变体
+      - 吉洛         # ASR 变体
 """
 from __future__ import annotations
 
@@ -31,12 +28,11 @@ logger = logging.getLogger(__name__)
 
 
 def build_instance_keyword_map() -> dict[str, list[str]]:
-    """遍历活跃实例，构建 ``{instance_id: [keywords]}``。
+    """遍历活跃实例，构建 ``{instance_id: [wake_words]}``。
 
-    每个实例的关键词来自其 app.yaml 的 ``group_chat.attention_keywords``。
-    没配关键词或读取失败的实例不进 map（无法被语音命中）。
-
-    会话启动时调一次（不是每段），避免反复扫 apps/ 目录。
+    关键词来源（优先级）：
+      1. app.yaml ``perception.wake_words``（语音专用，推荐）
+      2. app.yaml ``group_chat.attention_keywords``（fallback，和群聊共用）
     """
     try:
         from infrastructure.config import discover_active_instances, get_instance_app_config_path
@@ -50,22 +46,43 @@ def build_instance_keyword_map() -> dict[str, list[str]]:
         try:
             path = get_instance_app_config_path(iid)
             cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            kws = (cfg.get("group_chat") or {}).get("attention_keywords") or []
+            # 优先读 perception.wake_words
+            perc = cfg.get("perception") or {}
+            kws = perc.get("wake_words") or []
+            # fallback: group_chat.attention_keywords
+            if not kws:
+                kws = (cfg.get("group_chat") or {}).get("attention_keywords") or []
             if isinstance(kws, (list, tuple)) and kws:
                 out[iid] = [str(k) for k in kws if k]
         except Exception as exc:
-            logger.debug("read keywords for %s failed: %s", iid[:8], exc)
+            logger.debug("read wake_words for %s failed: %s", iid[:8], exc)
     logger.info("voice keyword map: %d instances → %s",
                 len(out), {k[:8]: v for k, v in out.items()})
+    return out
+
+
+def build_keyword_to_instance_map(keyword_map: dict[str, list[str]]) -> dict[str, str]:
+    """反向映射 ``{keyword: instance_id}``。
+
+    KWS 命中时直接用 keyword 查实例，不需要 ASR + match_instance。
+    大小写不敏感（key 统一存小写）。
+    """
+    out: dict[str, str] = {}
+    for iid, keywords in keyword_map.items():
+        for kw in keywords:
+            if kw:
+                out[str(kw).lower()] = iid
     return out
 
 
 def match_instance(transcript: str, keyword_map: dict[str, list[str]]) -> str | None:
     """转写文本里是否包含某实例的关键词？返回命中的 instance_id，无命中 None。
 
-    子串匹配、大小写不敏感。第一个命中的实例胜出（map 迭代顺序 = 构建顺序）。
+    子串匹配、大小写不敏感。
 
     >>> match_instance("zero 帮我查个东西", {"id1": ["zero", "Zero"]})
+    'id1'
+    >>> match_instance("塞罗 帮忙", {"id1": ["zero", "塞罗"]})
     'id1'
     >>> match_instance("今天天气不错", {"id1": ["zero"]}) is None
     True
@@ -83,6 +100,19 @@ def match_instance(transcript: str, keyword_map: dict[str, list[str]]) -> str | 
     return None
 
 
+def lookup_instance_by_keyword(keyword: str, keyword_to_instance: dict[str, str]) -> str | None:
+    """KWS 命中后直接用 keyword 查实例。大小写不敏感。
+
+    >>> lookup_instance_by_keyword("塞罗", {"塞罗": "id1", "zero": "id1"})
+    'id1'
+    >>> lookup_instance_by_keyword("不存在", {"zero": "id1"})
+    None
+    """
+    if not keyword:
+        return None
+    return keyword_to_instance.get(keyword.strip().lower())
+
+
 def emit_segment_to_instance(
     instance_id: str,
     transcript: str,
@@ -95,16 +125,12 @@ def emit_segment_to_instance(
       - ``set_current_instance_id``（DB 路径解析）
       - ``set_instance_context``（事件 channel 隔离）
 
-    payload 复用 daemon._asr_and_report 的结构，标记 ``reply_channel="voice"``
-    让实例的回复走 TTS。
-
-    返回 event_id；失败返回 None。
+    payload 标记 ``reply_channel="voice"`` 让实例的回复走 TTS。
     """
     try:
         from domain.lifecycle.events import emit_event, set_instance_context
         from infrastructure.config import set_current_instance_id
 
-        # 关键：ContextVar 必须设到目标实例，否则 wake 链路找不到 channel
         set_current_instance_id(instance_id)
         set_instance_context(instance_id)
 

@@ -18,9 +18,10 @@ from infrastructure.perception.audio_sense.router import (
 
 @pytest.fixture
 def mock_callbacks():
-    """构造 mock 回调。"""
+    """构造 mock 回调。lookup_instance 默认返回 None（模拟没命中）。"""
     cb = MagicMock()
     cb.transcribe.return_value = "测试文本"
+    cb.lookup_instance.return_value = None  # 默认不命中（走 ASR fallback）
     cb.emit_wake = MagicMock()
     cb.emit_dialog = MagicMock()
     cb.persist = MagicMock(return_value="/tmp/test.wav")
@@ -55,20 +56,36 @@ def test_initial_state_is_dormant(router):
 
 
 def test_keyword_hit_transitions_to_dialog(router, mock_callbacks):
-    """KWS 命中 → 精转 → emit_wake → 切到 dialog。"""
+    """KWS 命中 → lookup None → ASR 精转 → match_instance → emit_wake → dialog。"""
     audio = _silence(1.0)
     router.on_keyword_hit("塞罗", audio)
 
     assert router.state == VoiceState.DIALOG
-    mock_callbacks.transcribe.assert_called_once_with(audio)
+    mock_callbacks.transcribe.assert_called_once_with(audio)  # lookup 没命中，走 ASR
     mock_callbacks.emit_wake.assert_called_once()
     mock_callbacks.on_state_change.assert_called_once_with(VoiceState.DORMANT, VoiceState.DIALOG)
+
+
+def test_keyword_hit_lookup_short_circuits_asr(router, mock_callbacks):
+    """lookup_instance 命中 → 跳过 ASR（更快路径）。"""
+    mock_callbacks.lookup_instance.return_value = "zero-iid"
+    mock_callbacks.reset_mock()
+    mock_callbacks.lookup_instance.return_value = "zero-iid"
+
+    router.on_keyword_hit("塞罗", _silence(1.0))
+
+    assert router.state == VoiceState.DIALOG
+    mock_callbacks.transcribe.assert_not_called()  # lookup 命中了，不调 ASR
+    mock_callbacks.emit_wake.assert_called_once()
+    # dialog_instance 应该是 lookup 命中的实例
+    assert router._dialog_instance == "zero-iid"
 
 
 def test_keyword_hit_ignored_in_dialog(router, mock_callbacks):
     """dialog 状态下重复 KWS 命中 → 忽略。"""
     router.on_keyword_hit("塞罗", _silence())  # → dialog
     mock_callbacks.reset_mock()
+    mock_callbacks.lookup_instance.return_value = None
 
     router.on_keyword_hit("塞罗", _silence())  # 重复命中
 
@@ -78,7 +95,7 @@ def test_keyword_hit_ignored_in_dialog(router, mock_callbacks):
 
 
 def test_keyword_hit_uses_default_instance_when_no_match(router, mock_callbacks):
-    """match_instance 返回 None → 用 default_instance。"""
+    """lookup None + match_instance None → 用 default_instance。"""
     mock_callbacks.match_instance.return_value = None
     router.on_keyword_hit("塞罗", _silence())
 

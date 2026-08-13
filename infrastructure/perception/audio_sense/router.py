@@ -64,8 +64,10 @@ class RouterCallbacks:
     emit_dialog: Callable[[str, str], None]
     # 落盘（专注模式）：audio + segment_idx → wav_path
     persist: Callable[[np.ndarray, int], str | None] = field(default=lambda a, i: None)
-    # 关键词匹配：transcript → instance_id | None
+    # 关键词匹配：transcript → instance_id | None（ASR 转写后匹配）
     match_instance: Callable[[str], str | None] = field(default=lambda t: None)
+    # KWS 关键词直接查实例：keyword → instance_id | None（不需要 ASR）
+    lookup_instance: Callable[[str], str | None] = field(default=lambda k: None)
     # 状态变化通知：old_state, new_state → None
     on_state_change: Callable[[VoiceState, VoiceState], None] = field(default=lambda o, n: None)
 
@@ -109,8 +111,12 @@ class AudioRouter:
     def on_keyword_hit(self, keyword: str, audio: np.ndarray | None = None) -> None:
         """KWS 检测到唤醒词。
 
-        只在 dormant 状态有意义（dialog/focus 已经在对话中，忽略重复命中）。
-        做一次精确转写（确定用户说了什么），emit 唤醒事件，切到 dialog。
+        路由逻辑（优先级）：
+          1. lookup_instance(keyword) — KWS 关键词直接查实例（最快，不需要 ASR）
+          2. ASR 精转 + match_instance — 转写后用 wake_words 子串匹配
+          3. default_instance — fallback
+
+        确定目标后 emit 唤醒事件，切到 dialog。
         """
         if self._state != VoiceState.DORMANT:
             logger.debug("KWS hit ignored in %s state: %s", self._state, keyword)
@@ -118,21 +124,28 @@ class AudioRouter:
 
         logger.info("wake word detected: %s", keyword)
 
-        # 精转唤醒段（如果 KWS 提供了对应的音频）
-        transcript = ""
-        if audio is not None and len(audio) > 0:
-            try:
-                transcript = self._cb.transcribe(audio) or ""
-            except Exception:
-                logger.exception("transcribe wake segment failed")
-
-        # 关键词匹配 → 确定目标实例
+        # 1. KWS 关键词直接查实例（最快路径）
         target = ""
-        if transcript:
-            try:
-                target = self._cb.match_instance(transcript) or ""
-            except Exception:
-                pass
+        try:
+            target = self._cb.lookup_instance(keyword) or ""
+        except Exception:
+            pass
+
+        # 2. ASR 精转 + match_instance（如果直接查没命中）
+        transcript = ""
+        if not target:
+            if audio is not None and len(audio) > 0:
+                try:
+                    transcript = self._cb.transcribe(audio) or ""
+                except Exception:
+                    logger.exception("transcribe wake segment failed")
+            if transcript:
+                try:
+                    target = self._cb.match_instance(transcript) or ""
+                except Exception:
+                    pass
+
+        # 3. fallback
         if not target:
             target = self._config.default_instance
 

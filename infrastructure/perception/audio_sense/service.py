@@ -187,8 +187,12 @@ class AudioSenseService:
         )
 
         # ── 关键词 map（实例路由用）──
-        from infrastructure.perception.voice_router import build_instance_keyword_map
+        from infrastructure.perception.voice_router import (
+            build_instance_keyword_map, build_keyword_to_instance_map,
+        )
         self._keyword_map = build_instance_keyword_map()
+        self._keyword_to_instance = build_keyword_to_instance_map(self._keyword_map)
+        logger.info("keyword→instance map: %d keywords", len(self._keyword_to_instance))
 
         # ── Router ──
         router_config = RouterConfig(
@@ -196,12 +200,18 @@ class AudioSenseService:
             focus_timeout_s=self._config.focus_timeout_s,
             default_instance=self._config.default_instance,
         )
+
+        def _lookup_instance(keyword: str) -> str | None:
+            from infrastructure.perception.voice_router import lookup_instance_by_keyword
+            return lookup_instance_by_keyword(keyword, self._keyword_to_instance)
+
         router_callbacks = RouterCallbacks(
             transcribe=self._transcribe,
             emit_wake=self._emit_wake,
             emit_dialog=self._emit_dialog,
             persist=self._persist_segment,
             match_instance=self._match_instance,
+            lookup_instance=_lookup_instance,
             on_state_change=self._on_state_change,
         )
         self._router = AudioRouter(router_config, router_callbacks)

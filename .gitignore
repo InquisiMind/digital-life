@@ -155,3 +155,4 @@ todos/
 
 # ZCode 客户端本地产物（含 plan、缓存等），不入 git
 .zcode/
+models/

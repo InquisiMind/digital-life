@@ -5,11 +5,11 @@
       <p class="page-subtitle">{{ shortId(iid, 8) }} 实例专属配置（messenger / 群聊 / 员工实例）</p>
     </section>
 
-    <!-- 社交接管: 授权飞书 + 微信 让数字生命接管全部 IM 消息 -->
+    <!-- 社交接管: 授权飞书让数字生命接管全部 IM 消息 -->
     <div class="neon-card" style="margin-bottom: var(--space-4); padding: var(--space-4);">
       <h3 class="page-title" style="font-size: 16px; margin: 0 0 var(--space-3);">社交接管</h3>
       <p class="brand-sub" style="color: var(--text-muted); margin-bottom: var(--space-3);">
-        接管真人 IM 账号后, 数字生命将以真人身份拉取全部群 + P2P 私聊消息萹库。
+        接管真人飞书账号后, 数字生命将以真人身份拉取全部群 + P2P 私聊消息入库。
       </p>
 
       <!-- 飞书接管 -->
@@ -23,21 +23,42 @@
             <el-button type="primary" size="small">{{ socialStatus.authorized ? '重新授权' : '⟶ 接管我的飞书' }}</el-button>
           </a>
           <el-button v-if="socialStatus.authorized" size="small" type="danger" plain :loading="socialRevoking" @click="revokeSocial">解除</el-button>
+          <el-button size="small" plain @click="showTakeoverGuide = true">使用指南</el-button>
         </template>
       </div>
 
-      <!-- 微信接管 (V6 itchat Web 协议) -->
-      <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
-        <span class="brand-sub" style="min-width: 40px;">微信</span>
-        <el-tag v-if="wechatTakeover.status === 'logged_in'" type="success" effect="dark">已接管 ({{ wechatTakeover.my_nickname }})</el-tag>
-        <el-tag v-else-if="wechatTakeover.status === 'qr_ready' || wechatTakeover.status === 'logging_in'" type="warning" effect="dark">等待扫码…</el-tag>
-        <el-tag v-else-if="wechatTakeover.status === 'error'" type="danger" effect="dark">错误</el-tag>
-        <el-tag v-else type="info" effect="plain">未接管</el-tag>
-        <el-button type="success" size="small" :loading="wechatTakeoverLoading" @click="startWechatTakeover">
-          {{ wechatTakeover.status === 'logged_in' ? '重新接管' : '⟶ 接管我的微信' }}
-        </el-button>
-        <el-button v-if="wechatTakeover.status === 'logged_in'" size="small" type="danger" plain @click="stopWechatTakeover">解除</el-button>
-      </div>
+      <!-- 全接管引导弹窗 -->
+      <el-dialog v-model="showTakeoverGuide" title="飞书全接管 · 使用指南" width="600px" style="max-width: 90vw;">
+        <div style="line-height: 1.8; font-size: 14px;">
+          <p><strong>什么是全接管？</strong></p>
+          <p style="color: var(--text-muted);">授权后，数字生命以你的身份拉取飞书全部群聊和私聊消息（不只是被 @ 的），自动入库供它感知社交动态。它会像你一样"看到"所有消息，但不会替你回复——回复仍需通过它自己的飞书 Bot 身份。</p>
+
+          <el-divider />
+
+          <p><strong>前置条件</strong></p>
+          <ol style="color: var(--text-muted); padding-left: 20px;">
+            <li>已在 <a href="https://open.feishu.cn/app" target="_blank">飞书开放平台</a> 创建自建应用</li>
+            <li>已导入完整权限配置（见 <a href="https://github.com/InquisiMind/digital-life/blob/main/docs/operations/feishu-setup.md" target="_blank">飞书配置指南</a>）</li>
+            <li>已开启事件订阅（长连接模式）</li>
+            <li>已发布应用版本并等待企业管理员审批通过</li>
+          </ol>
+
+          <el-divider />
+
+          <p><strong>操作步骤</strong></p>
+          <ol style="color: var(--text-muted); padding-left: 20px;">
+            <li>点击「⟶ 接管我的飞书」按钮</li>
+            <li>在弹出的飞书授权页面，选择你的企业 → 确认授权</li>
+            <li>授权成功后状态变为「已接管」，数字生命开始拉取消息</li>
+            <li>如需取消，点「解除」即可撤销授权</li>
+          </ol>
+
+          <el-divider />
+
+          <p><strong>⚠️ 隐私说明</strong></p>
+          <p style="color: var(--text-muted);">全接管后数字生命能读取你的全部飞书消息。它有自主判断机制（只关注与工作相关的消息，忽略闲聊），但你应知晓这一权限范围。如有关切，可在 app.yaml 中配置群聊分档（A/B/C 档）控制关注范围。</p>
+        </div>
+      </el-dialog>
     </div>
 
     <div v-if="loading" class="dev-placeholder"><span class="mono">loading…</span></div>
@@ -133,7 +154,7 @@ const route = useRoute()
 const iid = computed(() => String(route.params.iid || ''))
 const loading = ref(true)
 const saving = ref(false)
-const wechatLoading = ref(false)
+const showTakeoverGuide = ref(false)
 const qrDialogVisible = ref(false)
 const qrCodeUrl = ref('')
 // 社交接管授权状态(ConfigTab 上方独立块)

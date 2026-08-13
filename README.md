@@ -381,7 +381,8 @@ digital-life start
 
 ### 4. 进阶
 
-项目 / 待办 / 事件 / 多 Agent 协作等，见 [如何玩转数字生命](docs/showcase/how-to-play.zh.md)。
+- **飞书全接管**：控制台 → 实例 → Config → 社交接管 → 「⟶ 接管我的飞书」。授权后数字生命以你的身份拉取全部群聊和私聊消息，自动感知社交动态。点击「使用指南」查看详细步骤。前置条件见[飞书配置指南](docs/operations/feishu-setup.md)。
+- 项目 / 待办 / 事件 / 多 Agent 协作等，见 [如何玩转数字生命](docs/showcase/how-to-play.zh.md)。
 
 ### 5. 语音感知（macOS，实验性）
 

@@ -387,46 +387,13 @@ digital-life start
 
 ### 5. 语音感知（macOS，实验性）
 
-数字生命可以通过语音和你交互——**持续监听、自动分段、唤醒词触发、语音回复、说话即打断 TTS**。
-
-**两种模式：**
-
-| 模式 | 触发 | 说明 |
-|---|---|---|
-| 单次问答 | 快捷键 `cmd+shift+r` | 按一次录音，再按停止 → ASR 转写 → 实例唤醒 → 语音回复 |
-| 持续对话 | `config/voice_sense.yaml` `enabled: true` | 持续录音 + VAD 自动分段 + 唤醒词检测（sherpa-onnx） |
-
-**持续对话模式的核心架构（5 层信号过滤）：**
-
-```
-持续声波 → L1 能量门控 → L2 Silero VAD 语音检测 → L3 端点检测
-→ L4 sherpa-onnx 唤醒词检测 → L5 云端 ASR 精确转写 → emit 事件 → 实例
-```
-
-- **休眠状态**：只听唤醒词（本地 KWS，零 API 成本）
-- **对话状态**：每段语音转写后作为群聊消息发给实例，实例自主判断是否回应
-- **专注状态**：全程落盘 wav + 转写（可通过 HTTP 或实例工具触发）
-
-**启用：**
-
-```yaml
-# config/voice_sense.yaml
-enabled: true
-kws:
-  model_dir: "models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"
-  keywords_file: "config/voice_keywords.txt"
-```
+数字生命支持语音交互——快捷键单次问答（`cmd+shift+r`）或持续对话（唤醒词 + VAD 自动分段 + TTS 回复）。一键安装：
 
 ```bash
-# 安装依赖
-pip install sherpa-onnx silero-vad sounddevice edge-tts onnxruntime
-# 下载 KWS 模型（18MB）
-python3 -c "from modelscope import snapshot_download; snapshot_download('pkufool/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01', local_dir='models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01')"
-
-# macOS 权限：系统设置 → 隐私与安全性 → 麦克风 → 添加 AudioCaptureHelper.app
+bash scripts/setup_perception.sh
 ```
 
-> ⚠️ 语音感知目前仅适配 macOS（TCC 权限 + Carbon 快捷键 + edge-tts）。Linux / Windows 需自行替换录音 / TTS / 快捷键方案。ASR 默认用云端 glm-asr，可替换为本地 faster-whisper（接口已解耦）。
+详见 [感知系统配置指南](docs/operations/perception-setup.md)。
 
 ---
 

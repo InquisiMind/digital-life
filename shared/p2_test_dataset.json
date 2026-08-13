@@ -1,0 +1,137 @@
+{
+  "description": "P2 embedding experiment test dataset",
+  "source": "FA-1 PoC verification data (17 shared patterns)",
+  "alpha_cognitions_count": 28,
+  "zero_cognitions_count": 68,
+  "patterns": [
+    {
+      "pair_id": "L1-1",
+      "match_type": "L1_exact_key",
+      "semantic_core": "回测结果必须交叉验证，单一引擎结果不可信",
+      "core_action": "validate_check",
+      "zero_key": "backtest:cross_validation_rule",
+      "alpha_key": "backtest:cross_validation_rule",
+      "source": "ground_truth"
+    },
+    {
+      "pair_id": "L1-2",
+      "match_type": "L1_exact_key",
+      "semantic_core": "Forward test 使用 B 配置：黑名单+SL3/TP7/D2",
+      "core_action": "parameter_set",
+      "zero_key": "trading:forward_test_config",
+      "alpha_key": "trading:forward_test_config",
+      "source": "ground_truth"
+    },
+    {
+      "pair_id": "L1-3",
+      "match_type": "L1_exact_key",
+      "semantic_core": "zhp 倾向于通过 GitHub 开源共享",
+      "core_action": "collaboration_rule",
+      "zero_key": "zhp:preference_github_sharing",
+      "alpha_key": "zhp:preference_github_sharing",
+      "source": "ground_truth"
+    },
+    {
+      "pair_id": "L2-1",
+      "match_type": "L2_same_predicate",
+      "semantic_core": "交易日志的写入职责归属（谁负责记录）",
+      "core_action": "record_state",
+      "zero_key": "trading_log:write_ownership",
+      "alpha_key": "trade_log:write_ownership",
+      "source": "ground_truth"
+    },
+    {
+      "pair_id": "L3-1",
+      "match_type": "L3_canonical_signature",
+      "semantic_core": "回测参数不能孤立评估，SL/TP/持有天数相互影响",
+      "core_action": "strategy_insight",
+      "zero_key": "backtest:parameter_combination_rule",
+      "alpha_key": "backtest:parameter_evaluation_rule",
+      "source": "ground_truth"
+    },
+    {
+      "pair_id": "L3-2",
+      "match_type": "L3_canonical_signature",
+      "semantic_core": "行业过滤是扭亏为盈的关键开关",
+      "core_action": "strategy_insight",
+      "zero_key": "涨停次日策略:v2_core_finding",
+      "alpha_key": "trading_simulation:backtest_v2_finding",
+      "source": "ground_truth"
+    },
+    {
+      "pair_id": "L3-3",
+      "match_type": "L3_canonical_signature",
+      "semantic_core": "高开5%+在-3%SL下脆弱，需设高开上限",
+      "core_action": "exclude_stock",
+      "zero_key": "Signal B:max_gap_up_pct",
+      "alpha_key": "entry_rule:max_open_gap",
+      "source": "ground_truth"
+    },
+    {
+      "pair_id": "L3-4",
+      "match_type": "L3_canonical_signature",
+      "semantic_core": "开源框架+卖实例的商业化策略",
+      "core_action": "strategy_insight",
+      "zero_key": "commercialization:opensource_strategy",
+      "alpha_key": "commercialization:distillation_pipeline",
+      "source": "ground_truth"
+    },
+    {
+      "pair_id": "L3-5",
+      "match_type": "L3_canonical_signature",
+      "semantic_core": "信任但不验证是危险的，验证优先于报告",
+      "core_action": "collaboration_rule",
+      "zero_key": "Zero:collaboration_verification_rule",
+      "alpha_key": "alpha:verification_before_reporting",
+      "source": "ground_truth"
+    },
+    {
+      "pair_id": "P10",
+      "match_type": "L3_canonical_signature",
+      "description": "P10: cockroach_principle ↔ work_principle_cockroach_rule",
+      "source": "llm_extraction"
+    },
+    {
+      "pair_id": "P11",
+      "match_type": "L3_canonical_signature",
+      "description": "P11: preference_immediate_action ↔ work_principle_no_defer",
+      "source": "llm_extraction"
+    },
+    {
+      "pair_id": "P12",
+      "match_type": "L3_canonical_signature",
+      "description": "P12: deliverables_index_maintenance ↔ work_principle_index_maintenance",
+      "source": "llm_extraction"
+    },
+    {
+      "pair_id": "P13",
+      "match_type": "L3_canonical_signature",
+      "description": "P13: github_problem_solving ↔ work_principle_github_search",
+      "source": "llm_extraction"
+    },
+    {
+      "pair_id": "P14",
+      "match_type": "L3_canonical_signature",
+      "description": "P14: sl_monitor:root_cause_0730 ↔ sl_monitor:failure_mode",
+      "source": "llm_extraction"
+    },
+    {
+      "pair_id": "P15",
+      "match_type": "L3_canonical_signature",
+      "description": "P15: buy_sell_risk_separation ↔ risk_separation_buy_sell",
+      "source": "llm_extraction"
+    },
+    {
+      "pair_id": "P16",
+      "match_type": "L3_canonical_signature",
+      "description": "P16: working_principle ↔ work_principle_cognition_capture",
+      "source": "llm_extraction"
+    },
+    {
+      "pair_id": "P17",
+      "match_type": "L3_canonical_signature",
+      "description": "P17: decision_authority ↔ delegation_level",
+      "source": "llm_extraction"
+    }
+  ]
+}

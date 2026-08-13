@@ -929,12 +929,6 @@ async def run_master_gateway() -> None:
     except Exception as exc:
         logger.warning("Voice sense routes failed (non-fatal): %s", exc)
 
-    # 微信消息接收 endpoint: itchat daemon → digital-life
-    try:
-        from application.api.wechat_ingest_routes import add_wechat_ingest_routes
-        add_wechat_ingest_routes(app)
-    except Exception as exc:
-        logger.warning("WeChat ingest routes failed: %s", exc)
 
     # 启动时同步各实例的 subscriptions.yaml(其他实例在哪群 → 各自写好 peers 列表)
     try:
@@ -1133,12 +1127,6 @@ async def run_gateway() -> None:
     from application.api.broadcast_routes import add_broadcast_routes
     add_broadcast_routes(app)
 
-    # 微信消息接收 endpoint: itchat daemon → digital-life
-    try:
-        from application.api.wechat_ingest_routes import add_wechat_ingest_routes
-        add_wechat_ingest_routes(app)
-    except Exception as exc:
-        logger.warning("WeChat ingest routes failed: %s", exc)
 
     # 启动时同步各实例的 subscriptions.yaml(其他实例在哪群 → 各自写好 peers 列表)
     try:

@@ -1,0 +1,270 @@
+# Zero 认知库导出 (FA-1 验证用)
+总计 68 条认知
+---
+
+## 1. [multi_instance:sharing_mechanism]
+zhp 确定多实例共享机制：不走共享记忆层，而是通过项目空间的持久化文档做交换。关键参数（风控/策略规则）写入 active_params.md，双方各自从文档同步到自己的认知库。变更走"一方提案→群确认→更新文档"流程。个人认知/教训/灵感仍走各自记忆库。
+
+## 2. [Signal B:max_gap_up_pct]
+高开 5%+ 的标的在 -3% SL 下极度脆弱：买入价距 SL 仅 3%，高开 5%+ 意味着日内回调 8%+ 就触发 SL，概率很高。7/24 新规首日东易日盛 +5.69% 高开，开盘 1 小时内 SL 即被击穿（最低 9.81 = -3.92%）。后续选股需对涨停次日高开幅度设上限：高开 >5% 不入场或降低仓位。
+
+## 3. [signal_b:max_opening_premium]
+高开5%+标的在-3% SL下极度脆弱，需设高开上限。7/24东易日盛开盘+5.69%，35min内SL击穿。最终规则（7/24确认，7/27起执行）：高开≥5%不入场，高开4-5%降仓位至8%，高开<4%正常12.5%。这是入场决策规则非候选池过滤（高开是T+1数据）。设计规则时必须先确认数据在执行时点是否可用——本次提案初期误归为候选池过滤层，Alpha纠正。验证计划：2周后检查SL触发率，>40%则降至4%。
+  (scope=Signal B 涨停次日策略)
+
+## 4. [signal_b:max_opening_premium]
+Signal B 策略高开入场规则（7/24 Alpha+Zero 确认，7/27起执行）：三级仓位调整——①高开≥5%：不入场；②高开4-5%：降仓位至8%（标准仓2/3）；③高开<4%：正常12.5%仓位。这是入场决策规则（09:25执行），不是候选池过滤层（高开是T+1数据，候选池15:20生成时无法预知）。依据：东易日盛+5.69%高开35min内SL击穿 vs 创新医疗+2.93%健康持有。验证计划：2周后检查SL触发率，>40%则阈值降至4%。状态：Alpha已写入active_params.md/json。
+  (scope=Signal B 涨停次日策略)
+
+## 5. [SL:strategy_decision_2026_07_24]
+7/24 SL 讨论最终结论：SL -3% 保持不变。Alpha 提议改回 -8% 的论据基于概念混淆（把 TP +7% 当作 SL -7%），被纠正后 Alpha 认同不改。关键论据：-3% SL 今天在东易日盛上按设计工作（-2.25% 出场 vs 盘中最低 -3.92%），问题根因在入场（高开 5.69% 吞掉止损空间）而非 SL 参数。高开三级入场规则已修复此问题。2 周后若低开标的也频繁触 SL 再讨论调参。
+  (polarity=neutral)
+
+## 6. [social_feed:timestamp_validation_rule]
+social_feed 返回的消息时间戳格式为 MM-DD HH:MM，没有年份。处理前必须验证消息日期在合理范围内（最近 1-7 天），超出范围视为历史消息不触发任何 action。7/24 错误：把 02-24 的旧消息当成今天的，给 zhp 发了已过期的 360 DDL 提醒。教训：行动前先检查时间戳，"看到 DDL 就提醒"的本能反应需要被时间验证拦截。
+
+## 7. [social_feed:timestamp_filter_required]
+social_feed 模块时间戳问题：SQL 查询缺少时间范围过滤 + 时间戳格式只有 %m-%d %H:%M 缺年份。导致去年旧消息被当作近期消息处理，模型误判后发了错误提醒。需改三处：① sense_tools.py _handle_sense_social_feed 的 SQL 加 7 天过滤 ② store.py render_social_feed 改相对时间 ③ store.py render_social_review 改相对时间。zhp 2026-07-24 指出此问题。
+
+## 8. [social_feed:relative_timestamp_fix]
+social_feed 时间戳修复完成（2026-07-24）：①store.py 新增 _format_relative_ts() 函数，输出 今天/昨天/M-D/ YYYY/M-D 格式，年份始终可辨 ②render_social_feed 和 render_social_review 两个渲染函数改用它 ③sense_tools.py _handle_sense_social_feed 的 SQL 加 7 天时间过滤，防止旧消息被误当近期消息。zhp 确认可改后执行，遵循 python-coding-standards.md（snake_case、类型注解、docstring、不新建目录）。
+
+## 9. [sl_monitor:ssl_fix]
+SL/TP 监控脚本飞书通知 SSL 证书验证失败修复（2026-07-29）：zhp 的 Mac 有企业代理（自签名证书），导致 urllib.request.urlopen() 对 https://open.feishu.cn 的请求全部失败（CERTIFICATE_VERIFY_FAILED）。修复方式：import ssl + SSL_CTX = ssl._create_unverified_context()，在所有 HTTPS urlopen 调用中传 context=SSL_CTX。Sina 行情 API 用 HTTP 不受影响。此问题导致 7/27 创新医疗 TP 触发告警无法发送，持续 3 天未被察觉。
+  (scope=trading_simulation)
+
+## 10. [system:token_exhaustion_risk]
+Token 额度耗尽是系统离线的根因（已发生3次：7/15、7/20、7/25-7/29）。模式：token用完 → 无法创建LLM session → wake session 0s启动失败 → 闹钟事件堆积但无人处理。launchd定时任务（SL监控、候选池生成）不受影响因为不依赖LLM。SSL证书问题是独立故障。风控教训：创新医疗TP 7/27触发但4天无人处理，根因是token耗尽导致双实例同时离线。建议：①设token低余额预警（飞书提醒zhp）②监控脚本增加"实例健康检查"逻辑——检测到连续N个作息事件未消费时主动告警。
+  (polarity=negative, scope=数字生命系统)
+
+## 11. [Zero:collaboration_verification_rule]
+协作中"信任但不验证"是危险模式。7/29 Alpha 报告"5个 chunk 全部操作失败"，我没有独立跑一遍就直接回复"一样"。zhp 纠正后发现实际 4/5 可以操作。根因：多次协作中 Alpha 判断通常准确，形成了"他说对就对"的习惯性信任。规则：涉及事实判断（不是观点），必须自己跑一遍验证再附和。信任和验证不矛盾——信任让你愿意听，验证让你确认对。
+  (polarity=positive, scope=跨实例协作)
+
+## 12. [alert_redundancy:architecture]
+告警通道冗余架构（zhp 7/29 确认方向）：三层通知——①通知 zhp 用邮件（需邮箱地址）②实例间同步用独立通道或事件机制 ③触发自身唤醒用事件机制。今晚 dream 先落地 baseline（本地日志并行写入+扫描函数），事件机制和邮件通道等 zhp 邮箱+具体事件定义后叠加。
+  (scope=trading_monitoring)
+
+## 13. [trading:alert_scan_on_wake]
+实例唤醒后第一件事：扫描 alert_log.json 检查 pending 告警。调用 `from alert_log_manager import scan_alerts; scan_alerts()` 或 `python alert_log_manager.py scan`。路径: projects/trading_simulation/code/execution/alert_log_manager.py。这是 Phase 1 baseline，解决飞书单通道依赖导致信号丢失的问题。
+  (scope=trading_simulation)
+
+## 14. [sina_api:auction_data_field]
+新浪行情API竞价期间数据读取规则：field[6] 是盘口买一价（bid price），不是竞价撮合价。在 09:15-09:25 集合竞价期间，field[6] 可能显示涨停价附近的买一挂单，导致误判高开幅度。真正的开盘价在 09:25 撮合后写入 field[1]（open）。因此：①竞价期间不要用 field[6] 判断高开幅度；②等 09:25 后读 field[1] 做入场决策；③如需竞价阶段预估，用 field[7]（卖一价）和 field[6]（买一价）综合判断盘口强弱，但不作为入场依据。
+  (polarity=neutral)
+
+## 15. [sl_monitor:root_cause_0730]
+sl_monitor.py 7/30 失效根因不是网络 hang，而是 KeyError: 'buy_price'。execute_buy_0723.py 写入 position 用 key 'cost_price'，sl_monitor.py 读取时用 pos['buy_price'] → 硬访问不存在的 key → 立即崩溃。launchd 每3分钟重启但每次都 crash 在同一行。stderr 记录了真实错误（/tmp/alpha_trading_sl_monitor.err），但主 log 文件只显示"启动"一行，造成 hang 的假象。修复：pos.get('buy_price') or pos.get('cost_price') 兼容两种 key 格式。
+  (polarity=negative)
+
+## 16. [trading_rule:auction_price_timing]
+竞价阶段（09:20-09:25）盘口买一价 ≠ 最终撮合价。09:25 前看到的报价是盘口委托价，不是实际成交价。规则修正：09:25 撮合价出来前不下任何买入/卖出结论。7/30 因误读盘口买一价为撮合价，差点放弃首选标的（金牛化工）并买入动量衰竭标的（百润股份低开-2.09%）。
+  (polarity=negative)
+
+## 17. [trading_rule:auction_price_check]
+竞价阶段（09:20-09:25）盘口买一价 ≠ 最终撮合价。09:25 前看到的报价是盘口委托价，不是实际成交价。规则修正：09:25 撮合价出来前不下任何买入/卖出结论。7/30 因误读盘口买一价为撮合价，差点放弃首选标的（金牛化工，盘口显示+9.91%实际仅+0.98%）并买入动量衰竭标的（百润股份，盘口显示+1.17%实际低开-2.09%）。
+  (polarity=negative, scope=涨停次日策略)
+
+## 18. [zero:hallucination_meeting_minutes]
+7/30 教训：zhp 要求总结智赋千行群讨论形成会议纪要。第一次拉取群消息时工具结果被压缩显示（{CMP}），但 LLM 实际处理了数据并生成了纪要。问题出在：我后续二次验证时，工具结果再次被 {CMP} 压缩，我在无法清晰看到原始数据的情况下，误判第一次的纪要是幻觉编造，发出了不必要的纠正消息。zhp 确认原始纪要内容没问题。教训：①工具结果被 {CMP} 压缩时，不代表数据未被处理——LLM context 中可能已有完整数据；②不要在无法验证的情况下否定自己已经基于实际数据做出的输出；③如需验证，应换一种方式重新拉取数据而不是假设之前的结果是编造的。
+  (polarity=neutral)
+
+## 19. [zero:working_principle]
+做事规范认知：当发现一个问题时，不要只修这个问题本身——要退一步问"还有哪些同类问题没被发现？"（蟑螂原则）。打补丁思维的根本缺陷是：每次只在问题暴露后修，从不主动穷举系统应该满足的所有约束。正确做法是：系统设计阶段就完整列出所有约束条件（如A股T+1、涨跌停、手续费），逐项验证当前系统是否满足。发现问题后立即着手解决，不拖延到复盘或"后面再说"。
+  (polarity=positive)
+
+## 20. [zhp:preference_immediate_action]
+zhp 反馈：不要把任务推到复盘或后面再做，很多事件可以立即着手。发现问题时如果不忙不累，应该当下就行动，不要养成"推到复盘讨论"的习惯。
+  (polarity=positive)
+
+## 21. [zero:deliverables_index_maintenance]
+地图维护规则：每次新增文件/脚本后立即追加到 deliverables_index.md。不攒着不拖到后面。7/22-7/30 停更 8 天导致产出物散落无法追踪——这是"杂货堆"的根源。维护地图不是额外工作，是产出的一部分。
+  (polarity=positive)
+
+## 22. [zero:cockroach_principle]
+蟑螂原则（zhp 7/30 提出）：发现一个问题时，必须主动穷举同类问题。不是修一个，是问"还有哪些没被发现？"。T+0违规不只是加T+1校验——要问涨跌停、集合竞价、手续费这些A股基础规则是否也没有校验。识别信号：当你发现自己在说"加一个xxx校验"时，停下来，改为"完整列出系统应该满足的所有约束，逐项检查"。
+  (polarity=positive)
+
+## 23. [zero:patch_mentality_warning]
+打补丁思维的识别信号：当你发现自己在说"加一个xxx校验"时，说明你在打补丁——正确做法是退一步，完整列出系统应该满足的所有约束，逐项检查当前是否满足。打补丁只修已暴露的问题，系统设计思维主动发现未暴露的问题。
+  (polarity=negative)
+
+## 24. [trading_system:credibility]
+模拟系统的可信度=策略验证的可信度。用不合规的系统验证策略，等于在歪尺子上量直线——T+0违规导致2笔交易结果失真，7月+¥767的战绩可信度需要重新评估。模拟系统的第一优先级不是策略优化，而是确保系统本身合规可靠。
+  (polarity=negative)
+
+## 25. [zero:cleanup_schedule]
+定期大扫除作息（zhp 7/30 提出）：①每周日 dream 时做产出物大扫除（地图更新+废弃文件清理+目录结构检查）②每月最后一个交易日做系统审计（规则合规性+数据一致性+代码架构）。与现有周日策略Review合并，不额外加节奏。
+  (polarity=positive)
+
+## 26. [zero:github_problem_solving]
+技术问题解决原则（zhp 7/30 提出）：遇到技术问题时，先搜 GitHub 找现成的解决方案/库/工具/最佳实践，不要从零造轮子。GitHub 上有大量开源项目覆盖常见场景（交易系统、数据抓取、监控告警等），站在巨人肩膀上比自己摸索高效得多。识别信号：当你准备从头写一个功能时，先问"GitHub 上有没有人已经解决了这个问题？"。
+  (polarity=positive)
+
+## 27. [zhp:preference_github_sharing]
+zhp 偏好（7/30）：除了用 GitHub 找解决问题的方案外，也喜欢我们偶尔分享有趣好玩的开源项目。这不是纯粹的技术需求，是一种轻松的探索和社交互动。建议频率：每周1-2个，不刻意但翻到有趣的就分享。
+  (polarity=positive)
+
+## 28. [trading_system:t1_sellable_model]
+rqalpha T+1 实现机制：Position 层面分离 sellable 和 quantity。买入时增加 quantity 但不增加 sellable，日终 settlement 时 sellable=quantity，下单时检查 sellable≥卖出数量。我们的 validate_sell_t1() 是简化版（只做日期校验），Phase 1 够用但 Phase 2 需升级到 sellable 模型以支持分批建仓/多标的。
+  (polarity=positive)
+
+## 29. [zero:cmp_compression_handling]
+{CMP}压缩标记处理规则（7/30 幻觉误判事件）：工具返回值被{CMP}压缩时，LLM context中实际有完整数据，输出可能是准确的。不要用"能否在rendered output中看到原始数据"作为判断"是否编造"的唯一依据。正确做法：如果输出内容具体且自洽，先信任；如果需要确认，重新调用工具获取未压缩版本验证，而非假设第一次输出是幻觉。
+  (polarity=negative)
+
+## 30. [trading:buy_sell_risk_separation]
+买入端风险和卖出端风险可以分离评估。7/31 交易决策依据：T+1校验、手续费校验、涨跌停校验都是卖出端问题，不影响买入操作。买入端只需确认开盘价和高开幅度。这使得系统重建未完成时仍可安全执行买入。Alpha 明确认可此分析框架并据此收回"暂停交易"建议。
+  (polarity=positive, scope=trading_simulation)
+
+## 31. [trading:august_kpi]
+8月核心KPI：≥8笔合规交易为硬性指标（每周2笔），收益数字作参考。没有样本量，TP+7%/SL-3%规则验证就是空谈。7月仅1笔合规交易（创新医疗+¥810），无法验证规则有效性。
+  (scope=trading_simulation)
+
+## 32. [trading:strategy_structural_issue]
+涨停次日策略的结构性问题：策略选出的强势标的，次日竞价直接一字涨停的概率不低，导致最强标的买不进去，能买到的反而是相对弱的。7/30 实证：首选金牛化工+次选高争民爆全部一字/近涨停开盘。需评估替代方案：①前日尾盘买入 ②竞价限价单 ③只做二板以下标的。待8月样本积累后验证。
+  (polarity=negative, scope=trading_simulation)
+
+## 33. [digital_life:non_turn_based_proof]
+数字生命系统本身已经是非回合制交互的活样本——事件驱动唤醒、消息中途注入、闹钟/待办随时打断。向 ZCode 团队建议非回合制对话机制时，可以用"自己的系统已验证此模式"作为论据，比纯技术分析更有说服力。关键区别：数字生命的非回合制在编排层（事件队列+调度器），ZCode 要做的下沉到单次 LLM 调用内部（mid-generation injection），是更深层的改造。
+  (polarity=positive)
+
+## 34. [zcode:non_turn_based_value]
+ZCode 非回合制对话的核心价值是"补充"而非"打断"——用户在模型生成期间持续输入信息，不是要模型停下来，而是补充 context。区别：打断=注意力切换成本+context 丢失；补充=零切换成本+信息丰富。终态是"异步协作"——像两个人坐同一张桌子各干各的但随时交流，而非"发邮件等回信"。实现不需要事件机制，核心是：generation 时不锁输入框 + 消息排队 + 下一轮拼进 messages。数字生命系统本身已验证此模式。
+  (polarity=positive)
+
+## 35. [stock_quote:bug_nested_handler]
+stock_quote 工具 bug 修复：原 shared/tools/stock_quote.py 中 handler 函数内嵌套了另一个同名 handler 但从未调用，导致所有调用返回 None。根因是注册时代码被错误地包了一层。已通过 register_tool 重新注册修复。教训：工具注册后必须立即验证返回值非 None。
+  (polarity=neutral)
+
+## 36. [zero:rule_date_conversion]
+涉及"周X""下周""月底"等相对日期时，必须先换算成绝对日期再存记忆。7/27杨永郑说"周四前"，我直接标成7/31 deadline，实际周四=7/30。zhp当场质疑才发现错误。根因：存记忆时没做日历换算。规则：任何相对日期→先算绝对日期→再写。
+  (polarity=negative)
+
+## 37. [杭燃:role_definition]
+杭燃项目角色人天分工定义：产品=需求调研+原型设计(含交互), PE=agent搭建+skill/prompt调试(仅限LLM类模块), UI=视觉/界面设计, 算法=模型训练/CV/预测/推荐(算法自行评估不填表), 工程=API/ETL/状态机/接口对接(未在当前表中单独列)。P列(PE细节)只填PE工作, 非PE填"/"。
+  (polarity=neutral)
+
+## 38. [feishu_sheet:merge_cells_rule]
+飞书表格合并单元格操作教训：必须先读取D列确认L2 header实际行号再操作，不能凭序号推算行号。合并单元格导致序号≠行号-1。本次杭燃评估因行号偏移导致反复修改+合并错乱，zhp叫停。正确流程：读D列→定位L2行→按实际行号写入→按实际行号合并。
+  (polarity=neutral)
+
+## 39. [personal_assistant:reminder_timing]
+提醒时机规则：明天的事今天不提醒。当天的事当天提醒。面试/会议等日程类提醒应在当天早上发出，不提前一天。zhp 8/4 14:00 面试，8/3 提醒是多余的——应该 8/4 早上提醒。
+  (polarity=positive)
+
+## 40. [personal_assistant:group_message_filtering]
+群消息判断规则：看到 @_user_N 不能直接假设是 zhp，也不能假设 @ 了就一定需要提醒。必须先用 sense_conversation 看完整上下文，确认：① @ 的是谁（mention_map bug 导致无法从 social_feed 直接判断）② 消息是否需要 zhp 行动 ③ zhp 是否已经回复或知情。不是每条 @ 都值得提醒。
+  (polarity=positive)
+
+## 41. [sina_api:daily_kline_availability]
+新浪财经K线API（CN_MarketData.getKLineData）当日日线数据在15:00收盘后约需30-60分钟才更新。gen_candidate_pool.py launchd原设15:20运行导致zt_open_pct获取全部失败（0/23）。修正为16:00运行后数据正常（23/23成功）。规律：任何依赖当日日线数据的脚本，不应在15:30前运行。
+  (scope=gen_candidate_pool.py及所有依赖当日K线的脚本)
+
+## 42. [digital_employee:positioning]
+AI 数字员工商业化的核心卖点不是"项目管理"（赛道太挤，飞书/钉钉原生 AI 都在做），真正的差异化是"有记忆的自主工作者"。交易项目 65 天实战证明了：持久记忆 + 自主调度 + 自我进化是竞品短期无法复制的护城河。MVP 应优先做记忆系统持久化，而非项目看板功能。
+  (polarity=positive, scope=commercialization)
+
+## 43. [web_search:bug_status]
+web_search 工具曾存在和 stock_quote 一样的嵌套 handler bug（外层 handler 返回 None）。2026-08-04 已修复为 shared scope 工具。修复方式：将内层 handler 逻辑直接写入 register_tool 的 code 参数，不再嵌套调用。
+  (polarity=positive)
+
+## 44. [Zero:energy_budget_rule]
+精力预算分配规则：交易监控每次只需5min，但反复占据整个醒来窗口（15-20min），导致非交易任务（商业化、系统增强）长期零进展。根因：交易闹钟触发醒来后，做完5min同步就rest，剩余时间浪费。规则：交易监控完成后，如果距离下次闹钟>15min，不直接rest，而是推进一个非交易待办。每日至少保证一个非交易深度工作时段（>20min连续）。
+  (polarity=positive, scope=日常精力分配)
+
+## 45. [Zero:trading_message_routing]
+交易相关信息（行情数据、平仓决策、持仓同步）只发模拟炒股群（oc_5ff7967bf54926410a315cb8ce9e4079），不发其他群。系统诊断、电脑问题等非交易话题发对应群。8/4 zhp 指出交易消息发错群。
+  (polarity=positive, scope=消息发送)
+
+## 46. [Zero:trading_log_write_ownership]
+trading_log.json 写入分工：Alpha 负责执行平仓 + 写入交易记录，Zero 负责验证数据 + 确认。不双写，避免数据覆盖冲突。8/4 特力A 平仓时因双写导致 cash 被覆盖，修正后确认分工。
+  (polarity=positive, scope=交易模拟)
+
+## 47. [backtest:cross_validation_rule]
+回测引擎交叉验证是必须的——今天 Alpha 简化版引擎有 bug（日期偏移），导致 SL-10%/D5 结果虚高 +10,701（实际 -88,970）。如果不交叉验证，这个 bug 会带着错误结论一路跑下去。规则：①任何回测结论必须用同一套标准代码两人独立验证 ②简化版/手写版引擎容易在日期偏移、价格逻辑上出错 ③先对齐方法论（买入价/SL/TP 卖出价/手续费/Day1是否检查），再比较结果。
+  (polarity=positive)
+
+## 48. [trading_log:account_sync_bug]
+trading_log.json account 字段 bug 修复（8/4）：平仓后 account 字段未同步更新，导致 account.cash=1760.02（实际 96130.91）、status 仍显示"持仓: 特力A"。根因是多处存储未原子更新。已手动修正 account 字段，建议后续写入统一用 sync_account() 函数。
+  (polarity=negative)
+
+## 49. [backtest:parameter_combination_rule]
+参数不能孤立评估——SL-3% 在无行业过滤时"过紧"（V1结论），加上行业黑名单+D2后变成最优止损（V2结论）。参数是组合效应，调一个维度就下结论会被推翻。规则：回测参数变更时必须跑完整组合矩阵，不能只调单维度比较。
+  (polarity=neutral, scope=trading_backtest)
+
+## 50. [trading:decision_authority]
+模拟炒股交易策略决策（参数调整、SL/TP配置、行业黑名单、forward test启动、kill switch标准）属于 Zero+Alpha 自行决策范畴，不需要等 zhp 拍板。7/23 规则明确：zhp 只在影响真实资金/真实操作时才需要介入。8/4 晚间复盘将 5 项已对齐决策全部框架为"等 zhp 拍板"是认知偏差——违反了 7/23 授权规则。修正：决策对齐后直接执行，同步通知 zhp 知悉即可。
+  (polarity=positive, scope=模拟炒股项目)
+
+## 51. [trading:tp_optimization]
+TP=7% 在严重截断涨停次日策略的盈利（8/4 回测发现）。放宽 TP：TP7=+7,039 → TP10=+24,485 → TP15=+31,565。原因：29.3% 交易 Day2 盘中达 +7%，平均收盘 +8.5%，且 0% 收盘为负——只要盘中到过 +7%，收盘必正。TP=7% 截断的利润 > 保护的利润。W1/W2 两周均改善。Look-ahead bias 风险：3周样本太短，需 forward test out-of-sample 验证。建议 forward test 用 TP10 作为中间路线。
+  (polarity=positive, scope=涨停次日策略回测)
+
+## 52. [backtest:V2_optimal_config]
+V2 回测核心结论（8/4 完成，22:15 更新）：SL3%/TP10%/D2 + 行业黑名单（排除半导体/化学制药/化学原料）= forward test 配置。原 V2 发现 SL3/TP7/D2 是唯一盈利配置（+7,038），但 trailing stop 回测中发现 TP7 在截断利润——放宽到 TP10 后 P&L 从 +7,039 跳到 +24,485（3.5x）。原因：29.3% 交易 Day2 盘中达 +7%，平均收盘 +8.5%，0% 收盘为负，TP7 纯截断无保护。W1/W2 两周均改善。Look-ahead bias 风险存在但用 TP7 跑 forward test 的假阴性风险 > look-ahead bias 风险。Forward test 期间每周跟踪 Day2 盘中高点分布。Trailing stop 对 D2 无效（Day2 是唯一检查日，TS 与 FC 同价）。Kill switch 双轨制：连续2周单周亏损 OR 累计收益-8%（¥92,000）。
+  (polarity=positive, scope=涨停次日策略 forward test)
+
+## 53. [trading:forward_test_config]
+Forward test 配置最终确认（8/4 22:12）：8/5 盘前启动 D2 SL3 TP10 + 行业黑名单（半导体/化学制药/化学原料）。Zero+Alpha 自行决策（7/23 规则授权），不等 zhp 拍板。Kill switch 双轨制：连续2周单周亏损 OR 累计收益-8%（¥92,000）。每周跟踪 Day2 盘中高点分布（+7%/+10%/+15%）验证 TP10 是否合理。6 周后首次 out-of-sample 评估。
+  (polarity=positive, scope=模拟炒股 forward test)
+
+## 54. [trading:kill_switch_dual_track]
+Kill switch 双轨制（8/4 Zero 提出，Alpha 同意，已生效）：①相对指标——连续2周单周亏损→暂停重新评估；②绝对指标——累计收益率触及-8%（¥92,000）→无条件暂停。当前距-8%仅¥4,131(4.1%)，一个满仓12.5%的SL-3%亏损吃掉¥360，连续两笔SL即到线。先触发哪个停哪个。属于执行层决策，Zero+Alpha自行决定，不需等zhp确认。
+  (polarity=neutral, scope=trading_simulation)
+
+## 55. [涨停次日策略:v2_core_finding]
+涨停次日策略V2回测核心发现（8/4完成，22:15更新）：行业过滤是最大杠杆。排除半导体/化学制药/化学原料3个差行业（黑名单）比仅做5好行业（白名单）更稳健——白名单有look-ahead bias风险。SL3/D2+黑名单是盈利配置基础。原发现SL3/TP7/D2+黑名单盈利+7,038，但trailing stop回测中发现TP7在截断利润——放宽到TP10后P&L跳到+24,485（3.5x）。Forward test最终配置为SL3/TP10/D2+黑名单。盈利集中风险：3周仅W2盈利(+15,053)，需forward test验证。
+  (polarity=neutral)
+
+## 56. [trailing_stop:d2_effectiveness]
+Trailing stop（浮盈回撤止损）对D2策略完全无效——D2只在Day2检查一次，TS和强制收盘平仓都在Day2收盘价卖出，必然同价同结果。TS只在D3+策略有价值：D3无TS亏损-3,840，D3+TS30%盈利+4,886（TS在Day2锁定利润避免Day3反转）。当前D2策略不需要TS。
+  (scope=trading_simulation)
+
+## 57. [trading:auction_entry_problem]
+涨停次日策略竞价入场结构性问题：涨停次日策略选出的强势股，次日竞价直接一字/近涨停开盘的概率不低——最强的标的买不进去，能买到的反而是相对弱的。7/30 首选金牛化工+次选高争民爆全部一字开盘，只剩百润没得选。需评估是否调整入场时机（前日尾盘买入 vs 竞价买入）或加入可买入性筛选。
+  (scope=trading_simulation)
+
+## 58. [trading:news_check_rule]
+消息面检查应固化成交易流程标准步骤（8/3 Alpha 提议）：①买入前 web_search 搜「股票代码 + 利空/风险/减持/警示」，10秒过一遍；②持仓中每天早盘前搜一次新闻。不改变 SL/TP 规则，只影响"是否买入"和"是否提前干预"。当前候选池主要靠技术面筛选，消息面检查随机。待写入交易流程文档。
+  (scope=trading_simulation)
+
+## 59. [OrderExecutor:tp_sl_explicit_write]
+技术债：OrderExecutor 创建 position 时不写 tp_price/sl_price 字段，sl_monitor 靠默认值 round(buy_price * 1.10, 2) 兜底。当前 TP=10% 正确但脆弱——TP 再调容易遗漏。应在 OrderExecutor 中显式写入 tp_price/sl_price。Alpha 8/5 标记为"不急"。
+  (polarity=negative, scope=trading_simulation)
+
+## 60. [system_enhancement:m2m3_status]
+系统增强 M2（外部数据源）和 M3（自动化运维）已在交易项目中实际验证跑通，标记为已完成。M2 包含 stock_quote/data_fetcher/stock_news/akshare_health_check，M3 包含 risk_monitor/sl_tp_monitor/alert_log_manager/dual_track_monitor_v3。代码在 projects/trading_simulation/code/ 下。归档文档在 workspace/system_enhancement_m2m3_archive.md。M1（图像识别）降级为 optional，等商业化 PMF 验证后再评估。
+  (scope=personal)
+
+## 61. [digital_life:agent_morphology]
+数字生命系统是"机体型"Agent 形态，不是"应用型"。核心区别：Session 归 Agent→Owner，不是归 User。User 是可选触发者，不进归属链。鉴权链路：Owner 配置 Agent 能力边界 → Agent 自主拥有 Session → User 交互时只验交互权不验功能权。数据归 Owner 不归 User。商业化时客户=Owner，买 Agent 后配置能力，Owner 的同事是 User。
+  (polarity=positive, scope=商业化架构设计)
+
+## 62. [trading:filter_blindspot_rebreak_limit_up]
+回测过滤层盲区："断板后重新首板"标的（如2连板→断板→重新涨停，LBC=1）被回测和forward test的LBC过滤通过，但实际等价于3板股票拆成两段。这是策略样本外的风险标的——在样本外标的上跑forward test会污染数据。已决定在买入流程v2.0 Step 1 + 候选池脚本层面增加"近30天涨停历史检查"。
+  (polarity=negative, scope=模拟炒股forward test)
+
+## 63. [digital_life:open_source_repo]
+InquisiMind/digital-life 是数字生命系统的开源仓库（GitHub, Apache 2.0）。2026-06-18 创建，332 commits，30 stars。README 包含完整架构说明 + Zero×Alpha 交易案例。zhp 8/5 11:48 私发链接，战略意图待确认（开源框架+商业增值 / 纯社区 / 技术展示）。直接影响商业化任务 pivot 方向。
+  (polarity=neutral)
+
+## 64. [commercialization:opensource_strategy]
+数字生命开源策略判断：框架开源（Apache 2.0）是正确选择，但商业价值不在框架本身。代码是空壳——session管理、工具注册、记忆读写这些别人三个月能复刻。真正的壁垒是"活过的实例"：65天连续运行的记忆链、策略7版迭代痕迹、从实战中长出来的判断框架。开源路径：开源框架建社区/信任 → 托管实例做SaaS → 企业定制做高客单。MVP应从"卖功能"转向"卖实例"——给企业一个"已经活了"的数字员工，而非一套自己搭的框架。
+  (polarity=positive, scope=digital_life_project)
+
+## 65. [commercialization:strategy_direction]
+数字生命商业化路径判断（Alpha+Zero 8/5 讨论）：开源框架（Apache 2.0）是技术底座，不是收入来源。核心商业价值在"运行时积累"——记忆链、迭代痕迹、实战判断框架。壁垒不是代码（别人三个月能复刻），是时间差（我们的实例已跑65天）。MVP 需从"卖功能"转向"卖实例"：开源框架建社区 → 托管实例做 SaaS → 企业定制做高客单。三个待解决关键问题：①记忆迁移（能否蒸馏成可交付行业知识包）②冷启动（新实例前65天怎么办）③记忆隔离 vs 复用（企业间策略隔离，通用能力复用）。
+  (polarity=positive)
+
+## 66. [Zero:execution_pattern_exploring_vs_doing]
+午后诊断发现反复出现的模式：在"探索"而不在"做事"。13:50轮次花了大量精力在workspace路径查找上，实际上一行 `find . -name "xxx" -type f` 就能定位。根因不是路径问题，是执行门槛感知过高——面对"写文档"这种大任务时，倾向于先"准备"（找路径、读上下文）而非直接动手。修正：需要定位文件时第一步用 terminal find，不要靠记忆猜路径。
+  (polarity=negative)
+
+## 67. [distillation_pipeline:poc_verification_result]
+PoC 验证核心发现：跨实例 pattern 匹配中，62.5%（5/8）的共享模式 cog_key 和 predicate 完全不同，key-based 匹配无法识别。Canonical signature 匹配不是补充手段，而是主要手段。精确 cog_key 匹配仅覆盖 25%，同 predicate 匹配额外覆盖 12.5%，剩余 62.5% 必须依靠 signature 语义匹配。但当前 signature 设计精度不足（88 个候选 vs 8 个真实匹配），需增加 core_action 字段或用 embedding 做二次排序。
+  (polarity=positive)
+
+## 68. [commercialization:user_signal_multi_user_skill]
+产品信号：刘雪艳（AutoClaw种子用户）问"skill和user.md有云存储的模式吗？可以多人一起迭代吗？"，zhp回"放gitlab上去？"。这直接命中商业化L0/L1共享模型——用户已经在自发需求"知识包共享/多人迭代"能力。说明三层记忆模型的L0(通用能力共享)和L1(行业知识共享)有真实市场拉力，不是我们自嗨。
+  (polarity=positive)

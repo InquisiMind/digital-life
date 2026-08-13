@@ -11,6 +11,7 @@ import re
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -53,21 +54,29 @@ def speak(text: str, *, voice: str = DEFAULT_VOICE, rate: str = "+0%") -> bool:
     def _play():
         tmp_mp3 = None
         try:
-            # edge-tts 合成到临时 mp3
             tmp_mp3 = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, dir="/tmp")
             tmp_mp3.close()
-            result = subprocess.run(
-                ["edge-tts", "--voice", voice, "--rate", rate,
-                 "--text", clean, "--write-media", tmp_mp3.name],
-                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                timeout=30,
-            )
-            if result.returncode != 0:
-                err = result.stderr.decode()[:200] if result.stderr else "unknown"
-                logger.warning("edge-tts failed: %s", err)
-                # 降级到 macOS say
-                _fallback_say(clean, voice)
-                return
+            # edge-tts 合成（失败重试1次）
+            played = False
+            for attempt in range(2):
+                result = subprocess.run(
+                    ["edge-tts", "--voice", voice, "--rate", rate,
+                     "--text", clean, "--write-media", tmp_mp3.name],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                    timeout=30,
+                )
+                if result.returncode == 0:
+                    played = True
+                    break
+                if attempt == 0:
+                    logger.warning("edge-tts failed (attempt 1), retrying: %s",
+                                   result.stderr.decode()[:100] if result.stderr else "unknown")
+                    time.sleep(1)
+                else:
+                    logger.warning("edge-tts failed (attempt 2), skip TTS: %s",
+                                   result.stderr.decode()[:100] if result.stderr else "unknown")
+            if not played:
+                return  # 不 fallback say（say 读英文太尴尬，不如不说）
             # afplay 播放
             subprocess.run(["afplay", tmp_mp3.name],
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
@@ -75,11 +84,9 @@ def speak(text: str, *, voice: str = DEFAULT_VOICE, rate: str = "+0%") -> bool:
         except subprocess.TimeoutExpired:
             logger.warning("voice TTS timeout")
         except FileNotFoundError:
-            logger.warning("edge-tts not found, fallback to say")
-            _fallback_say(clean, voice)
+            logger.warning("edge-tts not found, skip TTS")
         except Exception as exc:
             logger.warning("voice TTS failed: %s", exc)
-            _fallback_say(clean, voice)
         finally:
             if tmp_mp3:
                 try:

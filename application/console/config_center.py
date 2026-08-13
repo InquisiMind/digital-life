@@ -209,6 +209,11 @@ FIELDS: tuple[ConfigField, ...] = (
         path="perception.tts_voice", default="Tingting",
         description="macOS 语音名。Tingting（婷婷，中文女声）/ Shelley / Sinji 等。",
     ),
+    ConfigField(
+        "perception.wake_words", "唤醒词", "perception", "yaml", "array",
+        path="perception.wake_words", default=[],
+        description="语音唤醒词列表（持续监听模式用）。填入实例名及 ASR 变体，如 zero/Zero/塞罗/吉洛。系统自动识别并路由到本实例。",
+    ),
 )
 
 

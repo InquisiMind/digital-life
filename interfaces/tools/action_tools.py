@@ -378,9 +378,14 @@ def _get_recent_group_chat_id() -> Optional[str]:
 
 
 def _handle_express_to_human(args: Dict[str, Any], **context) -> str:
-    """向用户发送消息 — 数字生命唯一的对外表达通道。
+    """向用户发送消息 — 数字生命唯一的对外表达通道（支持多通道扇出）。
 
-    发送流程：
+    channels 参数（list）时：同一 text 依次发到多个通道（如语音说一句 +
+    飞书留文字版）。任何一路被发送前拦截（未读消息/未看通道）→ 全部中止
+    （拦截语义是"回复过时，重写"，继续发没有意义）；普通发送失败不影响
+    其他通道。单 channel（字符串/缺省）走原路径，行为不变。
+
+    发送流程（每一路）：
       1. 发送前拦截（communication.check_before_send）— 检查未读消息
       2. Channel 解析 — 群聊/私聊上下文 → 飞书 chat_id
       3. 飞书 API 直连发送（获取 tenant_access_token → POST 消息）
@@ -389,14 +394,55 @@ def _handle_express_to_human(args: Dict[str, Any], **context) -> str:
 
     Channel 解析优先级：群聊上下文 > 私聊上下文 > 当前事件 chat
     """
+    raw_channels = args.get("channels")
+    if isinstance(raw_channels, str):
+        raw_channels = [raw_channels]
+    if not isinstance(raw_channels, list) or not raw_channels:
+        # 单通道原路径（channel/chat_id 参数或上下文兜底）
+        return _express_one(args, args.get("channel") or "", **context)
+
+    # 多通道扇出：依次发；拦截即全部中止（拦截有事件消费副作用）
+    results: list[dict] = []
+    for i, ch in enumerate(raw_channels):
+        per_args = dict(args)
+        per_args["channel"] = str(ch or "").strip()
+        per_args.pop("chat_id", None)  # channel 已显式给出，不让 chat_id 抢优先级
+        out = _express_one(per_args, per_args["channel"], **context)
+        try:
+            parsed = json.loads(out) if isinstance(out, str) else dict(out)
+        except Exception:
+            parsed = {"raw": out}
+        # 被拦截（sent=False 且带拦截语义）→ 中止剩余通道，保留拦截上下文
+        if parsed.get("sent") is False and (
+            parsed.get("recent_chat_log") or parsed.get("result_summary")
+        ):
+            parsed.setdefault("aborted_channels", raw_channels[i + 1:])
+            return _j(parsed)
+        results.append(parsed)
+
+    ok = [r for r in results if r.get("sent")]
+    return _j({
+        "sent": bool(ok),
+        "multi": True,
+        "results": results,
+        "result_summary": (
+            f"已发送到 {len(ok)}/{len(results)} 个通道"
+            if ok else "全部通道发送失败"
+        ),
+    })
+
+
+def _express_one(args: Dict[str, Any], channel: str, **context) -> str:
+    """单通道发送（原 _handle_express_to_human 主体）。"""
     logger.info("express_to_human CALLED: text=%s, channel=%s, chat_id=%s, mentions=%s",
-                args.get("text", "")[:50], args.get("channel", ""), args.get("chat_id", ""),
+                args.get("text", "")[:50], channel, args.get("chat_id", ""),
                 args.get("mention_user_ids", []))
     # 显式 import os（函数顶部）；之前在 try 内 import, line 465 提前调 os.getenv 触发
     # UnboundLocalError。把 import 移到这里，所有 os 用法都被绑定。
     import os
     text = (args.get("text") or "").strip()
-    channel = (args.get("channel") or "").strip()
+    # channel 优先取扇出层传入的值（多通道时每轮不同），args 里的作 fallback
+    channel = (channel or args.get("channel") or "").strip()
     chat_id_arg = (args.get("chat_id") or "").strip()
     # ⚠ awaiting_reply 参数解析
     # 模型用 wait_reply 显式表达意图: "auto" / "none" / 数字分钟数
@@ -1128,6 +1174,7 @@ registry.register(
             "- text: 必填。要说的话。\n"
             "- chat_id: 飞书对话 ID（oc_xxx）。**留空 = 回复当前事件来源 chat**。"
             "可在一个 turn 内多次调用、指定不同 chat_id 实现多目标广播/转告。\n"
+            "- channels: 多通道数组（如语音+飞书同时发）。同一句话说一次即可，不用调两次。\n"
             "- kind: 'group' 或 'dm'。**默认按当前 wake 推断**，仅在你需要跨类型（如把私聊内容转告到群里）时显式指定。\n\n"
             "你不需要每次都回复。可以沉默做事、可以用工具后再表达、可以等到信息齐全再统一同步。"
         ),
@@ -1151,6 +1198,16 @@ registry.register(
                 "channel": {
                     "type": "string",
                     "description": "（兼容）完整 channel 字符串如 'lark:group:oc_xxx'。优先级低于 chat_id。",
+                },
+                "channels": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "（多通道）一次发多个通道，同一 text 依次发送。"
+                        "如语音场景：['voice:speaker', 'feishu:dm:ou_xxx'] = 语音说一句 + 飞书留文字版"
+                        "（URL/代码等技术细节语音读不了，配一个飞书通道）。"
+                        "任一通道被拦截（有未读消息需重写）会中止剩余通道。"
+                    ),
                 },
                 "mention_user_ids": {
                     "type": "array",

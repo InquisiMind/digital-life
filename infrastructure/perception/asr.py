@@ -96,6 +96,13 @@ def _transcribe_segment(
     return (data_resp.get("text") or "").strip()
 
 
+def transcribe_segment(
+    audio_bytes: bytes, *, filename: str, config: PerceptionConfig, prompt: str = "",
+) -> str:
+    """公开单段转写（live 增量转写路径用）。失败抛异常（调用方捕获）。"""
+    return _transcribe_segment(audio_bytes, filename=filename, config=config, prompt=prompt)
+
+
 def transcribe_file(
     audio_path: str | Path,
     *,

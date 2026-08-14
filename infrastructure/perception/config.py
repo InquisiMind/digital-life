@@ -56,6 +56,10 @@ class PerceptionConfig:
     context_recent_turns: int = 5
     # ASR 领域热词（提升专有名词识别率）
     asr_hotwords: tuple[str, ...] = field(default_factory=tuple)
+    # 实时增量转写（录音中按停顿切段后台转写，停止后只等尾段 → 低延迟）
+    live_transcribe: bool = True
+    live_min_segment_seconds: float = 3.0  # 攒够多少秒语音才派发一段 ASR
+    live_silence_frames: int = 25          # 停顿判定（帧 × 32ms ≈ 0.8s）
     # 额外传递给视觉模型的 task 提示（可选）
     vision_task_hint: str = ""
 
@@ -144,6 +148,9 @@ def load_config(instance_id: str | None = None) -> PerceptionConfig:
         context_recent_turns=int(perc_cfg.get("context_recent_turns", 5)),
         asr_hotwords=tuple(str(h) for h in hotwords),
         vision_task_hint=str(perc_cfg.get("vision_task_hint") or ""),
+        live_transcribe=bool(perc_cfg.get("live_transcribe", True)),
+        live_min_segment_seconds=float(perc_cfg.get("live_min_segment_seconds", 3.0)),
+        live_silence_frames=int(perc_cfg.get("live_silence_frames", 25)),
     )
 
 

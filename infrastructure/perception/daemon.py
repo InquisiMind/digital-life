@@ -106,6 +106,11 @@ class _Recorder:
     def is_recording(self) -> bool:
         return self._recording
 
+    @property
+    def audio_path(self) -> Path | None:
+        """当前/最近一次录音的 wav 路径（start() 后同步可用）。"""
+        return self._audio_path
+
     def start(self) -> None:
         with self._lock:
             if self._recording:
@@ -113,12 +118,14 @@ class _Recorder:
             self._recording = True
             self._start_ts = time.time()
             self._frames = []
-            self._audio_path = None
+            ts = int(time.time())
+            self._audio_path = self.out_dir / f"audio_{ts}.wav"
             self._stop_event.clear()
             logger.info("recording STARTED")
             # 纯音频模式：不启动截图线程（省时间 + 不需要视觉）
             self._screen_thread = None
-            self._audio_thread = threading.Thread(target=self._audio_loop, daemon=True)
+            self._audio_thread = threading.Thread(
+                target=self._audio_loop, args=(self._audio_path,), daemon=True)
             self._audio_thread.start()
 
     def stop(self) -> dict:
@@ -171,14 +178,16 @@ class _Recorder:
         except Exception as exc:
             logger.warning("screen loop error: %s", exc)
 
-    def _audio_loop(self) -> None:
-        """录音——通过 /usr/bin/python3 子进程（它有有效的麦克风 TCC 权限）。"""
-        ts = int(time.time())
-        audio_path = self.out_dir / f"audio_{ts}.wav"
+    def _audio_loop(self, audio_path: Path) -> None:
+        """录音——通过 /usr/bin/python3 子进程（它有有效的麦克风 TCC 权限）。
+
+        流式落盘：callback 里增量写 wav（buffering=0 直写），而非录完一次性写。
+        这是低延迟实时转写的前提——daemon 的 tail 线程边录边读 PCM。
+        """
         max_seconds = self.max_seconds
 
         # 录音脚本写到文件（不用 f-string 避免缩进/转义问题）
-        script_file = audio_path.parent / f"record_{ts}.py"
+        script_file = audio_path.parent / f"record_{audio_path.stem.split('_')[-1]}.py"
         script_file.parent.mkdir(parents=True, exist_ok=True)
         script_file.write_text(
             "import wave, sys, time, signal\n"
@@ -189,35 +198,41 @@ class _Recorder:
             f"max_secs = {max_seconds}\n"
             "recording = [True]\n"
             "start_t = time.time()\n"
+            "mx = [0]\n"
             "def on_stop(sig, frame):\n"
             "    recording[0] = False\n"
             "signal.signal(signal.SIGTERM, on_stop)\n"
-            "data = sd.rec(int(max_secs * sr), samplerate=sr, channels=1, dtype='int16')\n"
-            "while recording[0]:\n"
-            "    time.sleep(0.05)\n"
-            "sd.stop()\n"
-            "elapsed = time.time() - start_t\n"
-            "actual = int(elapsed * sr)\n"
-            "if actual > len(data): actual = len(data)\n"
-            "if actual < sr: actual = sr\n"
-            "data = data[:actual]\n"
-            "mx = int(np.abs(data).max())\n"
-            "if mx < 100:\n"
+            "f = open(path, 'wb', buffering=0)\n"
+            "wf = wave.open(f, 'wb')\n"
+            "wf.setnchannels(1)\n"
+            "wf.setsampwidth(2)\n"
+            "wf.setframerate(sr)\n"
+            "def callback(indata, frames, time_info, status):\n"
+            "    if not recording[0]:\n"
+            "        raise sd.CallbackStop\n"
+            "    wf.writeframes(indata.tobytes())\n"
+            "    m = int(np.abs(indata).max())\n"
+            "    if m > mx[0]:\n"
+            "        mx[0] = m\n"
+            "try:\n"
+            "    with sd.InputStream(samplerate=sr, channels=1, dtype='int16',\n"
+            "                        blocksize=1600, callback=callback, latency='low'):\n"
+            "        while recording[0] and (time.time() - start_t) < max_secs:\n"
+            "            time.sleep(0.05)\n"
+            "except Exception as e:\n"
+            "    sys.stderr.write('STREAM_ERROR: ' + str(e) + '\\n')\n"
+            "finally:\n"
+            "    wf.close()\n"
+            "if mx[0] < 100:\n"
             "    print('SILENT', file=sys.stderr)\n"
             "else:\n"
-            "    with wave.open(path, 'wb') as wf:\n"
-            "        wf.setnchannels(1)\n"
-            "        wf.setsampwidth(2)\n"
-            "        wf.setframerate(sr)\n"
-            "        wf.writeframes(data.tobytes())\n"
-            "    print(f'OK maxval={mx}', file=sys.stderr)\n",
+            "    print('OK maxval={}'.format(mx[0]), file=sys.stderr)\n",
             encoding="utf-8",
         )
 
         try:
             import subprocess
 
-            self._audio_path = audio_path
             self._audio_proc = subprocess.Popen(
                 ["/usr/bin/python3", str(script_file)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -238,7 +253,7 @@ class _Recorder:
                 except Exception:
                     pass
 
-            # 读 stderr 看 ASR 结果
+            # 读 stderr 看录音结果
             stderr = self._audio_proc.stderr.read().decode() if self._audio_proc.stderr else ""
             logger.info("audio proc stderr: %s", stderr.strip()[-100:])
 
@@ -446,8 +461,33 @@ class PerceptionDaemon:
             threading.Thread(target=self._finish_with_unlock, args=(False,), daemon=True).start()
         else:
             self._recorder.start()
+            self._maybe_start_live()
             _feedback("start")
             _write_state(self.instance_id, last_capture_at=time.time())
+
+    def _maybe_start_live(self) -> None:
+        """录音开始时启动实时增量转写（低延迟路径，可配开关关闭）。"""
+        self._live = None
+        if not self.config.live_transcribe:
+            return
+        audio_path = self._recorder.audio_path
+        if not audio_path:
+            return
+        try:
+            from infrastructure.perception.live_transcribe import LiveTranscriber
+
+            lt = LiveTranscriber(
+                audio_path,
+                config=self.config,
+                min_segment_seconds=self.config.live_min_segment_seconds,
+                silence_frames=self.config.live_silence_frames,
+            )
+            lt.start()
+            self._live = lt
+            logger.info("live transcribe started: %s", audio_path.name)
+        except Exception as exc:
+            logger.warning("live transcribe start failed (fallback to batch): %s", exc)
+            self._live = None
 
     def _finish_with_unlock(self, auto: bool) -> None:
         """异步结束录制 + 解除 busy 锁。"""
@@ -473,7 +513,7 @@ class PerceptionDaemon:
             logger.warning("无音频，不触发事件")
             return
 
-        # 纯音频模式：直接 ASR + emit 事件（不走 pipeline 视觉）
+        # 纯音频模式：实时转写收尾（停止时通常只剩尾段在转）→ emit
         threading.Thread(
             target=self._asr_and_report,
             args=(cap["audio"],),
@@ -481,27 +521,45 @@ class PerceptionDaemon:
         ).start()
 
     def _asr_and_report(self, audio_path: str) -> None:
-        """极简快速路径：ASR（超 30s 自动分段）→ 直接 emit_event。"""
+        """低延迟路径：live 转写收尾（只等尾段）→ emit；live 失败 fallback 整文件。"""
+        t0 = time.time()
         transcript = ""
-        try:
-            from infrastructure.perception.config import load_config
-            from infrastructure.perception.asr import transcribe_file, probe_audio_duration, ASR_SEGMENT_SECONDS
-            cfg = load_config(self.instance_id)
-            # glm-asr 单次硬限 30s：超时长的音频先 ffmpeg 切段再逐段转写
-            seg_paths = None
-            duration = probe_audio_duration(audio_path)
-            if duration > ASR_SEGMENT_SECONDS:
-                seg_paths = _split_audio_file(audio_path, segment_seconds=ASR_SEGMENT_SECONDS)
-                if seg_paths and len(seg_paths) == 1 and seg_paths[0] == audio_path:
-                    seg_paths = None  # ffmpeg 不可用，切分失败 → 整文件兜底
-                else:
-                    logger.info("audio %.0fs > %ds, split into %d segments",
-                                duration, ASR_SEGMENT_SECONDS, len(seg_paths or []))
-            out = transcribe_file(audio_path, config=cfg, segment_paths=seg_paths)
-            transcript = out.get("text", "")
-            logger.info("ASR result: %s", transcript[:60])
-        except Exception as exc:
-            logger.warning("ASR failed: %s", exc)
+
+        # ① 实时增量转写：录音中已把大部分段转完，这里只等尾段 + 拼接
+        lt = getattr(self, "_live", None)
+        if lt is not None:
+            try:
+                transcript = lt.stop_and_finalize()
+                if transcript:
+                    logger.info("live transcript ready in %.2fs (after stop): %s",
+                                time.time() - t0, transcript[:60])
+            except Exception as exc:
+                logger.warning("live finalize failed (fallback to batch): %s", exc)
+                transcript = ""
+            finally:
+                self._live = None
+
+        # ② fallback：live 不可用/失败/无语音 → 整文件路径（含 >30s 自动分段）
+        if not transcript.strip():
+            try:
+                from infrastructure.perception.config import load_config
+                from infrastructure.perception.asr import transcribe_file, probe_audio_duration, ASR_SEGMENT_SECONDS
+                cfg = load_config(self.instance_id)
+                # glm-asr 单次硬限 30s：超时长的音频先 ffmpeg 切段再逐段转写
+                seg_paths = None
+                duration = probe_audio_duration(audio_path)
+                if duration > ASR_SEGMENT_SECONDS:
+                    seg_paths = _split_audio_file(audio_path, segment_seconds=ASR_SEGMENT_SECONDS)
+                    if seg_paths and len(seg_paths) == 1 and seg_paths[0] == audio_path:
+                        seg_paths = None  # ffmpeg 不可用，切分失败 → 整文件兜底
+                    else:
+                        logger.info("audio %.0fs > %ds, split into %d segments",
+                                    duration, ASR_SEGMENT_SECONDS, len(seg_paths or []))
+                out = transcribe_file(audio_path, config=cfg, segment_paths=seg_paths)
+                transcript = out.get("text", "")
+                logger.info("ASR result (batch): %s", transcript[:60])
+            except Exception as exc:
+                logger.warning("ASR failed: %s", exc)
 
         # 转写为空或纯噪声（# 等单符号）→ 不 emit，避免无意义唤醒 + session 混乱
         clean = (transcript or "").strip()

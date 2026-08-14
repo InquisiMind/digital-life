@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any, Mapping
@@ -128,6 +129,9 @@ class AIAgent:
             完成手头工作就 rest。
         """
         session_id = self.session_id or task_id or "adhoc"
+        # 语音快答计数器：本 wake 内的模型调用序号（0 = 第一次）。
+        # agent 每 wake 新建 → 计数器天然 wake 级，跨 wake 不残留。
+        self._wake_call_idx = 0
         # 每个 wake 推进一次段号。设计语义：segment_index = wake 序号，单调递增。
         # 同一 wake 内的所有消息（system/user/assistant/tool/sys_tool 注入）共享同一段号。
         # 这是新段启始的唯一入口；append_message 自身不自增。
@@ -596,9 +600,27 @@ class AIAgent:
         # agent.py 不识别"现在是 GLM 还是 o1 还是 Claude"。
         # 之前硬编码 `payload["reasoning_effort"] = effort` 被 cargo 推进来——对
         # o1 会 400 Bad Request，对 Claude/DSt 不识别但被静默忽略。
+        reasoning_config = self.reasoning_config
+        # 语音快答策略：语音 wake 的第一次调用关 think（用户在等第一声回应），
+        # 同一 wake 后续调用（做事/汇报）自动恢复原 effort。非语音场景不干预。
+        try:
+            from infrastructure.ai.think_cycle import is_fast_first_call, FAST_EFFORT
+            from domain.lifecycle.runtime_context import get_current_event_platform
+
+            call_idx = getattr(self, "_wake_call_idx", 0)
+            self._wake_call_idx = call_idx + 1
+            if is_fast_first_call(
+                event_platform=get_current_event_platform() or "",
+                call_idx=call_idx,
+                enabled=os.getenv("DIGITAL_LIFE_VOICE_FAST", "1") == "1",
+            ):
+                reasoning_config = {"effort": FAST_EFFORT}
+                logger.info("voice fast-first: call#%d effort→%s (think off)", call_idx, FAST_EFFORT)
+        except Exception:
+            pass
         payload = self._provider.customize_payload(
             payload,
-            reasoning_config=self.reasoning_config,
+            reasoning_config=reasoning_config,
         )
         if not payload["tools"]:
             payload.pop("tools")

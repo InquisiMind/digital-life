@@ -38,6 +38,23 @@ def _looks_like_edge_voice(voice: str) -> bool:
     return bool(voice) and "-" in voice and voice.isascii()
 
 
+def _resolve_say_voice(voice: str) -> str:
+    """say 声音名解析：多语言声（Reed/Rocko/Eddy…）必须带语言后缀。
+
+    ``say -v Reed`` 不带语言时匹配到列表第一个（英语版）——英语声读
+    中文完全没法听（"乱码感"）。本机实测正确形式：``Reed (中文（中国大陆）)``。
+    已带括号后缀的（Tingting 等单语言声不需要）原样返回。
+    """
+    v = (voice or "").strip() or DEFAULT_SAY_VOICE
+    if "(" in v:
+        return v
+    # Siri 多语言声名单 → 中文（中国大陆）变体
+    _MULTI_LANG = {"Reed", "Rocko", "Eddy", "Flo", "Grandma", "Grandpa", "Sandy", "Shelley"}
+    if v in _MULTI_LANG:
+        return f"{v} (中文（中国大陆）)"
+    return v
+
+
 def _clean_text_for_tts(text: str) -> str:
     """最小清理：只去掉 @ 标签和多余空白。
 
@@ -190,7 +207,7 @@ def _speak_one(text: str, voice: str, rate: str, gen: int) -> None:
     """
     # ── say 本地快路径（默认引擎）──
     if not _looks_like_edge_voice(voice or DEFAULT_SAY_VOICE):
-        say_voice = voice or DEFAULT_SAY_VOICE
+        say_voice = _resolve_say_voice(voice or DEFAULT_SAY_VOICE)
         try:
             proc = subprocess.Popen(["/usr/bin/say", "-v", say_voice, text],
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -343,7 +360,7 @@ def _unregister_playback(proc: subprocess.Popen) -> None:
 
 def _fallback_say(text: str, edge_voice: str) -> None:
     """edge-tts 不可用时降级到 macOS say（同样可被 stop_playback 打断）。"""
-    say_voice = _SAY_FALLBACK.get(edge_voice, "Tingting")
+    say_voice = _resolve_say_voice(_SAY_FALLBACK.get(edge_voice, "Tingting"))
     try:
         proc = subprocess.Popen(["/usr/bin/say", "-v", say_voice, text],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

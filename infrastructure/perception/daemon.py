@@ -460,6 +460,14 @@ class PerceptionDaemon:
             self._busy = True
             threading.Thread(target=self._finish_with_unlock, args=(False,), daemon=True).start()
         else:
+            # barge-in：按快捷键 = 用户要说话，立即停 zero 的播报
+            #（否则麦克风会把 zero 自己的 TTS 录进去，ASR 产生回声）
+            try:
+                from infrastructure.perception.voice_output import stop_playback
+                if stop_playback():
+                    logger.info("TTS interrupted by hotkey (barge-in)")
+            except Exception:
+                pass
             self._recorder.start()
             self._maybe_start_live()
             _feedback("start")

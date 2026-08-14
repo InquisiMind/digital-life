@@ -103,10 +103,19 @@ def speak(text: str, *, voice: str = DEFAULT_VOICE, rate: str = "+0%") -> bool:
                 else:
                     logger.warning("edge-tts all attempts failed, skip TTS (non-CJK text)")
                 return
-            # afplay 播放
-            subprocess.run(["afplay", tmp_mp3.name],
-                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
-            logger.info("voice TTS played: %d chars (voice=%s)", len(clean), voice)
+            # afplay 播放（Popen 跟踪 → 可被 stop_playback 打断）
+            player = subprocess.Popen(["afplay", tmp_mp3.name],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _register_playback(player)
+            try:
+                player.wait(timeout=120)
+            finally:
+                _unregister_playback(player)
+            if player.returncode == 0:
+                logger.info("voice TTS played: %d chars (voice=%s)", len(clean), voice)
+            else:
+                logger.info("voice TTS playback ended early (rc=%s, likely barge-in)",
+                            player.returncode)
         except FileNotFoundError:
             logger.warning("edge-tts not found, skip TTS")
         except Exception as exc:
@@ -132,12 +141,59 @@ _SAY_FALLBACK = {
 }
 
 
-def _fallback_say(text: str, edge_voice: str) -> None:
-    """edge-tts 不可用时降级到 macOS say。"""
-    say_voice = _SAY_FALLBACK.get(edge_voice, "Reed")
+# ── 播放打断（barge-in）──────────────────────────────────────────────────────
+# 跟踪当前播放进程：用户开口/按快捷键时 stop_playback() 立即停掉 zero 的播报，
+# 防止麦克风把 zero 自己的声音录进去（ASR 回声）。
+_playback_lock = threading.Lock()
+_playback_proc: subprocess.Popen | None = None
+
+
+def stop_playback(grace_seconds: float = 2.0) -> bool:
+    """停止当前 TTS 播放。返回是否有播放被打断。
+
+    先 SIGTERM，``grace_seconds`` 内不退出再 SIGKILL。无播放/已结束返回 False。
+    """
+    with _playback_lock:
+        proc = _playback_proc
+    if proc is None or proc.poll() is not None:
+        return False
     try:
-        subprocess.run(["/usr/bin/say", "-v", say_voice, text],
-                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+        proc.terminate()
+        try:
+            proc.wait(timeout=grace_seconds)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=1)
+        logger.info("TTS playback interrupted (barge-in)")
+        return True
+    except Exception:
+        return False
+
+
+def _register_playback(proc: subprocess.Popen) -> None:
+    with _playback_lock:
+        global _playback_proc
+        _playback_proc = proc
+
+
+def _unregister_playback(proc: subprocess.Popen) -> None:
+    with _playback_lock:
+        global _playback_proc
+        if _playback_proc is proc:
+            _playback_proc = None
+
+
+def _fallback_say(text: str, edge_voice: str) -> None:
+    """edge-tts 不可用时降级到 macOS say（同样可被 stop_playback 打断）。"""
+    say_voice = _SAY_FALLBACK.get(edge_voice, "Tingting")
+    try:
+        proc = subprocess.Popen(["/usr/bin/say", "-v", say_voice, text],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _register_playback(proc)
+        try:
+            proc.wait(timeout=120)
+        finally:
+            _unregister_playback(proc)
     except Exception:
         pass
 

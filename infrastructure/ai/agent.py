@@ -2123,24 +2123,42 @@ class AIAgent:
         if not memories:
             return
 
-        # 删旧的 entity_recall pair，只保留最新一轮（省 token）。
-        # 每轮都召回（去掉 entity 去重），LLM 每轮看到基于当前上下文的最新召回。
-        # 按名称过滤，不靠 position index。
-        messages[:] = [
-            m for m in messages
-            if not (
-                (str(m.get("tool_call_id") or "").startswith("sys_") and m.get("name") == "entity_recall")
-                or (
-                    m.get("role") == "assistant"
-                    and any(
-                        str(tc.get("id") or "").startswith("sys_")
-                        and tc.get("function", {}).get("name") == "entity_recall"
-                        for tc in m.get("tool_calls", [])
-                        if isinstance(tc, dict)
-                    )
-                )
+        # 旧 entity_recall 只保留最近 3 轮（省 token 且保留近期联想脉络）。
+        # 3 轮以外的旧召回基于过时上下文，对新决策价值低，删掉。
+        # 实现：先找出所有 entity_recall 的 assistant 消息位置，保留最后 3 个 pair，
+        # 更早的 pair（assistant 占位 + tool result）从 messages 里移除。
+        _RECALL_KEEP_ROUNDS = 3
+        recall_assistant_indices = [
+            i for i, m in enumerate(messages)
+            if m.get("role") == "assistant"
+            and any(
+                str(tc.get("id") or "").startswith("sys_")
+                and tc.get("function", {}).get("name") == "entity_recall"
+                for tc in m.get("tool_calls", [])
+                if isinstance(tc, dict)
             )
         ]
+        if len(recall_assistant_indices) > _RECALL_KEEP_ROUNDS:
+            # 找出要删的 pair：前 (N - 3) 个 recall 的 assistant 消息 + 紧随的 tool result
+            cutoff_idx = recall_assistant_indices[-_RECALL_KEEP_ROUNDS]
+            messages[:] = [
+                m for i, m in enumerate(messages)
+                if not (
+                    i < cutoff_idx
+                    and (
+                        (str(m.get("tool_call_id") or "").startswith("sys_") and m.get("name") == "entity_recall")
+                        or (
+                            m.get("role") == "assistant"
+                            and any(
+                                str(tc.get("id") or "").startswith("sys_")
+                                and tc.get("function", {}).get("name") == "entity_recall"
+                                for tc in m.get("tool_calls", [])
+                                if isinstance(tc, dict)
+                            )
+                        )
+                    )
+                )
+            ]
         # P2 (feature 002 User Story 2): 用统一检索 facade 取代旧的
         # Route A (entity_index) + Route B (vector, 字符串拼接 30 字符去重) 合并方式。
         # facade 内部跑三路(vector 语义 / FTS5 词法 / attention 提权)+ RRF 融合 +

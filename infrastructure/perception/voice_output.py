@@ -1,7 +1,14 @@
 """语音输出通道（TTS）—— 本地播放，不依赖飞书。
 
-使用 edge-tts（微软神经网络语音，云端合成、本地播放）。
-中文男声默认 zh-CN-YunxiNeural（云希），质量远超 macOS say。
+引擎策略（2026-08-14 定）：默认 macOS Siri 神经语音（say，本地合成，
+零网络零抖动，~1s 出声）；edge-tts（微软云端，音质上限更高但端点
+间歇抖动严重——半小时内每条都重试）作为可选高音质配置
+（app.yaml perception.tts_engine: edge / tts_voice: zh-CN-YunxiNeural）。
+
+voice 参数兼容两种形式：
+  - "zh-CN-YunxiNeural" 等 edge-tts 名 → edge 引擎
+  - "Reed"/"Rocko"/"Eddy" 等 macOS 声音名 → say 引擎
+未配置时默认 say + Reed（Siri 神经男声，本地）。
 """
 from __future__ import annotations
 
@@ -17,10 +24,18 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# edge-tts 神经语音（默认云希 = 年轻自然中文男声）
-DEFAULT_VOICE = "zh-CN-YunxiNeural"
+# 默认引擎：macOS Siri 神经语音（本地、稳定、快）；可选 "edge"（云端高音质）
+DEFAULT_ENGINE = os.getenv("DIGITAL_LIFE_TTS_ENGINE", "say")
+# say 默认声：Reed = Siri 神经中文男声；edge 默认声：云希
+DEFAULT_SAY_VOICE = "Reed"
+DEFAULT_EDGE_VOICE = "zh-CN-YunxiNeural"
 # 是否启用 TTS（环境变量 / 实例配置控制）
 DEFAULT_ENABLED = os.getenv("DIGITAL_LIFE_TTS", "0") == "1"
+
+
+def _looks_like_edge_voice(voice: str) -> bool:
+    """edge-tts 声音名形如 zh-CN-YunxiNeural（含 '-' 且全 ASCII）。"""
+    return bool(voice) and "-" in voice and voice.isascii()
 
 
 def _clean_text_for_tts(text: str) -> str:
@@ -53,18 +68,18 @@ def _stderr_tail(stderr: bytes) -> str:
     return lines[-1][:120] if lines else "unknown"
 
 
-def speak(text: str, *, voice: str = DEFAULT_VOICE, rate: str = "+0%") -> bool:
+def speak(text: str, *, voice: str = "", rate: str = "+0%") -> bool:
     """语音播报一段文本（排队，异步）。返回是否成功入队。
 
     多次调用自动排队串行播放（zero 可以分多次表达，不会叠音）；
     stop_playback() 打断当前播放并丢弃全部未播的排队项。
-    edge-tts 是微软云端神经网络语音，中文质量极好；免费端点有间歇抖动
-    （NoAudioReceived 快速失败 / 偶发 WebSocket 挂死），用退避重试扛。
 
     Args:
         text: 要播放的文本（会自动清理标记）
-        voice: edge-tts 语音名（zh-CN-YunxiNeural 云希 / zh-CN-YunyangNeural 云扬 等）
-        rate: 语速调整（"+0%" 正常 / "+10%" 稍快）
+        voice: 声音名。macOS 声（"Reed"/"Rocko"/"Eddy"…）→ say 本地合成；
+            edge-tts 名（"zh-CN-YunxiNeural"…）→ 云端合成（高音质，有抖动）。
+            空串 = 引擎默认声（say→Reed / edge→云希）。
+        rate: 语速调整（"+0%" 正常 / "+10%" 稍快；仅 edge 引擎生效）
     """
     clean = _clean_text_for_tts(text)
     if not clean:
@@ -165,15 +180,35 @@ def _player_loop() -> None:
 
 
 def _speak_one(text: str, voice: str, rate: str, gen: int) -> None:
-    """合成并播放一段。策略（快答优先，保真兜底）：
+    """合成并播放一段。按 voice 形式分流引擎：
 
-    - 快速 2 次（0/1s）扛瞬时抖动 → 成功即播（常规路径，~2s 内出声）
-    - 仍失败且文本以中文为主：**立即降级 say(Tingting) 出声**（实时对话里
-      87 秒后才冒一句话比音色突变更怪），**同时后台继续 edge-tts 重试**
-      （8s/15s），成功则缓存 mp3 供后续播放复用（这句已用 Tingting 说
-      过，不补播；收益是抖动期结束后音色立刻恢复且零延迟）
-    - 英文为主文本不降级（say 读英文太怪），只做后台重试
+    - macOS 声（"Reed" 等 / 默认）：say 本地合成——零网络零抖动 ~1s 出声，
+      无重试无降级（本地合成不会"端点抖动"，失败即系统级问题）
+    - edge-tts 声（"zh-CN-XxxNeural"）：云端合成，快速 2 次（0/1s）扛瞬时
+      抖动；仍失败且中文为主 → 立即降级 say 出声 + 后台长退避探测恢复；
+      英文为主不降级（say 读英文怪），后台重试成功补播
     """
+    # ── say 本地快路径（默认引擎）──
+    if not _looks_like_edge_voice(voice or DEFAULT_SAY_VOICE):
+        say_voice = voice or DEFAULT_SAY_VOICE
+        try:
+            proc = subprocess.Popen(["/usr/bin/say", "-v", say_voice, text],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _register_playback(proc)
+            try:
+                proc.wait(timeout=300)
+            finally:
+                _unregister_playback(proc)
+            if proc.returncode == 0:
+                logger.info("voice say played: %d chars (voice=%s)", len(text), say_voice)
+            else:
+                logger.info("voice say ended early (rc=%s, likely barge-in)", proc.returncode)
+        except Exception as exc:
+            logger.warning("voice say failed: %s", exc)
+        return
+
+    # ── edge-tts 云路径 ──
+    voice = voice or DEFAULT_EDGE_VOICE
     tmp_mp3 = None
     try:
         tmp_mp3 = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, dir="/tmp")
@@ -238,13 +273,13 @@ def _speak_one(text: str, voice: str, rate: str, gen: int) -> None:
                 pass
 
 
-# edge-tts voice → macOS say voice 的降级映射（中文场景统一 Tingting）
+# edge-tts voice → macOS say voice 的降级映射（Siri 神经声，男声保持男声）
 _SAY_FALLBACK = {
-    "zh-CN-YunxiNeural": "Tingting",
-    "zh-CN-YunyangNeural": "Tingting",
-    "zh-CN-YunjianNeural": "Tingting",
-    "zh-CN-XiaoxiaoNeural": "Tingting",
-    "zh-CN-XiaoyiNeural": "Tingting",
+    "zh-CN-YunxiNeural": "Reed",
+    "zh-CN-YunyangNeural": "Rocko",
+    "zh-CN-YunjianNeural": "Rocko",
+    "zh-CN-XiaoxiaoNeural": "Flo",
+    "zh-CN-XiaoyiNeural": "Flo",
 }
 
 
@@ -341,7 +376,11 @@ def is_tts_enabled(instance_id: str | None = None) -> bool:
 
 
 def get_tts_voice(instance_id: str | None = None) -> str:
-    """读取配置的 TTS 语音。"""
+    """读取配置的 TTS 语音（决定引擎：macOS 声名 → say，edge-tts 名 → 云端）。
+
+    未配置时按引擎默认：say → Reed（Siri 神经男声，本地稳定）；
+    显式配置 zh-CN-* 名则用 edge-tts（高音质，容忍抖动）。
+    """
     if instance_id:
         try:
             import yaml
@@ -355,4 +394,6 @@ def get_tts_voice(instance_id: str | None = None) -> str:
                     return voice
         except Exception:
             pass
-    return DEFAULT_VOICE
+    if DEFAULT_ENGINE == "edge":
+        return DEFAULT_EDGE_VOICE
+    return DEFAULT_SAY_VOICE

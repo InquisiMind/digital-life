@@ -107,9 +107,11 @@ def _speak_one(text: str, voice: str, rate: str, gen: int) -> None:
     try:
         tmp_mp3 = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, dir="/tmp")
         tmp_mp3.close()
-        # edge-tts 合成：3 次退避重试（1s / 3s）——抖动窗口通常几秒即过
+        # edge-tts 合成重试：快速 2 次（0/1s）扛瞬时抖动 + 长退避 2 次（8s/15s）
+        # 扛阵发抖动（实测 NoAudioReceived 窗口可持续 >10s，快速连试全撞同一窗口）。
+        # 仍失败才降级 say——保证"有声音"，代价是音色突变。
         played = False
-        backoffs = (0, 1, 3)
+        backoffs = (0, 1, 8, 15)
         for attempt, backoff in enumerate(backoffs, start=1):
             if backoff:
                 time.sleep(backoff)

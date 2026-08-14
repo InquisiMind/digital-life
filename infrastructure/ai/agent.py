@@ -2149,16 +2149,19 @@ class AIAgent:
         # 3 轮以外的旧召回基于过时上下文，对新决策价值低，删掉。
         # 实现：先找出所有 entity_recall 的 assistant 消息位置，保留最后 3 个 pair，
         # 更早的 pair（assistant 占位 + tool result）从 messages 里移除。
+        # 注意：tc.get("function") 可能为 None（部分序列化路径产生 function: null），
+        # 直接 .get("name") 会 NoneType 崩——曾导致语音 wake 整体失败回滚。
+        def _is_recall_call(tc: Any) -> bool:
+            if not isinstance(tc, dict):
+                return False
+            fn = tc.get("function") or {}
+            return str(tc.get("id") or "").startswith("sys_") and fn.get("name") == "entity_recall"
+
         _RECALL_KEEP_ROUNDS = 3
         recall_assistant_indices = [
             i for i, m in enumerate(messages)
             if m.get("role") == "assistant"
-            and any(
-                str(tc.get("id") or "").startswith("sys_")
-                and tc.get("function", {}).get("name") == "entity_recall"
-                for tc in m.get("tool_calls", [])
-                if isinstance(tc, dict)
-            )
+            and any(_is_recall_call(tc) for tc in (m.get("tool_calls") or []))
         ]
         if len(recall_assistant_indices) > _RECALL_KEEP_ROUNDS:
             # 找出要删的 pair：前 (N - 3) 个 recall 的 assistant 消息 + 紧随的 tool result
@@ -2171,12 +2174,7 @@ class AIAgent:
                         (str(m.get("tool_call_id") or "").startswith("sys_") and m.get("name") == "entity_recall")
                         or (
                             m.get("role") == "assistant"
-                            and any(
-                                str(tc.get("id") or "").startswith("sys_")
-                                and tc.get("function", {}).get("name") == "entity_recall"
-                                for tc in m.get("tool_calls", [])
-                                if isinstance(tc, dict)
-                            )
+                            and any(_is_recall_call(tc) for tc in (m.get("tool_calls") or []))
                         )
                     )
                 )

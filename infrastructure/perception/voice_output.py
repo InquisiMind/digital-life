@@ -91,6 +91,69 @@ def _ensure_player() -> None:
             _player_thread.start()
 
 
+# 端点健康状态：抖动期后探测恢复，避免每句都撞 2 次失败再降级
+_endpoint_healthy = True
+_endpoint_probe_lock = threading.Lock()
+
+
+def _bg_recover_voice(voice: str, rate: str, gen: int, pending_text: str) -> None:
+    """快速窗口失败后的后台恢复：长退避重试 edge-tts，成功即标记端点恢复。
+
+    - pending_text 非空（英文文本没走 say 降级）：重试成功直接补播
+      （英文不能用 Tingting 兜底，这条必须由 edge-tts 说出来）
+    - pending_text 为空（中文已用 Tingting 说过了）：只做恢复探测，
+      不补播——收益是下一句立刻回到正常音色 + 零额外等待
+    """
+    global _endpoint_healthy
+    with _endpoint_probe_lock:
+        _endpoint_healthy = False
+
+    def _recover():
+        try:
+            for backoff in (8, 15, 30):
+                time.sleep(backoff)
+                if gen != _generation:
+                    return
+                tmp = None
+                try:
+                    tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, dir="/tmp")
+                    tmp.close()
+                    result = subprocess.run(
+                        ["edge-tts", "--voice", voice, "--rate", rate,
+                         "--text", pending_text or "嗯", "--write-media", tmp.name],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                        timeout=20,
+                    )
+                    if result.returncode == 0 and os.path.getsize(tmp.name) > 0:
+                        with _endpoint_probe_lock:
+                            _endpoint_healthy = True
+                        logger.info("edge-tts endpoint recovered (after %ss backoff)", backoff)
+                        if pending_text and gen == _generation:
+                            player = subprocess.Popen(["afplay", tmp.name],
+                                                      stdout=subprocess.DEVNULL,
+                                                      stderr=subprocess.DEVNULL)
+                            _register_playback(player)
+                            try:
+                                player.wait(timeout=120)
+                            finally:
+                                _unregister_playback(player)
+                            return  # tmp 由 player 用完，下面不再删
+                        return
+                except Exception:
+                    pass
+                finally:
+                    if tmp and os.path.exists(tmp.name):
+                        try:
+                            os.unlink(tmp.name)
+                        except Exception:
+                            pass
+            logger.warning("edge-tts still down after bg recovery attempts")
+        except Exception:
+            pass
+
+    threading.Thread(target=_recover, daemon=True).start()
+
+
 def _player_loop() -> None:
     """播放线程：串行处理队列（保序），过期代直接丢弃。"""
     while True:
@@ -102,17 +165,22 @@ def _player_loop() -> None:
 
 
 def _speak_one(text: str, voice: str, rate: str, gen: int) -> None:
-    """合成并播放一段（原 _play 逻辑 + 代数失效检查）。"""
+    """合成并播放一段。策略（快答优先，保真兜底）：
+
+    - 快速 2 次（0/1s）扛瞬时抖动 → 成功即播（常规路径，~2s 内出声）
+    - 仍失败且文本以中文为主：**立即降级 say(Tingting) 出声**（实时对话里
+      87 秒后才冒一句话比音色突变更怪），**同时后台继续 edge-tts 重试**
+      （8s/15s），成功则缓存 mp3 供后续播放复用（这句已用 Tingting 说
+      过，不补播；收益是抖动期结束后音色立刻恢复且零延迟）
+    - 英文为主文本不降级（say 读英文太怪），只做后台重试
+    """
     tmp_mp3 = None
     try:
         tmp_mp3 = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, dir="/tmp")
         tmp_mp3.close()
-        # edge-tts 合成重试：快速 2 次（0/1s）扛瞬时抖动 + 长退避 2 次（8s/15s）
-        # 扛阵发抖动（实测 NoAudioReceived 窗口可持续 >10s，快速连试全撞同一窗口）。
-        # 仍失败才降级 say——保证"有声音"，代价是音色突变。
         played = False
-        backoffs = (0, 1, 8, 15)
-        for attempt, backoff in enumerate(backoffs, start=1):
+        # 快速窗口：2 次（0/1s）。长退避移到降级后的后台线程做。
+        for attempt, backoff in enumerate((0, 1), start=1):
             if backoff:
                 time.sleep(backoff)
             if gen != _generation:
@@ -133,13 +201,15 @@ def _speak_one(text: str, voice: str, rate: str, gen: int) -> None:
             logger.warning("edge-tts attempt %d failed: %s",
                            attempt, _stderr_tail(result.stderr))
         if not played:
-            # 全部重试失败：中文文本降级 macOS Tingting（保住"有声音"）；
-            # 英文为主的文本不降级（say 读英文太怪，不如不说）
-            if _is_mostly_cjk(text):
-                logger.warning("edge-tts all attempts failed, fallback to say (Tingting)")
+            # 快速窗口失败 → 中文立即 Tingting 出声（不等长退避）；
+            # 同时后台继续 edge-tts 长重试（缓存成功产物 + 恢复探测）。
+            cjk = _is_mostly_cjk(text)
+            if cjk:
+                logger.warning("edge-tts fast window failed, fallback to say (Tingting) now")
                 _fallback_say(text, voice)
             else:
-                logger.warning("edge-tts all attempts failed, skip TTS (non-CJK text)")
+                logger.warning("edge-tts fast window failed (non-CJK), no say fallback")
+            _bg_recover_voice(voice, rate, gen, text if not cjk else "")
             return
         if gen != _generation:
             return  # 播放前被打断，丢弃

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
 import re
 import subprocess
 import tempfile
@@ -53,9 +54,10 @@ def _stderr_tail(stderr: bytes) -> str:
 
 
 def speak(text: str, *, voice: str = DEFAULT_VOICE, rate: str = "+0%") -> bool:
-    """用 edge-tts 合成语音 + afplay 播放。返回是否成功。
+    """语音播报一段文本（排队，异步）。返回是否成功入队。
 
-    异步播放（在后台线程跑），不阻塞调用方。
+    多次调用自动排队串行播放（zero 可以分多次表达，不会叠音）；
+    stop_playback() 打断当前播放并丢弃全部未播的排队项。
     edge-tts 是微软云端神经网络语音，中文质量极好；免费端点有间歇抖动
     （NoAudioReceived 快速失败 / 偶发 WebSocket 挂死），用退避重试扛。
 
@@ -67,68 +69,101 @@ def speak(text: str, *, voice: str = DEFAULT_VOICE, rate: str = "+0%") -> bool:
     clean = _clean_text_for_tts(text)
     if not clean:
         return False
-
-    def _play():
-        tmp_mp3 = None
-        try:
-            tmp_mp3 = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, dir="/tmp")
-            tmp_mp3.close()
-            # edge-tts 合成：3 次退避重试（1s / 3s）——抖动窗口通常几秒即过
-            played = False
-            backoffs = (0, 1, 3)
-            for attempt, backoff in enumerate(backoffs, start=1):
-                if backoff:
-                    time.sleep(backoff)
-                try:
-                    result = subprocess.run(
-                        ["edge-tts", "--voice", voice, "--rate", rate,
-                         "--text", clean, "--write-media", tmp_mp3.name],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                        timeout=20,
-                    )
-                except subprocess.TimeoutExpired:
-                    logger.warning("edge-tts attempt %d timed out (20s)", attempt)
-                    continue
-                if result.returncode == 0 and os.path.getsize(tmp_mp3.name) > 0:
-                    played = True
-                    break
-                logger.warning("edge-tts attempt %d failed: %s",
-                               attempt, _stderr_tail(result.stderr))
-            if not played:
-                # 全部重试失败：中文文本降级 macOS Tingting（保住"有声音"）；
-                # 英文为主的文本不降级（say 读英文太怪，不如不说）
-                if _is_mostly_cjk(clean):
-                    logger.warning("edge-tts all attempts failed, fallback to say (Tingting)")
-                    _fallback_say(clean, voice)
-                else:
-                    logger.warning("edge-tts all attempts failed, skip TTS (non-CJK text)")
-                return
-            # afplay 播放（Popen 跟踪 → 可被 stop_playback 打断）
-            player = subprocess.Popen(["afplay", tmp_mp3.name],
-                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            _register_playback(player)
-            try:
-                player.wait(timeout=120)
-            finally:
-                _unregister_playback(player)
-            if player.returncode == 0:
-                logger.info("voice TTS played: %d chars (voice=%s)", len(clean), voice)
-            else:
-                logger.info("voice TTS playback ended early (rc=%s, likely barge-in)",
-                            player.returncode)
-        except FileNotFoundError:
-            logger.warning("edge-tts not found, skip TTS")
-        except Exception as exc:
-            logger.warning("voice TTS failed: %s", exc)
-        finally:
-            if tmp_mp3:
-                try:
-                    os.unlink(tmp_mp3.name)
-                except Exception:
-                    pass
-
-    threading.Thread(target=_play, daemon=True).start()
+    _ensure_player()
+    _tts_queue.put((clean, voice, rate, _generation))
     return True
+
+
+# ── 播放队列：单线程串行合成+播放（多次表达自动排队）─────────────────────────
+_tts_queue: "queue.Queue[tuple[str, str, str, int]]" = queue.Queue()
+_player_lock = threading.Lock()
+_player_thread: threading.Thread | None = None
+# 打断代数：stop_playback 时 +1，使入队/合成中的旧代语音全部失效
+_generation = 0
+
+
+def _ensure_player() -> None:
+    """懒启动播放线程（第一次 speak 时起，常驻）。"""
+    with _player_lock:
+        global _player_thread
+        if _player_thread is None or not _player_thread.is_alive():
+            _player_thread = threading.Thread(target=_player_loop, daemon=True)
+            _player_thread.start()
+
+
+def _player_loop() -> None:
+    """播放线程：串行处理队列（保序），过期代直接丢弃。"""
+    while True:
+        text, voice, rate, gen = _tts_queue.get()
+        if gen != _generation:
+            logger.info("TTS item dropped (interrupted while queued): %s", text[:30])
+            continue
+        _speak_one(text, voice, rate, gen)
+
+
+def _speak_one(text: str, voice: str, rate: str, gen: int) -> None:
+    """合成并播放一段（原 _play 逻辑 + 代数失效检查）。"""
+    tmp_mp3 = None
+    try:
+        tmp_mp3 = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, dir="/tmp")
+        tmp_mp3.close()
+        # edge-tts 合成：3 次退避重试（1s / 3s）——抖动窗口通常几秒即过
+        played = False
+        backoffs = (0, 1, 3)
+        for attempt, backoff in enumerate(backoffs, start=1):
+            if backoff:
+                time.sleep(backoff)
+            if gen != _generation:
+                return  # 合成等待期间被打断
+            try:
+                result = subprocess.run(
+                    ["edge-tts", "--voice", voice, "--rate", rate,
+                     "--text", text, "--write-media", tmp_mp3.name],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                    timeout=20,
+                )
+            except subprocess.TimeoutExpired:
+                logger.warning("edge-tts attempt %d timed out (20s)", attempt)
+                continue
+            if result.returncode == 0 and os.path.getsize(tmp_mp3.name) > 0:
+                played = True
+                break
+            logger.warning("edge-tts attempt %d failed: %s",
+                           attempt, _stderr_tail(result.stderr))
+        if not played:
+            # 全部重试失败：中文文本降级 macOS Tingting（保住"有声音"）；
+            # 英文为主的文本不降级（say 读英文太怪，不如不说）
+            if _is_mostly_cjk(text):
+                logger.warning("edge-tts all attempts failed, fallback to say (Tingting)")
+                _fallback_say(text, voice)
+            else:
+                logger.warning("edge-tts all attempts failed, skip TTS (non-CJK text)")
+            return
+        if gen != _generation:
+            return  # 播放前被打断，丢弃
+        # afplay 播放（Popen 跟踪 → 可被 stop_playback 打断）
+        player = subprocess.Popen(["afplay", tmp_mp3.name],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _register_playback(player)
+        try:
+            player.wait(timeout=120)
+        finally:
+            _unregister_playback(player)
+        if player.returncode == 0:
+            logger.info("voice TTS played: %d chars (voice=%s)", len(text), voice)
+        else:
+            logger.info("voice TTS playback ended early (rc=%s, likely barge-in)",
+                        player.returncode)
+    except FileNotFoundError:
+        logger.warning("edge-tts not found, skip TTS")
+    except Exception as exc:
+        logger.warning("voice TTS failed: %s", exc)
+    finally:
+        if tmp_mp3:
+            try:
+                os.unlink(tmp_mp3.name)
+            except Exception:
+                pass
 
 
 # edge-tts voice → macOS say voice 的降级映射（中文场景统一 Tingting）
@@ -149,25 +184,41 @@ _playback_proc: subprocess.Popen | None = None
 
 
 def stop_playback(grace_seconds: float = 2.0) -> bool:
-    """停止当前 TTS 播放。返回是否有播放被打断。
+    """打断全部语音输出：当前播放 + 所有排队未播的。返回是否有东西被打断。
 
-    先 SIGTERM，``grace_seconds`` 内不退出再 SIGKILL。无播放/已结束返回 False。
+    - 代数 +1：队列中未处理的项、正在合成中的项全部失效丢弃
+    - 清空播放队列
+    - 停掉当前正在播的进程（先 SIGTERM，``grace_seconds`` 内不退出再 SIGKILL）
     """
+    global _generation
+    _generation += 1
+    dropped = 0
+    while True:
+        try:
+            _tts_queue.get_nowait()
+            dropped += 1
+        except queue.Empty:
+            break
+
     with _playback_lock:
         proc = _playback_proc
-    if proc is None or proc.poll() is not None:
-        return False
-    try:
-        proc.terminate()
+    interrupted = False
+    if proc is not None and proc.poll() is None:
+        interrupted = True
         try:
-            proc.wait(timeout=grace_seconds)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=1)
-        logger.info("TTS playback interrupted (barge-in)")
+            proc.terminate()
+            try:
+                proc.wait(timeout=grace_seconds)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=1)
+        except Exception:
+            pass
+    if dropped or interrupted:
+        logger.info("TTS interrupted (barge-in): playing=%s, queued dropped=%d",
+                    interrupted, dropped)
         return True
-    except Exception:
-        return False
+    return False
 
 
 def _register_playback(proc: subprocess.Popen) -> None:

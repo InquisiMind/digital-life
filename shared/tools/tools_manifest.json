@@ -3,29 +3,64 @@
     {
       "name": "web_search",
       "description": "Web search via Bing. Returns formatted text of top results (title + snippet + url). Use for news lookup, fact checking, and research.",
-      "version": "2",
+      "version": "3",
       "registered_at": "2026-08-04T11:08:07",
       "scope": "shared",
       "emoji": "🔧",
-      "file": "shared/tools/web_search.py"
+      "file": "shared/tools/web_search.py",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "搜索关键词（必填）"
+          },
+          "num": {
+            "type": "integer",
+            "description": "返回结果数量（默认10）",
+            "default": 10
+          }
+        },
+        "required": ["query"]
+      }
     },
     {
       "name": "web_fetch",
       "description": "网页抓取工具。获取指定 URL 的网页正文内容，自动去除广告/导航/脚本等噪音。返回标题+正文文本。适用于：读新闻、读公告、读文章全文。免费，无需 API key。",
-      "version": "1",
-      "registered_at": "2026-07-30T20:17:53",
+      "version": "2",
+      "registered_at": "2026-07-30T20:25:53",
       "scope": "shared",
       "emoji": "📄",
-      "file": "shared/tools/web_fetch.py"
+      "file": "shared/tools/web_fetch.py",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "要抓取的网页 URL（必填）"
+          }
+        },
+        "required": ["url"]
+      }
     },
     {
       "name": "stock_quote",
       "description": "获取A股个股实时行情。通过腾讯财经API获取，免费无需key。输入股票代码（如 sz000025, sh600629），返回最新价、涨跌幅、换手率、市值、市盈率等。适用于：盘前/盘中查个股行情、候选池验证。",
-      "version": "3",
+      "version": "4",
       "registered_at": "2026-07-31T14:23:20",
       "scope": "shared",
       "emoji": "📈",
-      "file": "shared/tools/stock_quote.py"
+      "file": "shared/tools/stock_quote.py",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "股票代码，如 sz000025 / sh600629（必填）"
+          }
+        },
+        "required": ["code"]
+      }
     }
   ]
 }

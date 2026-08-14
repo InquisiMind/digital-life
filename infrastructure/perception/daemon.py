@@ -481,13 +481,23 @@ class PerceptionDaemon:
         ).start()
 
     def _asr_and_report(self, audio_path: str) -> None:
-        """极简快速路径：ASR → 直接 emit_event（跳过 HTTP endpoint + pipeline）。"""
+        """极简快速路径：ASR（超 30s 自动分段）→ 直接 emit_event。"""
         transcript = ""
         try:
             from infrastructure.perception.config import load_config
-            from infrastructure.perception.asr import transcribe_file
+            from infrastructure.perception.asr import transcribe_file, probe_audio_duration, ASR_SEGMENT_SECONDS
             cfg = load_config(self.instance_id)
-            out = transcribe_file(audio_path, config=cfg, segment_paths=None)
+            # glm-asr 单次硬限 30s：超时长的音频先 ffmpeg 切段再逐段转写
+            seg_paths = None
+            duration = probe_audio_duration(audio_path)
+            if duration > ASR_SEGMENT_SECONDS:
+                seg_paths = _split_audio_file(audio_path, segment_seconds=ASR_SEGMENT_SECONDS)
+                if seg_paths and len(seg_paths) == 1 and seg_paths[0] == audio_path:
+                    seg_paths = None  # ffmpeg 不可用，切分失败 → 整文件兜底
+                else:
+                    logger.info("audio %.0fs > %ds, split into %d segments",
+                                duration, ASR_SEGMENT_SECONDS, len(seg_paths or []))
+            out = transcribe_file(audio_path, config=cfg, segment_paths=seg_paths)
             transcript = out.get("text", "")
             logger.info("ASR result: %s", transcript[:60])
         except Exception as exc:

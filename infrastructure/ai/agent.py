@@ -2110,13 +2110,12 @@ class AIAgent:
         if not entities:
             return
 
-        # Entity-level dedup: skip entities already injected this session
-        new_entities = [e for e in entities if e not in self._injected_entities]
-        if not new_entities:
-            return
-
+        # 不做 entity 级去重——每轮都基于当前上下文重新召回。
+        # 旧设计 new_entities = [e for e in entities if e not in self._injected_entities]
+        # 导致前 3 轮注入后后续全部跳过（实体没变但上下文变了，该召回的新记忆被漏掉）。
+        # memory 级去重仍然保留（exclude_ids），避免同一条记忆重复注入。
         memories = query_entities_ranked(
-            new_entities,
+            entities,
             current_context=combined_all,
             exclude_ids=self._injected_memory_ids,
             limit=3,
@@ -2124,104 +2123,100 @@ class AIAgent:
         if not memories:
             return
 
-        # Format as detail block — entity name + matched memory snippet + type tag.
-        # 用户原设计:联想命中要返详情,不只名字。模型在 turn 中能直接看到关联记忆,
-        # 不必再调 sense_entity('名字') 二次拉 (那一步本来基本不发生)。
-        # 每个 memory 用 200 字 snippet (足以看到关键结论,不至于过长占 token)
-        if new_entities:
-            # 删旧的 entity_recall pair——按 name + sys_ 前缀过滤，
-            # 不靠 position index（_strip_old_reasoning / _compact 修改 messages 后
-            # position 会偏移失效导致堆积或删错位置）
-            messages[:] = [
-                m for m in messages
-                if not (
-                    (str(m.get("tool_call_id") or "").startswith("sys_") and m.get("name") == "entity_recall")
-                    or (
-                        m.get("role") == "assistant"
-                        and any(
-                            str(tc.get("id") or "").startswith("sys_")
-                            and tc.get("function", {}).get("name") == "entity_recall"
-                            for tc in m.get("tool_calls", [])
-                            if isinstance(tc, dict)
-                        )
+        # 删旧的 entity_recall pair，只保留最新一轮（省 token）。
+        # 每轮都召回（去掉 entity 去重），LLM 每轮看到基于当前上下文的最新召回。
+        # 按名称过滤，不靠 position index。
+        messages[:] = [
+            m for m in messages
+            if not (
+                (str(m.get("tool_call_id") or "").startswith("sys_") and m.get("name") == "entity_recall")
+                or (
+                    m.get("role") == "assistant"
+                    and any(
+                        str(tc.get("id") or "").startswith("sys_")
+                        and tc.get("function", {}).get("name") == "entity_recall"
+                        for tc in m.get("tool_calls", [])
+                        if isinstance(tc, dict)
                     )
                 )
-            ]
-            # P2 (feature 002 User Story 2): 用统一检索 facade 取代旧的
-            # Route A (entity_index) + Route B (vector, 字符串拼接 30 字符去重) 合并方式。
-            # facade 内部跑三路(vector 语义 / FTS5 词法 / attention 提权)+ RRF 融合 +
-            # 5s 硬时间上限,降级兜底,见 domain.memory.memory.recall.unified.facade。
-            # Route A 本身的 entity_index 片段(_matched_entity)继续作为 attention_tokens
-            # 喂给 facade,提高语义/词法命中的可提权性。
-            entity_breadcrumbs = ""
+            )
+        ]
+        # P2 (feature 002 User Story 2): 用统一检索 facade 取代旧的
+        # Route A (entity_index) + Route B (vector, 字符串拼接 30 字符去重) 合并方式。
+        # facade 内部跑三路(vector 语义 / FTS5 词法 / attention 提权)+ RRF 融合 +
+        # 5s 硬时间上限,降级兜底,见 domain.memory.memory.recall.unified.facade。
+        # Route A 本身的 entity_index 片段(_matched_entity)继续作为 attention_tokens
+        # 喂给 facade,提高语义/词法命中的可提权性。
+        entity_breadcrumbs = ""
+        try:
+            from domain.memory.memory.recall.unified import (
+                unified_recall, render_breadcrumbs,
+            )
+            # 三轮分权重联想: 逐轮 recall + 综合评分
+            # 近期 turn 权重更高, 让真正相关的认知优先浮出
+            all_results_map: dict[int, dict] = {}  # chunk_id → best result
+            for turn_text, turn_weight in turn_queries:
+                turn_hits = unified_recall(
+                    turn_text,
+                    attention_tokens=entities,
+                    exclude_chunk_ids=self._injected_memory_ids_as_chunk_ids(),
+                    budget_kind="passive",
+                    cognition_only=True,
+                )
+                for h in turn_hits:
+                    cid = h.get("chunk_id", -1)
+                    weighted_score = h.get("final_score", 0) * turn_weight
+                    if cid not in all_results_map or weighted_score > all_results_map[cid].get("_weighted", 0):
+                        h["_weighted"] = weighted_score
+                        all_results_map[cid] = h
+            # 排序取 top
+            sorted_results = sorted(all_results_map.values(),
+                                    key=lambda x: x.get("_weighted", 0), reverse=True)
+            entity_breadcrumbs = render_breadcrumbs(
+                sorted_results[:10], new_entities=entities
+            )
+        except Exception as ue:
+            logger.warning(
+                "unified_recall failed, will fallback to entity_index-only breadcrumb; %s",
+                ue,
+                exc_info=True,
+            )
+
+        # 兜底:fallback 仍保留 Route A entity_index 片段(行为严格不退化)
+        if not entity_breadcrumbs:
+            lines = ["[联想命中 — 实体触发]"]
+            for mem in memories:
+                mtype = str(mem.get("memory_type", "")).upper()
+                entity = str(mem.get("_matched_entity", ""))
+                tag = f"[实体:{entity}]" if entity else ""
+                snippet = str(mem.get("snippet", "")).strip().replace("\n", " ")
+                if len(snippet) > 200:
+                    snippet = snippet[:100] + "…" + snippet[-100:]
+                if mtype == "PROFILE":
+                    lines.append(f"🎯 [{entity} · 概念] {snippet}")
+                else:
+                    lines.append(f"🎯 [{mtype}]{tag} {snippet}")
+            lines.append(
+                f"(🎯触发: {len(entities)} 实体/{len(memories)} 条"
+                "。如需更多调 sense_entity('实体名'))"
+            )
+            entity_breadcrumbs = "\n".join(lines)
+
+        breadcrumb_text = entity_breadcrumbs
+        assistant_msg, tool_msg = self._sys_tool_call("entity_recall", breadcrumb_text)
+        messages.append(assistant_msg)
+        messages.append(tool_msg)
+        # V6: 持久化到 messages.db — 让 _assess_session_cognition 能读到面包屑做 LLM 评估
+        self._append_message(self.session_id, "tool", breadcrumb_text,
+                             tool_name="entity_recall", tool_call_id=tool_msg.get("tool_call_id"))
+        if self.audit_ctx is not None:
             try:
-                from domain.memory.memory.recall.unified import (
-                    unified_recall, render_breadcrumbs,
-                )
-                # 三轮分权重联想: 逐轮 recall + 综合评分
-                # 近期 turn 权重更高, 让真正相关的认知优先浮出
-                all_results_map: dict[int, dict] = {}  # chunk_id → best result
-                for turn_text, turn_weight in turn_queries:
-                    turn_hits = unified_recall(
-                        turn_text,
-                        attention_tokens=new_entities,
-                        exclude_chunk_ids=self._injected_memory_ids_as_chunk_ids(),
-                        budget_kind="passive",
-                        cognition_only=True,
-                    )
-                    for h in turn_hits:
-                        cid = h.get("chunk_id", -1)
-                        weighted_score = h.get("final_score", 0) * turn_weight
-                        if cid not in all_results_map or weighted_score > all_results_map[cid].get("_weighted", 0):
-                            h["_weighted"] = weighted_score
-                            all_results_map[cid] = h
-                # 排序取 top
-                sorted_results = sorted(all_results_map.values(),
-                                        key=lambda x: x.get("_weighted", 0), reverse=True)
-                entity_breadcrumbs = render_breadcrumbs(
-                    sorted_results[:10], new_entities=new_entities
-                )
-            except Exception as ue:
-                logger.warning(
-                    "unified_recall failed, will fallback to entity_index-only breadcrumb; %s",
-                    ue,
-                    exc_info=True,
-                )
+                self.audit_ctx.recall("entity_recall", breadcrumb_text)
+            except Exception:
+                logger.debug("Failed to dual-write entity_recall", exc_info=True)
 
-            # 兜底:fallback 仍保留 Route A entity_index 片段(行为严格不退化)
-            if not entity_breadcrumbs:
-                lines = ["[联想命中 — 实体触发]"]
-                for mem in memories:
-                    mtype = str(mem.get("memory_type", "")).upper()
-                    entity = str(mem.get("_matched_entity", ""))
-                    tag = f"[实体:{entity}]" if entity else ""
-                    snippet = str(mem.get("snippet", "")).strip().replace("\n", " ")
-                    if len(snippet) > 200:
-                        snippet = snippet[:100] + "…" + snippet[-100:]
-                    if mtype == "PROFILE":
-                        lines.append(f"🎯 [{entity} · 概念] {snippet}")
-                    else:
-                        lines.append(f"🎯 [{mtype}]{tag} {snippet}")
-                lines.append(
-                    f"(🎯触发: {len(new_entities)} 实体/{len(memories)} 条"
-                    "。如需更多调 sense_entity('实体名'))"
-                )
-                entity_breadcrumbs = "\n".join(lines)
-
-            breadcrumb_text = entity_breadcrumbs
-            assistant_msg, tool_msg = self._sys_tool_call("entity_recall", breadcrumb_text)
-            messages.append(assistant_msg)
-            messages.append(tool_msg)
-            # V6: 持久化到 messages.db — 让 _assess_session_cognition 能读到面包屑做 LLM 评估
-            self._append_message(self.session_id, "tool", breadcrumb_text,
-                                 tool_name="entity_recall", tool_call_id=tool_msg.get("tool_call_id"))
-            if self.audit_ctx is not None:
-                try:
-                    self.audit_ctx.recall("entity_recall", breadcrumb_text)
-                except Exception:
-                    logger.debug("Failed to dual-write entity_recall", exc_info=True)
-
-        self._injected_entities.update(new_entities)
+        # 不再做 entity 级去重——每轮都召回
+        # memory 级去重保留：防止同一条记忆重复注入
         self._injected_memory_ids.update(
             str(m.get("memory_id", "")) for m in memories if m.get("memory_id")
         )

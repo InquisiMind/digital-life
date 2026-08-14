@@ -2697,18 +2697,17 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
 
     now = _clock.beijing_now_dt()
 
-    # ─── 路径 A：reuse=<alarm_id>，复用现有 timer ───
+    # ─── 路径 A：reuse=<alarm_id>，复用现有 timer/routine ───
     if reuse_id > 0:
-        # 找对应的 timer 闹钟
+        # 找对应的闹钟（查 timer + routine，和重叠检测的数据源一致）
         target_alarm = None
-        for a in list_pending_alarms("timer"):
+        for a in list_pending_alarms("timer") + list_pending_alarms("routine"):
             if (a.get("id") or 0) == reuse_id:
                 target_alarm = a
                 break
         if not target_alarm:
-            # timer 已触发或不存在 — 不报错, 改为自动列出可用 pending timer 让模型重选。
-            # 之前直接 return tool_error 让模型多走一轮, 且消息"找不到"让模型困惑。
-            pending = list_pending_alarms("timer")
+            # 闹钟已触发或不存在 — 列出可用 pending 闹钟（timer + routine）让模型重选
+            pending = list_pending_alarms("timer") + list_pending_alarms("routine")
             snap = vitals.consume_energy(0)
             import json as _j_reuse_fallback
             timer_lines = []

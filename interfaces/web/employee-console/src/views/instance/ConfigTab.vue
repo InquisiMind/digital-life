@@ -38,9 +38,8 @@
           <p><strong>前置条件</strong></p>
           <ol style="color: var(--text-muted); padding-left: 20px;">
             <li>已在 <a href="https://open.feishu.cn/app" target="_blank">飞书开放平台</a> 创建自建应用</li>
-            <li>已导入完整权限配置（见 <a href="https://github.com/InquisiMind/digital-life/blob/main/docs/operations/feishu-setup.md" target="_blank">飞书配置指南</a>）</li>
-            <li>已开启事件订阅（长连接模式）</li>
-            <li>已发布应用版本并等待企业管理员审批通过</li>
+            <li>已导入基础权限（tenant）+ 事件订阅 + 机器人 + 发布（见 <a href="https://github.com/InquisiMind/digital-life/blob/main/docs/operations/feishu-setup.md" target="_blank">飞书配置指南</a>）</li>
+            <li>已导入全接管 user 权限最小集（im:chat:read、im:message、get_as_user ×2、contact:user.base:readonly、offline_access——指南 1b 节，需管理员审批）</li>
           </ol>
 
           <el-divider />

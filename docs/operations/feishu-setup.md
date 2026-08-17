@@ -2,9 +2,14 @@
 
 在 [飞书开放平台](https://open.feishu.cn/app) 创建自建应用，配置四处。
 
-## 1. 权限
+配置分两部分，按需选择：
 
-应用详情 → 权限管理 → **导入权限配置**，粘贴以下 JSON：
+- **基础配置（必做）**：tenant 权限 + 事件订阅 + 机器人 + 发布。Bot 身份收发消息、群聊协作用这套。
+- **全接管配置（可选）**：user 权限（见 1b）+ 控制台授权。数字生命以**你的身份**拉取全部群聊/私聊消息（社交感知）。不开全接管则完全不需要。
+
+## 1. 权限 — 基础（tenant，必做）
+
+应用详情 → 权限管理 → **导入权限配置**，粘贴以下 JSON（只含 tenant 权限）：
 
 ```json
 {
@@ -62,94 +67,39 @@
       "im:resource",
       "speech_to_text:speech",
       "wiki:wiki"
-    ],
-    "user": [
-      "aily:file:read",
-      "aily:file:write",
-      "base:app:copy",
-      "base:app:create",
-      "base:app:read",
-      "base:app:update",
-      "base:field:create",
-      "base:field:delete",
-      "base:field:read",
-      "base:field:update",
-      "base:record:create",
-      "base:record:delete",
-      "base:record:retrieve",
-      "base:record:update",
-      "base:table:create",
-      "base:table:read",
-      "base:table:update",
-      "base:view:read",
-      "base:view:write_only",
-      "bitable:app",
-      "bitable:app:readonly",
-      "board:whiteboard:node:create",
-      "board:whiteboard:node:delete",
-      "board:whiteboard:node:read",
-      "board:whiteboard:node:update",
-      "cardkit:card:read",
-      "cardkit:card:write",
-      "cardkit:template:read",
-      "contact:contact.base:readonly",
-      "contact:user.base:readonly",
-      "contact:user.basic_profile:readonly",
-      "contact:user.employee_id:readonly",
-      "contact:user:search",
-      "docs:document.comment:create",
-      "docs:document.comment:delete",
-      "docs:document.comment:read",
-      "docs:document.comment:update",
-      "docs:document.comment:write_only",
-      "docs:document.content:read",
-      "docs:document.media:download",
-      "docs:document.media:upload",
-      "docs:document:copy",
-      "docs:document:export",
-      "docs:document:import",
-      "docx:document:create",
-      "docx:document:readonly",
-      "docx:document:write_only",
-      "drive:drive.metadata:readonly",
-      "drive:file:download",
-      "drive:file:upload",
-      "im:chat.access_event.bot_p2p_chat:read",
-      "im:chat.announcement:read",
-      "im:chat.members:read",
-      "im:chat.nickname:read",
-      "im:chat:read",
-      "im:message",
-      "im:message.group_msg:get_as_user",
-      "im:message.p2p_msg:get_as_user",
-      "im:message:readonly",
-      "im:message:update",
-      "offline_access",
-      "sheets:spreadsheet",
-      "sheets:spreadsheet.meta:read",
-      "sheets:spreadsheet.meta:write_only",
-      "sheets:spreadsheet:create",
-      "sheets:spreadsheet:read",
-      "sheets:spreadsheet:readonly",
-      "sheets:spreadsheet:write_only",
-      "space:document:move",
-      "task:comment:read",
-      "task:comment:write",
-      "task:task:read",
-      "task:tasklist:read",
-      "wiki:node:copy",
-      "wiki:node:create",
-      "wiki:node:move",
-      "wiki:node:read",
-      "wiki:node:retrieve",
-      "wiki:space:read",
-      "wiki:space:retrieve",
-      "wiki:space:write_only",
-      "wiki:wiki:readonly"
     ]
   }
 }
 ```
+
+> 只需要基础 Bot 功能的话，导入这一份就够了（tenant 权限多数免审批或自动通过）。
+> 去掉了 `task:task:write` 和 `task:tasklist:write`（写飞书任务需要审批，数字生命有自己的 todo 系统不需要）。
+> `im:message.reactions:write_only` 是表情收条（可选）。
+
+## 1b. 权限 — 全接管（user，可选）
+
+只有开启「飞书全接管」（控制台 → 实例 Config → 社交接管）才需要。user 权限以**你的身份**生效，多数需要企业管理员审批——建议按最小集申请。
+
+**最小集（全接管拉群聊/私聊消息必需）**，单独导入：
+
+```json
+{
+  "scopes": {
+    "user": [
+      "im:chat:read",
+      "im:message",
+      "im:message.group_msg:get_as_user",
+      "im:message.p2p_msg:get_as_user",
+      "contact:user.base:readonly",
+      "offline_access"
+    ]
+  }
+}
+```
+
+> 导入是**合并**语义：会把这里的 user 权限加进现有配置，不影响已导入的 tenant 权限。
+> 之前文档里那份 80+ 条的 user 大列表（含文档/表格/白板等）是历史遗留，绝大多数没有内置工具在用，不再推荐一次性全开。
+
 
 > 去掉了 `task:task:write` 和 `task:tasklist:write`（写飞书任务需要审批，数字生命有自己的 todo 系统不需要）。
 > `im:message.reactions:write_only` 是表情收条（可选）。

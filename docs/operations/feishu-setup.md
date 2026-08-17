@@ -78,9 +78,11 @@
 
 ## 1b. 权限 — 全接管（user，可选）
 
-只有开启「飞书全接管」（控制台 → 实例 Config → 社交接管）才需要。user 权限以**你的身份**生效，多数需要企业管理员审批——建议按最小集申请。
+只有开启「飞书全接管」（控制台 → 实例 Config → 社交接管）才需要。user 权限以**你的身份**生效，多数需要企业管理员审批。按你要用的功能分两档申请：
 
-**最小集（全接管拉群聊/私聊消息必需）**，单独导入：
+### 档位 A：社交感知（只要拉消息）
+
+全接管拉群聊/私聊消息所需的最小集，单独导入：
 
 ```json
 {
@@ -97,9 +99,38 @@
 }
 ```
 
-> 导入是**合并**语义：会把这里的 user 权限加进现有配置，不影响已导入的 tenant 权限。
-> 之前文档里那份 80+ 条的 user 大列表（含文档/表格/白板等）是历史遗留，绝大多数没有内置工具在用，不再推荐一次性全开。
+### 档位 B：`feishu_call` 通用 API 代理（要数字生命替你操作飞书文档/表格/多维表/知识库/任务）
 
+`feishu_call` 工具以你的 user_access_token 调任意飞书 open-apis（读 + 两步确认的写）。它的能力边界 = 你申请的 user 权限边界。要哪些能力就加哪些权限，以下按域分组（`task:task:write` / `task:tasklist:write` 已去掉——写飞书任务需额外审批，且数字生命有自己的 todo 系统）：
+
+```json
+{
+  "scopes": {
+    "user": [
+      "im:chat:read", "im:chat.members:read", "im:chat.nickname:read",
+      "im:message", "im:message:readonly",
+      "docx:document:create", "docx:document:readonly", "docx:document:write_only",
+      "docs:document.content:read", "docs:document.comment:read", "docs:document.comment:create",
+      "docs:document.media:download", "docs:document.media:upload",
+      "drive:drive.metadata:readonly", "drive:file:download", "drive:file:upload",
+      "sheets:spreadsheet", "sheets:spreadsheet.meta:read", "sheets:spreadsheet:read", "sheets:spreadsheet:write_only",
+      "wiki:wiki:readonly", "wiki:space:read", "wiki:space:retrieve", "wiki:node:read", "wiki:node:retrieve", "wiki:node:create",
+      "base:app:read", "base:app:update", "base:record:retrieve", "base:record:create", "base:record:update",
+      "bitable:app", "bitable:app:readonly",
+      "task:task:read", "task:tasklist:read", "task:comment:read", "task:comment:write",
+      "contact:user:search", "contact:user.basic_profile:readonly"
+    ]
+  }
+}
+```
+
+> 只用部分域就删掉其他行（比如只碰飞书表格 → 只留 sheets 组）。权限越多审批越慢，按需裁剪。
+
+### 导入说明
+
+- 导入是**合并**语义：会把新 JSON 的 user 权限加进现有配置，不影响已导入的 tenant 权限。
+- 档位 A 是档位 B 的前置（拉消息是最基础的能力），两个都要就 A、B 合并后一次导入。
+- 改完权限需要**重新发布应用版本**并等管理员审批，user 权限才生效。
 
 > 去掉了 `task:task:write` 和 `task:tasklist:write`（写飞书任务需要审批，数字生命有自己的 todo 系统不需要）。
 > `im:message.reactions:write_only` 是表情收条（可选）。

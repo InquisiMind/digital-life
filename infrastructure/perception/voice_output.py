@@ -55,15 +55,61 @@ def _resolve_say_voice(voice: str) -> str:
     return v
 
 
-def _clean_text_for_tts(text: str) -> str:
-    """最小清理：只去掉 @ 标签和多余空白。
+def _strip_markdown(text: str) -> str:
+    """剥掉 markdown 格式符号，保留纯文本（供 TTS 朗读）。
 
-    技术细节（URL/路径/代码）的过滤应该由模型在生成回复时自己注意，
-    不在后处理硬编码——否则会生硬地删掉内容。
+    规则：
+    - **bold** / *italic* / __bold__ / _italic_ → 去符号留文字
+    - `code` / ```code``` → 去符号留文字
+    - [link](url) → 只留 link 文字
+    - # 标题 / ## 标题 → 去掉 # 前缀
+    - - / * / 1. 列表项 → 去掉前缀符号
+    - |table| → 转成逗号分隔的纯文本行
+    - --- / === / *** 分隔线 → 删除
+    - > 引用 → 去掉 > 前缀
+    """
+    # 代码块 ```...``` → 保留内容
+    text = re.sub(r"```\n?", "", text)
+    # 行内代码 `code` → 保留内容
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    # 链接 [text](url) → 只留 text
+    text = re.sub(r"\[([^]]*)\]\([^)]*\)", r"\1", text)
+    # 加粗+斜体 ***text*** → text
+    text = re.sub(r"\*{3}([^*]+)\*{3}", r"\1", text)
+    # 加粗 **text** / __text__ → text
+    text = re.sub(r"\*{2}([^*]+)\*{2}", r"\1", text)
+    text = re.sub(r"_{2}([^_]+)_{2}", r"\1", text)
+    # 斜体 *text* / _text_ → text（注意不误伤 * 列表标记）
+    text = re.sub(r"(?<!^)(?<!\*)\*([^*\n]+)\*(?!\*)", r"\1", text)
+    # 分隔线 --- / === / *** → 删除整行
+    text = re.sub(r"^[\s]*[-=\*]{3,}[\s]*$", "", text, flags=re.MULTILINE)
+    # 标题 # / ## / ### → 去前缀
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+    # 引用 > text → text
+    text = re.sub(r"^>\s?", "", text, flags=re.MULTILINE)
+    # 表格分隔行 |---|---| → 删除（在处理 pipe 之前）
+    text = re.sub(r"^\|?[\s:]*-{2,}[\s:]*(\|[\s:]*-{2,}[\s:]*)*\|?\s*$", "", text, flags=re.MULTILINE)
+    # 表格行 | a | b | → a, b
+    text = re.sub(r"^\||\|$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\|", "，", text)
+    # 列表标记 - / * / + 开头 → 去掉（保留内容）
+    text = re.sub(r"^[\s]*[-*+]\s+", "", text, flags=re.MULTILINE)
+    # 数字列表 1. / 2. → 去掉（保留内容）
+    text = re.sub(r"^[\s]*\d+\.\s+", "", text, flags=re.MULTILINE)
+    return text
+
+
+def _clean_text_for_tts(text: str) -> str:
+    """清理文本供 TTS 朗读：去 @ 标签、剥 markdown 格式、合并空白。
+
+    markdown 格式符号（星号、竖线、井号等）被 TTS 读出来会非常奇怪，
+    必须在送入合成引擎前剥掉，只保留纯文本内容。
     """
     # 去 @ 标签
     text = re.sub(r"<at[^>]*>.*?</at>", "", text)
     text = re.sub(r"<at[^>]*/>", "", text)
+    # 剥 markdown 格式
+    text = _strip_markdown(text)
     # 去多余空白
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
@@ -398,6 +444,15 @@ def get_tts_voice(instance_id: str | None = None) -> str:
     未配置时按引擎默认：say → Reed（Siri 神经男声，本地稳定）；
     显式配置 zh-CN-* 名则用 edge-tts（高音质，容忍抖动）。
     """
+    return _get_perc_field(instance_id, "tts_voice") or _default_voice()
+
+
+def get_tts_rate(instance_id: str | None = None) -> str:
+    """读取配置的 TTS 语速（"+10%" 形式；仅 edge-tts 生效，say 忽略）。"""
+    return _get_perc_field(instance_id, "tts_rate") or "+0%"
+
+
+def _get_perc_field(instance_id: str | None, key: str) -> str:
     if instance_id:
         try:
             import yaml
@@ -406,11 +461,15 @@ def get_tts_voice(instance_id: str | None = None) -> str:
             if cfg_path.exists():
                 cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
                 perc = cfg.get("perception") or {}
-                voice = (perc.get("tts_voice") or "").strip()
-                if voice:
-                    return voice
+                val = str(perc.get(key) or "").strip()
+                if val:
+                    return val
         except Exception:
             pass
+    return ""
+
+
+def _default_voice() -> str:
     if DEFAULT_ENGINE == "edge":
         return DEFAULT_EDGE_VOICE
     return DEFAULT_SAY_VOICE

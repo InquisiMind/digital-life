@@ -3129,7 +3129,7 @@ def _send_voice_local(
     err = None
     try:
         from infrastructure.config import get_app_instance_id
-        from infrastructure.perception.voice_output import speak, is_tts_enabled, get_tts_voice
+        from infrastructure.perception.voice_output import speak, is_tts_enabled, get_tts_voice, get_tts_rate
 
         iid = get_app_instance_id() or ""
         if not is_tts_enabled(iid):
@@ -3137,7 +3137,8 @@ def _send_voice_local(
                 "voice: TTS 未启用（app.yaml perception.tts_enabled: true）"
             )
         voice = get_tts_voice(iid)
-        sent = speak(text, voice=voice)
+        rate = get_tts_rate(iid)
+        sent = speak(text, voice=voice, rate=rate)
     except FileNotFoundError:
         err = "/usr/bin/say not found（仅支持 macOS）"
     except Exception as exc:

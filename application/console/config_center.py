@@ -207,8 +207,18 @@ FIELDS: tuple[ConfigField, ...] = (
     ),
     ConfigField(
         "perception.tts_voice", "TTS 语音", "perception", "yaml",
-        path="perception.tts_voice", default="Tingting",
-        description="macOS 语音名。Tingting（婷婷，中文女声）/ Shelley / Sinji 等。",
+        path="perception.tts_voice", default="Reed",
+        description="语音名。macOS 声（Reed/Rocko/Eddy，本地稳定快）或 edge-tts 声（zh-CN-YunxiNeural，云端高音质但偶发抖动）。",
+    ),
+    ConfigField(
+        "perception.tts_rate", "TTS 语速", "perception", "yaml",
+        path="perception.tts_rate", default="+0%",
+        description="语速调整，如 +10% 稍快 / -10% 稍慢（仅 edge-tts 声生效，macOS 声暂不支持）。",
+    ),
+    ConfigField(
+        "perception.tts_pitch", "TTS 音调", "perception", "yaml",
+        path="perception.tts_pitch", default="+0Hz",
+        description="音调调整，如 +15Hz 略尖 / -10Hz 略沉（仅 edge-tts 声生效，macOS 声暂不支持）。",
     ),
     ConfigField(
         "perception.wake_words", "唤醒词", "perception", "yaml", "array",

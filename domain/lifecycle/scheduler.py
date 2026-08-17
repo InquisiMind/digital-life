@@ -79,6 +79,11 @@ def reset_force_new_session(token: "contextvars.Token[bool]") -> None:
 # 不再全量回放——避免长期接续的 session 把 6 小时前的原文一遍遍塞进 LLM。
 SEGMENT_GAP_COMPRESS_S = 30 * 60
 
+# 接续回灌硬上限（消息条数）：超过时从最旧段开始强制折叠为摘要，
+# 保证滚动长对话（30min 窗口内消息堆积）的接续上下文有界。
+# 最后一段（当前 wake 直接上文）永不折叠。
+SESSION_CONTEXT_HARD_LIMIT = 160
+
 # 实例级连续 wake 失败计数 —— 偶发超时是常态（GLM 偶尔抽风），不报健康异常；
 # 持续失败到阈值才写 flow_event error 事件，让健康检查（system_routes 的
 # health_state）亮 error 并显示原因。成功一次即清零（健康自动恢复）。
@@ -281,15 +286,27 @@ def _summarize_segment(segment: list[dict], session_db, session_id: str, seg_idx
             }]
 
         # 2) 无 narrative → 段首尾兜底（不丢全部，但显著瘦身）
+        # ≤4 条的段整段保留且**不裹标记**——本就 tiny，折叠无收益；
+        # 保留原文原语义（ordering 测试覆盖此行为）。
         if len(segment) <= 4:
             return _load_prior_messages_segment(segment)
         head = _load_prior_messages_segment(segment[:2])
         tail = _load_prior_messages_segment(segment[-2:])
-        return head + [{
+        out = head + [{
             "role": "user",
             "content": "[…此段更早内容已折叠…]",
             "_sys_tool": "segment_recap",
         }] + tail
+        # 关键：兜底保留的段首可能含 wake prompt（「## ── ↓ 当下事件 ↓ ──」头）。
+        # 不标记的话模型会把几小时前的旧事件误读为"刚到达的新事件"重复响应
+        # （dump 实证：16:15 的 prompt 出现在 17:51 的上下文里）。统一裹上
+        # 历史回顾标记，语义与 narrative 路径一致。
+        for m in out:
+            if m.get("role") == "user" and not m.get("_sys_tool"):
+                c = str(m.get("content") or "")
+                if c and not c.startswith("[历史回顾"):
+                    m["content"] = f"[历史回顾 · 非新事件 · {time_range}]\n{c}\n[/历史回顾]"
+        return out
     except Exception as e:
         # 绝不抛 —— 降级为段首尾
         logger.debug("segment summarization failed for %s#%d, keeping verbatim: %s",
@@ -329,6 +346,50 @@ def _load_prior_messages_segment(segment: list[dict]) -> list[dict]:
     return out
 
 
+def _split_monolith_segment_by_gap(segment: list[dict], *, gap_seconds: float = 600.0) -> list[list[dict]]:
+    """把单段巨石虚拟切段（存量数据兼容，不改 DB）。
+
+    背景：段号 bug（c9ddc002 修复前）让长期接续 session 的所有消息挤在
+    segment 1，折叠逻辑"只有一段"短路、全量回灌。本函数在读取侧虚拟切段，
+    让折叠逻辑能正常工作。DB 数据不动。
+
+    切分锚点（按优先级）：
+      1. **事件注入边界**：tool_name='wake_signal' 的消息（每个新事件/
+         接续 wake 注入一条）。实测高强度连续对话（rest 被 pending 事件
+         revoke、从未真正休息）没有时间间隙可切，只有这个标记可靠——
+         752 条消息按此切出 30 个健康段。
+      2. **时间间隙**：无锚点消息时按"消息间隔 > gap_seconds"（rest 停顿）切。
+
+    Returns: 切好的段列表。输入太短 → 单段原样。
+    """
+    if len(segment) <= 8:
+        return [segment]
+    splits: list[list[dict]] = []
+    cur: list[dict] = []
+    anchored = False
+    for m in segment:
+        if m.get("tool_name") == "wake_signal" and cur:
+            splits.append(cur)
+            cur = [m]
+            anchored = True
+            continue
+        if cur and not anchored:
+            prev_ts = _segment_gap_end_timestamp(cur)
+            ts = m.get("timestamp")
+            try:
+                ts_f = float(ts) if ts is not None else None
+            except (TypeError, ValueError):
+                ts_f = None
+            if prev_ts and ts_f and (ts_f - prev_ts) > gap_seconds:
+                splits.append(cur)
+                cur = [m]
+                continue
+        cur.append(m)
+    if cur:
+        splits.append(cur)
+    return splits if splits else [segment]
+
+
 def _load_prior_messages_with_compression(session_db, session_id: str, now_ts: float) -> list:
     """接续时拉 prev_history，并按「段(wake) gap」做时间折叠。
 
@@ -351,6 +412,22 @@ def _load_prior_messages_with_compression(session_db, session_id: str, now_ts: f
                 idx = 0
             segments_map.setdefault(idx, []).append(m)
 
+        # 存量巨石段虚拟切段：单段但消息多、跨时长 → 按事件锚点切开，
+        # 否则"只有一段"短路导致全量回灌（段号 bug 遗留数据）。
+        # 阈值：>12 条且跨度超折叠窗（一个 wake 平均 ~25 条消息，巨石必然远超）。
+        if len(segments_map) == 1:
+            only = next(iter(segments_map.values()))
+            span = _segment_gap_end_timestamp(only) - _segment_gap_start_timestamp(only)
+            if len(only) > 12 and span > SEGMENT_GAP_COMPRESS_S:
+                virtual = _split_monolith_segment_by_gap(only)
+                if len(virtual) > 1:
+                    segments_map = {i: seg for i, seg in enumerate(virtual, start=1)}
+                    logger.info(
+                        "SEGMENT_VIRTUAL_SPLIT session=%s 1 monolith → %d virtual segments "
+                        "(legacy single-segment data, gap>600s)",
+                        session_id[:20], len(virtual),
+                    )
+
         if len(segments_map) <= 1:
             # 只有一段（首次接续），无需折叠
             return _load_prior_messages(session_db, session_id)
@@ -365,19 +442,47 @@ def _load_prior_messages_with_compression(session_db, session_id: str, now_ts: f
             key=lambda idx: _segment_gap_start_timestamp(segments_map[idx]),
         )
 
+        # 第一遍：按时间窗口折叠（>30min → 摘要），结果按段缓存
         out: list[dict] = []
+        per_seg: dict[int, list[dict]] = {}
         folded = 0
         for idx in seg_indices:
             seg = segments_map[idx]
-            # get_messages 返回的全是已落库的历史段（本轮 wake 即将产生的新
-            # message 尚未 append，不在列表里），所以无需 skip 当前段。
             seg_end_ts = _segment_gap_end_timestamp(seg)
             gap = now_ts - seg_end_ts if seg_end_ts else 0.0
             if gap > SEGMENT_GAP_COMPRESS_S:
-                out.extend(_summarize_segment(seg, session_db, session_id, idx))
+                per_seg[idx] = _summarize_segment(seg, session_db, session_id, idx)
                 folded += 1
             else:
-                out.extend(_load_prior_messages_segment(seg))
+                per_seg[idx] = _load_prior_messages_segment(seg)
+            out.extend(per_seg[idx])
+
+        # ── 第二遍·硬上限兜底：30min 时间窗口只是启发，滚动对话能让
+        # "最近 30 分钟"无限膨胀（实测 96min session 单次回灌 770 条/346KB）。
+        # 回灌消息总数超上限时，把**仍是原文**的段从最旧开始强制折叠为摘要，
+        # 直到进上限。已折叠的段不动；最后一段（当前 wake 的直接上文）永不折叠。
+        total_msgs = sum(len(segments_map[idx]) for idx in seg_indices)
+        if total_msgs > SESSION_CONTEXT_HARD_LIMIT and len(seg_indices) > 1:
+            kept = total_msgs
+            forced: list[int] = []
+            for idx in seg_indices[:-1]:
+                if kept <= SESSION_CONTEXT_HARD_LIMIT:
+                    break
+                kept -= len(segments_map[idx])
+                forced.append(idx)
+            if forced:
+                rebuilt: list[dict] = []
+                for idx in seg_indices:
+                    if idx in forced and idx is not seg_indices[-1]:
+                        rebuilt.extend(_summarize_segment(segments_map[idx], session_db, session_id, idx))
+                    else:
+                        rebuilt.extend(per_seg[idx])
+                out = rebuilt
+                folded += len([i for i in forced if i is not seg_indices[-1]])
+                logger.info(
+                    "SEGMENT_HARD_FOLD session=%s forced=%d (total %d > limit %d)",
+                    session_id[:20], len(forced), total_msgs, SESSION_CONTEXT_HARD_LIMIT,
+                )
 
         if folded:
             logger.info(

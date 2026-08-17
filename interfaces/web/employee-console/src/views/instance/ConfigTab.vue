@@ -56,7 +56,7 @@
           <el-divider />
 
           <p><strong>⚠️ 隐私说明</strong></p>
-          <p style="color: var(--text-muted);">全接管后数字生命能读取你的全部飞书消息。它有自主判断机制（只关注与工作相关的消息，忽略闲聊），但你应知晓这一权限范围。如有关切，可在 app.yaml 中配置群聊分档（A/B/C 档）控制关注范围。</p>
+          <p style="color: var(--text-muted);">全接管后数字生命能读取你授权范围内的飞书消息。它有自主判断机制（只关注与工作相关的消息，忽略闲聊）。如需控制拉取范围，可在本页「社交接管范围」区（或 app.yaml 的 social.takeover 段）配置白名单 / 黑名单：allowlist 模式只拉指定群，blocklist 模式排除指定群（如家人群），默认 all 拉全部。</p>
         </div>
       </el-dialog>
     </div>

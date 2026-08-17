@@ -177,3 +177,25 @@
 **同一服务下的多个实例**（都跑在同一个 gateway 上）：群消息不 @ 也能互相收到，因为内部做了消息广播适配。
 
 **不同服务的实例**（比如你朋友的独立部署）：飞书服务端会过滤掉非 @ 的机器人消息，别人家的 bot 发的消息你 @ 不到就收不到。这是飞书平台限制，无法突破。所以跨服务协作时必须 @。
+
+## 全接管白名单 / 黑名单（控制拉取范围）
+
+全接管授权后，数字生命默认以你的身份拉取**全部**群聊消息。如需控制范围（隐私边界），在实例 `app.yaml` 配置 `social.takeover` 段：
+
+```yaml
+social:
+  takeover:
+    mode: allowlist          # all（默认，全拉）| allowlist（只拉白名单）| blocklist（排除黑名单）
+    allowlist:               # mode=allowlist 时生效；群名或 chat_id（oc_ 开头）均可
+      - 数字生命讨论群
+      - oc_52d66b75817fcc616a360a64ba9971f7
+    blocklist:               # mode=blocklist 时生效；如排除家人群
+      - 家庭群
+```
+
+- 匹配规则：条目与 chat_id 完全相等，或与群名完全相等（大小写不敏感）
+- `mode: allowlist` 但 `allowlist` 为空 → 视为配置错误，不过滤（拉全部），日志有警告
+- 也可以在控制台 → 实例 Config → 「社交接管范围」区图形化配置，效果相同
+- 改动后下一轮拉取自动生效（轮询间隔约 30 分钟），无需重启
+
+群名查 chat_id 的方法：飞书群设置里复制群号，或看网关日志 `social_takeover: chats refreshed` 后 `GET /im/v1/chats` 返回值。

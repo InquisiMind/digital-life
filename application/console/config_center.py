@@ -47,6 +47,7 @@ SECTION_META: dict[str, dict[str, str]] = {
     "runtime":   {"label": "运行节律 / 精力策略", "description": "心跳、token 上限、精力折算系数。"},
     "tasks":     {"label": "任务执行策略", "description": "最大轮数、推理强度。"},
     "perception": {"label": "感知系统", "description": "快捷键触发录屏录音，视觉模型理解后注入事件。需授予辅助功能/屏幕录制/麦克风权限。改动后需重启网关。"},
+    "social":    {"label": "社交接管范围", "description": "飞书全接管的群聊白名单/黑名单。控制数字生命以你的身份拉取哪些群的消息（隐私边界）。改动后下一轮拉取生效。"},
 }
 
 
@@ -213,6 +214,22 @@ FIELDS: tuple[ConfigField, ...] = (
         "perception.wake_words", "唤醒词", "perception", "yaml", "array",
         path="perception.wake_words", default=[],
         description="语音唤醒词列表（持续监听模式用）。填入实例名及 ASR 变体，如 zero/Zero/塞罗/吉洛。系统自动识别并路由到本实例。",
+    ),
+    ConfigField(
+        "social.takeover.mode", "接管范围模式", "social", "yaml",
+        path="social.takeover.mode", default="all",
+        options=["all", "allowlist", "blocklist"],
+        description="飞书全接管的群聊范围：all=拉全部群（默认）；allowlist=只拉白名单里的群；blocklist=排除黑名单里的群。",
+    ),
+    ConfigField(
+        "social.takeover.allowlist", "接管白名单", "social", "yaml", "array",
+        path="social.takeover.allowlist", default=[],
+        description="mode=allowlist 时生效。填群名或 chat_id（oc_ 开头），如：数字生命讨论群。只拉这些群的消息。",
+    ),
+    ConfigField(
+        "social.takeover.blocklist", "接管黑名单", "social", "yaml", "array",
+        path="social.takeover.blocklist", default=[],
+        description="mode=blocklist 时生效。填群名或 chat_id。不拉这些群的消息（隐私排除，如家人群）。",
     ),
 )
 

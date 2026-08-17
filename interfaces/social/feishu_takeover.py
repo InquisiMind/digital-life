@@ -357,6 +357,70 @@ class FeishuSocialTakeover:
             page_token = data.get("page_token")
             if not data.get("has_more"):
                 break
+        return _filter_chats_by_config(chats, self.instance_id)
+
+
+def _filter_chats_by_config(chats: dict[str, dict], instance_id: str) -> dict[str, dict]:
+    """按实例 app.yaml 的 social.takeover 白名单/黑名单过滤会话。
+
+    配置结构（apps/<id>/config/app.yaml）::
+
+        social:
+          takeover:
+            mode: allowlist        # allowlist | blocklist | all（默认 all 全拉）
+            allowlist:             # mode=allowlist 时只拉这些（chat_id 或群名均可）
+              - oc_xxx
+              - 数字生命讨论群
+            blocklist:             # mode=blocklist 时排除这些
+              - oc_yyy
+
+    匹配规则：条目与 chat_id 完全相等，或与群名完全相等（大小写不敏感）。
+    mode=all 或未配置 → 不过滤（保持旧行为，兼容存量部署）。
+    """
+    try:
+        import yaml
+
+        from infrastructure.config import get_project_root
+
+        cfg_path = get_project_root() / "apps" / instance_id / "config" / "app.yaml"
+        if not cfg_path.exists():
+            return chats
+        raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        tk = ((raw.get("social") or {}).get("takeover")) or {}
+        if not isinstance(tk, dict):
+            return chats
+        mode = str(tk.get("mode") or "all").strip().lower()
+
+        def _norm_list(key: str) -> set[str]:
+            items = tk.get(key) or []
+            if isinstance(items, str):
+                items = [items]
+            return {str(x).strip().lower() for x in items if str(x).strip()}
+
+        if mode == "allowlist":
+            allowed = _norm_list("allowlist")
+            if not allowed:
+                logger.warning("social.takeover mode=allowlist 但 allowlist 为空 → 拉不到任何群，忽略过滤")
+                return chats
+            kept = {
+                cid: meta for cid, meta in chats.items()
+                if cid.lower() in allowed
+                or str(meta.get("name") or "").strip().lower() in allowed
+            }
+            logger.info("social_takeover: allowlist filter %d → %d chats", len(chats), len(kept))
+            return kept
+        if mode == "blocklist":
+            blocked = _norm_list("blocklist")
+            kept = {
+                cid: meta for cid, meta in chats.items()
+                if cid.lower() not in blocked
+                and str(meta.get("name") or "").strip().lower() not in blocked
+            }
+            logger.info("social_takeover: blocklist filter %d → %d chats", len(chats), len(kept))
+            return kept
+        return chats
+    except Exception as exc:
+        logger.warning("social_takeover: 白名单配置读取失败，不过滤: %s", exc)
         return chats
 
     def _fetch_messages(self, chat_id: str, chat_name: str) -> list[dict]:

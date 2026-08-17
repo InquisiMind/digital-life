@@ -349,7 +349,16 @@ class SessionDB:
         return messages
 
     def _restore_segment_index(self, session_id: str) -> None:
-        """延续 session 时，从 DB 恢复当前 segment_index。"""
+        """延续 session 时，从 DB 恢复当前 segment_index。
+
+        仅当本实例内存里【没有】该 session 的段号时才恢复——这是"跨实例
+        冷启动恢复"的语义。已 advance 过的值不能被覆盖：_write_log 每次
+        都调 get_messages，若无条件 restore 会把 run_conversation 开头
+        advance 到的新段号重置回 DB 的 MAX(seg)，导致所有消息挤在 segment 1，
+        段间折叠（SEGMENT_GAP_FOLD）永远只有一个段可折、从未触发。
+        """
+        if session_id in self._current_segment:
+            return
         with self._lock:
             row = self._conn.execute(
                 "SELECT MAX(segment_index) as max_seg FROM messages WHERE session_id=?",

@@ -580,6 +580,11 @@ class AIAgent:
     def _chat(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         consumed_normal = self._inject_signalled_events(messages)
         self._inject_entity_recall(messages)
+        # 孤儿 recall 裁剪：每次调用前跑（不等 inject 触发）。
+        # 接续回灌的孤儿在 inject 首次触发前会随每次调用重复计费
+        # （实测 wake_3311 修复后 call 序列仍带 48 孤儿——旧位置在
+        # inject 内，触发条件没到就一直烧）。
+        self._prune_orphan_recalls(messages)
         url = self._chat_url()
         headers = {"Content-Type": "application/json"}
         if self.api_key:
@@ -2297,6 +2302,46 @@ class AIAgent:
         self._injected_memory_ids.update(
             str(m.get("memory_id", "")) for m in memories if m.get("memory_id")
         )
+
+    def _prune_orphan_recalls(self, messages: list[dict[str, Any]]) -> None:
+        """每次调用前裁剪孤儿 entity_recall（保留最近 3 组）。
+
+        孤儿 = 无配对 assistant pair 的 recall tool result（历史落库
+        不对称遗留，接续回灌产生）。inject 内的裁剪只在新注入触发时跑，
+        触发前的调用仍带着全量孤儿重复计费——这里兜底每次调用都清。
+        """
+        try:
+            def _is_recall_call(tc: Any) -> bool:
+                if not isinstance(tc, dict):
+                    return False
+                fn = tc.get("function") or {}
+                return str(tc.get("id") or "").startswith("sys_") and fn.get("name") == "entity_recall"
+
+            positions: list[int] = []
+            for i, m in enumerate(messages):
+                if m.get("role") == "assistant" and any(_is_recall_call(tc) for tc in (m.get("tool_calls") or [])):
+                    positions.append(i)
+                elif (m.get("role") == "tool"
+                      and str(m.get("tool_call_id") or "").startswith("sys_")
+                      and m.get("name") == "entity_recall"):
+                    prev = messages[i - 1] if i > 0 else {}
+                    if not any(_is_recall_call(tc) for tc in (prev.get("tool_calls") or [])):
+                        positions.append(i)
+            if len(positions) <= 3:
+                return
+            cutoff = sorted(positions)[-3]
+            messages[:] = [
+                m for i, m in enumerate(messages)
+                if not (
+                    i < cutoff
+                    and (
+                        (str(m.get("tool_call_id") or "").startswith("sys_") and m.get("name") == "entity_recall")
+                        or (m.get("role") == "assistant" and any(_is_recall_call(tc) for tc in (m.get("tool_calls") or [])))
+                    )
+                )
+            ]
+        except Exception:
+            logger.debug("orphan recall prune failed", exc_info=True)
 
     def _prune_recall_injections(self, messages: list[dict[str, Any]]) -> None:
         """Remove previous recall injection pairs (assistant tool_call + tool result)."""

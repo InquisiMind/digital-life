@@ -205,8 +205,11 @@ def _build_recent_chat_log(chat_id: str = "") -> str | None:
     if not chat_id:
         return None
     try:
-        from domain.conversations import list_chat_messages
-        msgs = list_chat_messages(chat_id, limit=10)
+        # 双库统一读取（messages.db 群聊 + conversation_log 私聊/语音）——
+        # 旧版只读 messages.db，私聊通道被关卡二拦截时加载不到任何流水
+        # （私聊消息只落 conversation_log），拦截等于死循环拦空。
+        from domain.lifecycle.scheduler import _fetch_stream_msgs
+        msgs = _fetch_stream_msgs(chat_id, limit=10)
         if not msgs:
             return None
         lines: list[str] = []

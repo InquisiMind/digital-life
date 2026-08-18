@@ -262,6 +262,67 @@ def _strip_wake_prompt_directives(content: str) -> str:
     return content[:cut].rstrip() if cut < len(content) else content
 
 
+def _fetch_stream_msgs(chat_id: str, *, limit: int = 10) -> list[dict]:
+    """读一条对话流的近期消息（跨双库，读取侧统一）。
+
+    数据源（历史遗留双库）：
+      - messages.db（domain.messages）——群聊 ingress/广播写入
+      - state.db conversation_log——私聊/语音等路径写入（messages.db 里为 0，
+        实测私聊 519 条只在此库；chat_stream 旧实现只读 messages.db，
+        私聊 wake 注入的"近期流水"是空白——chat_stream 注入与
+        check_before_send 拦截加载共用此函数，修复私聊无内容问题）
+
+    返回 dict 含 sender_name / text。优先 messages.db，空则查 conversation_log。
+    """
+    try:
+        from domain.conversations import list_chat_messages
+        msgs = list_chat_messages(chat_id, limit=limit)
+        if msgs:
+            return msgs
+    except Exception:
+        logger.debug("stream msgs from messages.db failed", exc_info=True)
+
+    try:
+        import sqlite3 as _sql
+        from infrastructure.config import get_instance_state_db_path
+        conn = _sql.connect(str(get_instance_state_db_path()))
+        conn.row_factory = _sql.Row
+        rows = conn.execute(
+            """SELECT direction, sender_name, text FROM conversation_log
+               WHERE conversation_id = ? ORDER BY id DESC LIMIT ?""",
+            (chat_id, limit),
+        ).fetchall()
+        conn.close()
+        # 倒序取出 → 反转成时间正序
+        return [{"sender_name": r["sender_name"], "text": r["text"]}
+                for r in reversed(rows)]
+    except Exception:
+        logger.debug("stream msgs from conversation_log failed", exc_info=True)
+    return []
+
+
+def _stream_display_name(chat_id: str) -> str:
+    """对话流的人类可读名（注入块的标注）。私聊/语音有语义名，群回退短 id。"""
+    if chat_id == "voice_local_speaker":
+        return "语音对话"
+    if chat_id.startswith("ou_"):
+        return "私聊"
+    try:
+        import sqlite3 as _sql
+        from infrastructure.config import get_instance_state_db_path
+        conn = _sql.connect(str(get_instance_state_db_path()))
+        row = conn.execute(
+            "SELECT chat_type FROM conversation_log WHERE conversation_id = ? LIMIT 1",
+            (chat_id,),
+        ).fetchone()
+        conn.close()
+        if row and row["chat_type"] == "dm":
+            return "私聊"
+    except Exception:
+        pass
+    return chat_id[:16]
+
+
 def _segment_rest_digest(segment: list[dict]) -> str:
     """提取段内 rest 调用的 mental_context——模型自己写的段摘要。
 
@@ -1385,67 +1446,32 @@ def _wake_digital_life_inner_safe(
                 "_sys_tool": "workspace",
             })
 
-        # chat_stream 每次拉近期对话流水（来自 var/conversations/chats.db 聚合库，
-        # 含本实例 + 其他 bot 的发言 + 真人发言）
+        # chat_stream：仅注入**事件源对话**的近期流水。
         #
-        # Critical: 模型每次 wake 都应当看到群聊最近对话——不论是 timer /
-        # awaiting_reply / initiative 触发。否则模型会"自我上下文脱钩"，发不
-        # 相关的话、对已变的事实做出过时反应。
-        #
-        # Wake chat id 抽取顺序：
-        #   1. triggering event payload.chat_id（group_message / message）
-        #   2. triggering event payload.channel（awaiting_reply: 「lark:dm:oc_xxx」）
-        #   3. fallback: 当前实例参与的项目 group_chat_id（任意 active project 第一个）
-        if not _wake_chat_id:
-            try:
-                from domain.project.loader import load_all_projects
-                from infrastructure.config import get_app_instance_id
-                _me = get_app_instance_id() or ""
-                for _pid, _pcfg in load_all_projects().items():
-                    if _pcfg.status != "active":
-                        continue
-                    # 不接受任意 active project 的 group_chat_id —— 当前实例必须
-                    # 是这个项目的成员（在某个 position 的 assignees 中），否则模型
-                    # 会被喂一个 bot 进不去的 chat_id，飞书发消息报 invalid receive_id。
-                    if _me and _pcfg.get_position_for_instance(_me) is None:
-                        continue
-                    gcid = _pcfg.group_chat_id
-                    if gcid and gcid.startswith("oc_"):
-                        _wake_chat_id = gcid
-                        break
-            except Exception:
-                pass
-            # 也要同步写回 ctx var，让 chat_id 跟随整个 wake
-            if _wake_chat_id:
-                try:
-                    from domain.lifecycle.runtime_context import set_current_event_chat_id
-                    set_current_event_chat_id(_wake_chat_id)
-                except Exception:
-                    pass
-
+        # 设计原则（2026-08-18 定稿）：注入跟随事件源，发送靠拦截兜底。
+        #   - 消息类事件（message/group_message/perception_signal）唤醒：
+        #     事件自带 chat → 注入该 chat 流水 →"当前对话"名副其实
+        #   - awaiting_reply 唤醒：回复目标通道明确 → 注入该通道
+        #   - timer/routine/initiative 唤醒：**无事件源 chat → 不注入**。
+        #     模型要发消息时由 check_before_send 关卡二拦截（没看过的通道
+        #     拦下来加载流水再发）——拦截机制本就是为这个场景设计的，
+        #     注入侧不越权、不猜测（旧版 fallback 随机挑项目群冒充
+        #     "当前对话"，反而绕过了 viewed 校验，已废）。
+        #   - 数据源统一：messages.db（群）+ conversation_log（私聊/语音，
+        #     旧实现只读 messages.db，私聊在数据源里为 0——本次修复）
         if _wake_chat_id:
             try:
-                from domain.conversations import list_chat_messages
-                msgs = list_chat_messages(_wake_chat_id, limit=10)
+                msgs = _fetch_stream_msgs(_wake_chat_id, limit=10)
                 if msgs:
                     snippet_lines = [
-                        f"## ── 当前对话近期流水 ──"
+                        "## ── 当前对话近期流水 ──",
+                        f"（{_stream_display_name(_wake_chat_id)}）",
                     ]
-                    # ⚠️ heading 不放 chat_id（避免模型从 heading 抄到截断值），
-                    # _wake_chat_id 已由上游 express_to_human 默认回复上下文绑定，
-                    # 模型无需显式填。跨通道去重已在发送侧根治，无需二级去重。
                     for m in msgs:
                         text = (m.get("text") or "").strip()
                         if not text:
                             continue
-
-                        sender = (m.get("sender_name") or "").strip()
-                        if not sender:
-                            sender = m.get("sender_id") or "未知"
-                        # 历史流水全量进 prompt（不再截断 [:800]）。
-                        # 旧 200→800 的截断会让长消息/代码/markdown 表格丢内容，
-                        # 用户反馈 zero"看不全"正是这里栽的——消息里的标的、参数、
-                        # 表格关键列被砍掉。去掉截断换完整性，token 成本可接受。
+                        sender = (m.get("sender_name") or "").strip() or "未知"
                         snippet_lines.append(f"{sender}：{text}")
                     snippet_lines.append("## ── /当前对话近期流水 ──")
                     prev_history.append({
@@ -1453,17 +1479,16 @@ def _wake_digital_life_inner_safe(
                         "content": "\n".join(snippet_lines),
                         "_sys_tool": "chat_stream",
                     })
-                    logger.info(
-                        "Injected chat_stream: %d msgs from chat %s",
-                        len(msgs), _wake_chat_id[:16],
-                    )
-                    # 系统已把 _wake_chat_id 的近期流水展示给模型 → 登记为「本 session 已查看」，
-                    # 供 express_to_human 发送前校验「目标通道是否看过」（channel_views 账本）。
+                    # 展示过 → 登记「本 session 已查看」（关卡二的 viewed 账本）
                     try:
                         from domain.lifecycle.channel_views import mark_channel_viewed
                         mark_channel_viewed(_wake_chat_id)
                     except Exception:
                         logger.debug("channel_views mark failed for chat %s", _wake_chat_id[:16], exc_info=True)
+                    logger.info(
+                        "Injected chat_stream: %d msgs from wake-source chat %s",
+                        len(msgs), _wake_chat_id[:16],
+                    )
             except Exception as exc:
                 logger.debug("chat_stream injection failed: %s", exc)
 

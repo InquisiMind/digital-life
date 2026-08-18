@@ -2185,9 +2185,19 @@ class AIAgent:
             if m.get("role") == "assistant"
             and any(_is_recall_call(tc) for tc in (m.get("tool_calls") or []))
         ]
-        if len(recall_assistant_indices) > _RECALL_KEEP_ROUNDS:
-            # 找出要删的 pair：前 (N - 3) 个 recall 的 assistant 消息 + 紧随的 tool result
-            cutoff_idx = recall_assistant_indices[-_RECALL_KEEP_ROUNDS]
+        # 孤儿 recall tool result（历史 bug：assistant pair 未落库，接续回灌后
+        # tool result 无配对锚点）——直接按位置识别，同样参与"保留最近 3 轮"。
+        orphan_recall_indices = [
+            i for i, m in enumerate(messages)
+            if m.get("role") == "tool"
+            and str(m.get("tool_call_id") or "").startswith("sys_")
+            and m.get("name") == "entity_recall"
+            and not any(_is_recall_call(tc) for tc in ((messages[i-1] if i > 0 else {}).get("tool_calls") or []))
+        ]
+        # 合并两类锚点位置（assistant pair / 孤儿 tool result），统一保留最近 3 个
+        all_recall_positions = sorted(set(recall_assistant_indices) | set(orphan_recall_indices))
+        if len(all_recall_positions) > _RECALL_KEEP_ROUNDS:
+            cutoff_idx = all_recall_positions[-_RECALL_KEEP_ROUNDS]
             messages[:] = [
                 m for i, m in enumerate(messages)
                 if not (
@@ -2267,6 +2277,13 @@ class AIAgent:
         messages.append(assistant_msg)
         messages.append(tool_msg)
         # V6: 持久化到 messages.db — 让 _assess_session_cognition 能读到面包屑做 LLM 评估
+        # ⚠ assistant pair 必须一起落库：只落 tool result 的话，接续 wake 从 DB
+        # 回灌后 recall 成为"孤儿"（无配对 assistant 消息），_prune 的
+        # "保留最近 3 轮"裁剪按 assistant sys_ 锚点定位、永远匹配不上孤儿
+        # → 历史召回永久滞留上下文（实测一个 session 积 49 条 ×1.5KB×247 次调用
+        # = 单日多烧数百万 input token）。
+        self._append_message(self.session_id, "assistant", None,
+                             tool_calls=assistant_msg.get("tool_calls"))
         self._append_message(self.session_id, "tool", breadcrumb_text,
                              tool_name="entity_recall", tool_call_id=tool_msg.get("tool_call_id"))
         if self.audit_ctx is not None:

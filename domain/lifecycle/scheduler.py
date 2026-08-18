@@ -262,6 +262,43 @@ def _strip_wake_prompt_directives(content: str) -> str:
     return content[:cut].rstrip() if cut < len(content) else content
 
 
+def _segment_rest_digest(segment: list[dict]) -> str:
+    """提取段内 rest 调用的 mental_context——模型自己写的段摘要。
+
+    rest(until, reason, mental_context) 是每个 wake 的收尾动作，
+    mental_context 天然就是"这段做了什么/下一步/等什么"的结构化总结
+    （实测质量高于惰性生成的 narrative，且零额外成本）。折叠段时
+    优先用它——不重复造轮子。
+
+    取段内**最后一次** rest 的 mental_context（最新状态最准）。
+    无 rest 调用或 mental_context 为空 → 返回空串（调用方降级）。
+    """
+    import json as _json
+
+    last_mc = ""
+    for m in reversed(segment):  # 倒序找最近一次
+        if m.get("role") != "assistant" or not m.get("tool_calls"):
+            continue
+        tcs = m["tool_calls"]
+        if isinstance(tcs, str):
+            try:
+                tcs = _json.loads(tcs)
+            except Exception:
+                continue
+        for tc in tcs if isinstance(tcs, list) else []:
+            fn = (tc.get("function") or {}) if isinstance(tc, dict) else {}
+            if fn.get("name") != "rest":
+                continue
+            try:
+                args = _json.loads(fn.get("arguments") or "{}")
+            except Exception:
+                continue
+            mc = str(args.get("mental_context") or "").strip()
+            if mc:
+                return mc
+    return last_mc
+
+
 def _summarize_segment(segment: list[dict], session_db, session_id: str, seg_idx: int) -> list[dict]:
     """把一个段的原文折叠成一条摘要消息（三级降级，保证不丢信息也不抛异常）。
 
@@ -273,19 +310,31 @@ def _summarize_segment(segment: list[dict], session_db, session_id: str, seg_idx
     """
     try:
         body = ""
-        # 1) segment narrative
+        # 0) rest mental_context —— 模型在段尾自己写的总结，优先级最高：
+        #    零生成成本、意图明确（"这段做了什么/下一步/等什么"）、
+        #    实测质量高于 LLM 惰性生成的 narrative。不重复造轮子。
         try:
-            from domain.memory.memory.summaries.consolidation_runtime import (
-                load_segment_narrative,
-                _lazy_generate_segment_narrative,
-            )
-            narrative = load_segment_narrative(session_id, seg_idx)
-            if not narrative and session_db:
-                narrative = _lazy_generate_segment_narrative(session_db, session_id, seg_idx)
-            if narrative:
-                body = narrative
-        except Exception as e:
-            logger.debug("segment narrative unavailable for %s#%d: %s", session_id[:20], seg_idx, e)
+            rest_mc = _segment_rest_digest(segment)
+            if rest_mc:
+                body = rest_mc
+        except Exception:
+            pass
+
+        # 1) segment narrative（LLM/规则化叙事）—— rest 没写 mental_context
+        #    或 rest 被 revoke 没成功时的次选
+        if not body:
+            try:
+                from domain.memory.memory.summaries.consolidation_runtime import (
+                    load_segment_narrative,
+                    _lazy_generate_segment_narrative,
+                )
+                narrative = load_segment_narrative(session_id, seg_idx)
+                if not narrative and session_db:
+                    narrative = _lazy_generate_segment_narrative(session_db, session_id, seg_idx)
+                if narrative:
+                    body = narrative
+            except Exception as e:
+                logger.debug("segment narrative unavailable for %s#%d: %s", session_id[:20], seg_idx, e)
 
         # 提取段时间范围做标题
         time_range = ""

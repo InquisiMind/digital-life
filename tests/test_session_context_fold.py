@@ -130,3 +130,46 @@ def test_split_function_wake_anchor():
     assert len(splits) == 2
     assert len(splits[0]) == 24  # 21 + 锚点 + 2 碎消息
     assert len(splits[1]) == 11
+
+
+def test_rest_mental_context_is_primary_digest():
+    """段的折叠摘要优先用 rest 的 mental_context（模型自己写的总结）。"""
+    import json
+    mc = "17:50 语音系统改造完成：①TTS 云扬 ②ASR 讯飞流式。等 zhp 回复方案。"
+    seg = [
+        _msg("user", "wake prompt", ts=100.0),
+        _msg("assistant", "", ts=101.0, tool_name=None),
+    ]
+    # 模拟 assistant 的 rest 调用（tool_calls JSON 字符串形态）
+    seg[1]["tool_calls"] = json.dumps([{
+        "id": "call_1", "function": {
+            "name": "rest",
+            "arguments": json.dumps({"until": "2026-08-18T21:00:00+08:00", "mental_context": mc}),
+        }
+    }])
+    seg.append(_msg("tool", '{"started":true}', ts=102.0, tool_name="rest"))
+    out = scheduler._summarize_segment(seg, None, "test-sid", 1)
+    recap = [m for m in out if str(m.get("content", "")).startswith("[历史回顾")]
+    assert recap, "应产出历史回顾摘要"
+    assert mc in recap[0]["content"], "rest mental_context 应成为摘要主体"
+
+
+def test_rest_digest_takes_latest():
+    """段内多次 rest → 取最后一次的 mental_context（最新状态最准）。"""
+    import json
+    from domain.lifecycle.scheduler import _segment_rest_digest
+    seg = [
+        {"role": "assistant", "tool_calls": json.dumps([{
+            "id": "c1", "function": {"name": "rest",
+             "arguments": json.dumps({"mental_context": "第一次总结"})}}]), "timestamp": 1.0},
+        {"role": "assistant", "tool_calls": json.dumps([{
+            "id": "c2", "function": {"name": "rest",
+             "arguments": json.dumps({"mental_context": "第二次总结（最新）"})}}]), "timestamp": 2.0},
+    ]
+    assert "第二次总结" in _segment_rest_digest(seg)
+
+
+def test_rest_digest_empty_when_no_rest():
+    from domain.lifecycle.scheduler import _segment_rest_digest
+    seg = [_msg("user", "q", ts=1.0), _msg("assistant", "a", ts=2.0)]
+    assert _segment_rest_digest(seg) == ""

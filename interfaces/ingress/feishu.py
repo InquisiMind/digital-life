@@ -127,8 +127,14 @@ class FeishuAdapter(IngressAdapter):
         self._ws = self._build_ws_client()
 
         def _run_ws() -> None:
-            _per_thread_loops[threading.get_ident()] = asyncio.new_event_loop()
-            asyncio.set_event_loop(_per_thread_loops[threading.get_ident()])
+            tid = threading.get_ident()
+            _per_thread_loops[tid] = asyncio.new_event_loop()
+            asyncio.set_event_loop(_per_thread_loops[tid])
+            # 记录 loop 归属线程——_rebuild_ws 关旧连接时要在正确的 loop 上提交
+            try:
+                self._ws._owner_thread_id = tid
+            except Exception:
+                pass
             self._ws.start()
 
         ws_thread = threading.Thread(
@@ -192,18 +198,67 @@ class FeishuAdapter(IngressAdapter):
                     continue
 
                 if idle > reconnect_after:
-                    logger.warning(
-                        "feishu WS idle %ds (> %ds), no messages since %s, rebuilding...",
-                        int(idle), reconnect_after,
-                        time.strftime('%H:%M:%S', time.localtime(self._ws_last_active)),
-                    )
-                    self._rebuild_ws()
-                    self._ws_last_active = time.time()
+                    # ⚠ idle ≠ 断连（低频实例 5 分钟没消息是常态）。
+                    # 误判重建会泄漏连接（事故复盘见 _rebuild_ws docstring）。
+                    # 只有 SDK 内部连接对象真的空了 / 关了才重建。
+                    conn = getattr(self._ws, "_conn", None)
+                    truly_dead = conn is None
+                    if not truly_dead:
+                        # SDK 保有 _conn 但可能已 close——用 ws 线程活性双重确认
+                        truly_dead = not ws_alive
+                    if truly_dead:
+                        logger.warning(
+                            "feishu WS dead (idle %ds, conn=%s, thread_alive=%s), rebuilding...",
+                            int(idle), "none" if conn is None else "held",
+                            ws_alive,
+                        )
+                        self._rebuild_ws()
+                        self._ws_last_active = time.time()
+                    else:
+                        # 连接活着只是没消息——刷新计时避免每轮重复评估
+                        self._ws_last_active = time.time()
+                        logger.debug(
+                            "feishu WS idle %ds but connection alive, skip rebuild",
+                            int(idle),
+                        )
             except Exception as exc:
                 logger.warning("feishu WS watchdog error: %s", exc)
 
     def _rebuild_ws(self) -> None:
-        """杀掉旧 WS 线程 + 创建新 WSClient + restart."""
+        """关旧连接 + 创建新 WSClient + restart.
+
+        ⚠ 泄漏事故（2026-08-18 alpha 实证）：旧版只换 self._ws 引用、从不关
+        旧连接。watchdog 每 5 分钟 idle 误判一次 → 旧连接挂着 + 新建一条 →
+        一夜累积 28 次 rebuild / 95 条 ESTABLISHED → 撞飞书应用连接上限
+        （1000040350）→ 之后所有重连被拒、实例彻底收不到消息。
+        修复：rebuild 前在旧 client 自己的 event loop 里跑 _disconnect。
+        """
+        old_ws = getattr(self, "_ws", None)
+        if old_ws is not None:
+            try:
+                loop = _per_thread_loops.get(getattr(old_ws, "_owner_thread_id", -1))
+                # SDK 的 start 在自己线程的 loop 里跑；直接用该 loop 提交关闭。
+                # 拿不到 loop 时尝试通用路径（新版本 SDK 可能有公开 API）。
+                fut = None
+                target_loop = loop
+                if target_loop is None:
+                    # 兜底：扫 per-thread loops 找活的（ws 线程 ID 未知时）
+                    for tid, lp in list(_per_thread_loops.items()):
+                        if not lp.is_closed():
+                            target_loop = lp
+                            break
+                if target_loop is not None and not target_loop.is_closed():
+                    fut = asyncio.run_coroutine_threadsafe(
+                        old_ws._disconnect(), target_loop
+                    )
+                    fut.result(timeout=5)
+                    logger.info("feishu WS rebuild: old connection closed")
+            except Exception as exc:
+                # 关不掉也得继续 rebuild——泄漏一条好过彻底失联
+                logger.warning("feishu WS rebuild: close old failed (leaked): %s", exc)
+            finally:
+                self._ws = None
+
         try:
             self._ws = self._build_ws_client()
         except Exception as exc:
@@ -211,8 +266,9 @@ class FeishuAdapter(IngressAdapter):
             return
 
         def _run_ws() -> None:
-            _per_thread_loops[threading.get_ident()] = asyncio.new_event_loop()
-            asyncio.set_event_loop(_per_thread_loops[threading.get_ident()])
+            tid = threading.get_ident()
+            _per_thread_loops[tid] = asyncio.new_event_loop()
+            asyncio.set_event_loop(_per_thread_loops[tid])
             try:
                 self._ws.start()
             except Exception as exc:

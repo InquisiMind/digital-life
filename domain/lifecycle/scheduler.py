@@ -1085,23 +1085,28 @@ def _wake_digital_life_inner_safe(
     # 设置当前事件来源 chat_id（消息事件 payload 携带；非消息事件为空）
     # agent._append_message 自动读此 ContextVar 并写入 messages.chat_id 列
     # express_to_human 在模型未显式指定 chat_id 时用它做 fallback
-    _wake_chat_id = ""
+    # ⚠ 多事件挤压时收集**全部去重后的 chat**（如 [群消息, 私聊, 私聊]
+    # → {群, 私聊}）——chat_stream 会为每个事件源 chat 注入流水，
+    # 否则私聊语境缺失、回复时被关卡二拦一轮。
+    _wake_chat_ids: list[str] = []
+    _seen_chat_ids: set[str] = set()
     if pending_events:
         for ev in pending_events:
             payload = ev.get("payload") or {}
-            # Primary source: explicit chat_id field (group_message / message).
-            _wake_chat_id = payload.get("chat_id") or ""
+            cid = payload.get("chat_id") or ""
             # Fallback: awaiting_reply 类无 chat_id 但有 channel
             # 形如 "feishu:dm:oc_xxx" / "lark:group:oc_xxx" → 抽尾部 oc_xxx
             # （同时认现用 feishu: 与历史存量 lark: 前缀）
-            if not _wake_chat_id:
+            if not cid:
                 chan = payload.get("channel") or ""
                 if chan.startswith(("feishu:", "lark:")):
                     parts = chan.split(":", 2)
                     if len(parts) >= 3 and parts[2].startswith("oc_"):
-                        _wake_chat_id = parts[2]
-            if _wake_chat_id:
-                break
+                        cid = parts[2]
+            if cid and cid not in _seen_chat_ids:
+                _seen_chat_ids.add(cid)
+                _wake_chat_ids.append(cid)
+    _wake_chat_id = _wake_chat_ids[0] if _wake_chat_ids else ""
     _chat_token = None
     _platform_token = None
     try:
@@ -1446,11 +1451,12 @@ def _wake_digital_life_inner_safe(
                 "_sys_tool": "workspace",
             })
 
-        # chat_stream：仅注入**事件源对话**的近期流水。
+        # chat_stream：注入**全部事件源对话**的近期流水（去重）。
         #
         # 设计原则（2026-08-18 定稿）：注入跟随事件源，发送靠拦截兜底。
         #   - 消息类事件（message/group_message/perception_signal）唤醒：
-        #     事件自带 chat → 注入该 chat 流水 →"当前对话"名副其实
+        #     每个 pending 事件涉及的 chat（去重）各注入一块——多事件挤压
+        #     （如群消息+私聊同时到）时两条流的语境都在，回复不被拦
         #   - awaiting_reply 唤醒：回复目标通道明确 → 注入该通道
         #   - timer/routine/initiative 唤醒：**无事件源 chat → 不注入**。
         #     模型要发消息时由 check_before_send 关卡二拦截（没看过的通道
@@ -1458,39 +1464,40 @@ def _wake_digital_life_inner_safe(
         #     注入侧不越权、不猜测（旧版 fallback 随机挑项目群冒充
         #     "当前对话"，反而绕过了 viewed 校验，已废）。
         #   - 数据源统一：messages.db（群）+ conversation_log（私聊/语音，
-        #     旧实现只读 messages.db，私聊在数据源里为 0——本次修复）
-        if _wake_chat_id:
+        #     旧实现只读 messages.db，私聊在数据源里为 0——已修复）
+        for _stream_chat_id in _wake_chat_ids:
             try:
-                msgs = _fetch_stream_msgs(_wake_chat_id, limit=10)
-                if msgs:
-                    snippet_lines = [
-                        "## ── 当前对话近期流水 ──",
-                        f"（{_stream_display_name(_wake_chat_id)}）",
-                    ]
-                    for m in msgs:
-                        text = (m.get("text") or "").strip()
-                        if not text:
-                            continue
-                        sender = (m.get("sender_name") or "").strip() or "未知"
-                        snippet_lines.append(f"{sender}：{text}")
-                    snippet_lines.append("## ── /当前对话近期流水 ──")
-                    prev_history.append({
-                        "role": "user",
-                        "content": "\n".join(snippet_lines),
-                        "_sys_tool": "chat_stream",
-                    })
-                    # 展示过 → 登记「本 session 已查看」（关卡二的 viewed 账本）
-                    try:
-                        from domain.lifecycle.channel_views import mark_channel_viewed
-                        mark_channel_viewed(_wake_chat_id)
-                    except Exception:
-                        logger.debug("channel_views mark failed for chat %s", _wake_chat_id[:16], exc_info=True)
-                    logger.info(
-                        "Injected chat_stream: %d msgs from wake-source chat %s",
-                        len(msgs), _wake_chat_id[:16],
-                    )
+                msgs = _fetch_stream_msgs(_stream_chat_id, limit=10)
+                if not msgs:
+                    continue
+                snippet_lines = [
+                    "## ── 当前对话近期流水 ──",
+                    f"（{_stream_display_name(_stream_chat_id)}）",
+                ]
+                for m in msgs:
+                    text = (m.get("text") or "").strip()
+                    if not text:
+                        continue
+                    sender = (m.get("sender_name") or "").strip() or "未知"
+                    snippet_lines.append(f"{sender}：{text}")
+                snippet_lines.append("## ── /当前对话近期流水 ──")
+                prev_history.append({
+                    "role": "user",
+                    "content": "\n".join(snippet_lines),
+                    "_sys_tool": "chat_stream",
+                })
+                # 展示过 → 登记「本 session 已查看」（关卡二的 viewed 账本）
+                try:
+                    from domain.lifecycle.channel_views import mark_channel_viewed
+                    mark_channel_viewed(_stream_chat_id)
+                except Exception:
+                    logger.debug("channel_views mark failed for chat %s", _stream_chat_id[:16], exc_info=True)
+                logger.info(
+                    "Injected chat_stream: %d msgs from event-source chat %s",
+                    len(msgs), _stream_chat_id[:16],
+                )
             except Exception as exc:
-                logger.debug("chat_stream injection failed: %s", exc)
+                logger.debug("chat_stream injection failed for %s: %s", _stream_chat_id[:16], exc)
 
         # social_feed: zhp 的近况(社交接管拉取的消息摘要) — 不触发 wake, 只是上下文
         try:

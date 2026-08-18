@@ -1934,6 +1934,18 @@ class AIAgent:
 
         if auto_consume_events:
             self._consume_human_events(auto_consume_events, messages)
+            # 事件内容已展示给模型 → 同步登记 viewed（关卡二账本）。
+            # 不登记的话"白看"：模型回复该 chat 时仍被关卡二拦截一轮
+            # （mid-session 插入私聊 → 回私聊被拦 → 加载流水 → 重发，
+            # 事件里明明已经看到了内容）。
+            for ev in auto_consume_events:
+                try:
+                    cid = str((ev.get("payload") or {}).get("chat_id") or "")
+                    if cid:
+                        from domain.lifecycle.channel_views import mark_channel_viewed
+                        mark_channel_viewed(cid)
+                except Exception:
+                    pass
 
         if manual_events:
             self._notify_manual_events(manual_events, messages)

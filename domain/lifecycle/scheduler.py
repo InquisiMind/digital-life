@@ -1470,16 +1470,43 @@ def _wake_digital_life_inner_safe(
                 msgs = _fetch_stream_msgs(_stream_chat_id, limit=10)
                 if not msgs:
                     continue
+                disp = _stream_display_name(_stream_chat_id)
+                # 增量锚点：本实例在流里最后一次发言的位置。
+                # 标注后模型知道"自己上次说到哪、之后是新情况"——
+                # 不把 10 条流水当全新信息重读，直接从锚点接话。
+                from infrastructure.config import get_instance_display_name
+                _me_name = (get_instance_display_name() or "").strip()
+                anchor_idx = -1
+                if _me_name:
+                    for i in range(len(msgs) - 1, -1, -1):
+                        if (msgs[i].get("sender_name") or "").strip() == _me_name:
+                            anchor_idx = i
+                            break
                 snippet_lines = [
                     "## ── 当前对话近期流水 ──",
-                    f"（{_stream_display_name(_stream_chat_id)}）",
+                    f"（{disp}）",
                 ]
-                for m in msgs:
+                if anchor_idx >= 0:
+                    new_after = len(msgs) - 1 - anchor_idx
+                    if new_after > 0:
+                        snippet_lines.append(
+                            f"↓ 你（{_me_name}）上次的发言在下面 ↓（其后有 {new_after} 条新消息，从那里接着看）"
+                        )
+                    else:
+                        # awaiting_reply 触发时，同通道的 await 闹钟已被
+                        # inbound 消费链路取消（对方回 = message 事件先到，
+                        # 闹钟不会再 fire）——所以这里**必然是没人回**。
+                        # 标注的意义是让模型不用自己翻流水确认这一点。
+                        snippet_lines.append(
+                            f"↓ 你（{_me_name}）上次的发言是这条流里最新的一条 —— 之后没有任何新消息。"
+                        )
+                for i, m in enumerate(msgs):
                     text = (m.get("text") or "").strip()
                     if not text:
                         continue
                     sender = (m.get("sender_name") or "").strip() or "未知"
-                    snippet_lines.append(f"{sender}：{text}")
+                    marker = " ▶" if i == anchor_idx else ""
+                    snippet_lines.append(f"{sender}{marker}：{text}")
                 snippet_lines.append("## ── /当前对话近期流水 ──")
                 prev_history.append({
                     "role": "user",
@@ -1493,8 +1520,9 @@ def _wake_digital_life_inner_safe(
                 except Exception:
                     logger.debug("channel_views mark failed for chat %s", _stream_chat_id[:16], exc_info=True)
                 logger.info(
-                    "Injected chat_stream: %d msgs from event-source chat %s",
+                    "Injected chat_stream: %d msgs from event-source chat %s (anchor=%s)",
                     len(msgs), _stream_chat_id[:16],
+                    anchor_idx if anchor_idx >= 0 else "none",
                 )
             except Exception as exc:
                 logger.debug("chat_stream injection failed for %s: %s", _stream_chat_id[:16], exc)

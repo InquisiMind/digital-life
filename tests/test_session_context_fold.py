@@ -113,13 +113,20 @@ def test_short_session_untouched():
 
 
 def test_split_function_wake_anchor():
-    """_split_monolith_segment_by_gap：锚点切分优先于时间。"""
+    """_split_monolith_segment_by_gap：锚点切分 + 碎段（≤6 条）并入前段。"""
     seg = [_msg("user", "first", ts=100.0)]
     for i in range(20):
         seg.append(_msg("assistant", f"m{i}", ts=100.0 + i))  # 连续无间隙
     seg.append(_msg("tool", "evt", ts=121.0, tool_name="wake_signal"))
-    for i in range(10):
+    # 碎段：锚点后只有 2 条 → 并入前段
+    for i in range(2):
         seg.append(_msg("assistant", f"n{i}", ts=121.0 + i))
+    # 大段：新锚点 + 10 条 → 独立
+    seg.append(_msg("tool", "evt2", ts=140.0, tool_name="wake_signal"))
+    for i in range(10):
+        seg.append(_msg("assistant", f"k{i}", ts=140.0 + i))
     splits = scheduler._split_monolith_segment_by_gap(seg)
+    # 碎段被并入 → 只剩 2 个大段
     assert len(splits) == 2
-    assert len(splits[0]) == 21 and len(splits[1]) == 11
+    assert len(splits[0]) == 24  # 21 + 锚点 + 2 碎消息
+    assert len(splits[1]) == 11

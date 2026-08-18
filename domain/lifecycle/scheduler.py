@@ -242,6 +242,26 @@ def _segment_gap_start_timestamp(messages: list[dict]) -> float:
     return 0.0
 
 
+# wake prompt 尾部的行为指令模板（渲染层拼进去的）。历史回顾兜底保留时
+# 必须剥离——那是"当轮怎么回应"的指令，出现在几小时后的上下文里会误导
+# 模型对旧消息再次响应。
+_WAKE_DIRECTIVE_MARKERS = (
+    "如需回应，必须用",
+    "── /当下事件 ──",
+    "如果上文中出现 `[图片",
+)
+
+
+def _strip_wake_prompt_directives(content: str) -> str:
+    """剥掉历史 wake prompt 里残留的行为指令段（从首个 marker 处截断）。"""
+    cut = len(content)
+    for marker in _WAKE_DIRECTIVE_MARKERS:
+        i = content.find(marker)
+        if i != -1:
+            cut = min(cut, i)
+    return content[:cut].rstrip() if cut < len(content) else content
+
+
 def _summarize_segment(segment: list[dict], session_db, session_id: str, seg_idx: int) -> list[dict]:
     """把一个段的原文折叠成一条摘要消息（三级降级，保证不丢信息也不抛异常）。
 
@@ -299,13 +319,22 @@ def _summarize_segment(segment: list[dict], session_db, session_id: str, seg_idx
         }] + tail
         # 关键：兜底保留的段首可能含 wake prompt（「## ── ↓ 当下事件 ↓ ──」头）。
         # 不标记的话模型会把几小时前的旧事件误读为"刚到达的新事件"重复响应
-        # （dump 实证：16:15 的 prompt 出现在 17:51 的上下文里）。统一裹上
-        # 历史回顾标记，语义与 narrative 路径一致。
+        # （dump 实证：16:15 的 prompt 出现在 17:51 的上下文里）。
+        # 同时做两件事：
+        #   a) 剥离行为指令尾部（"如需回应必须用 express_to_human…"）——
+        #      那是当轮的有效指令，留在这里会误导模型对旧消息再回复
+        #   b) 截断过长正文（保留头部 800 字符）——段首 wake prompt 动辄几 KB
+        #      （alpha 发的长文档评审），全量保留等于没折
+        #   c) 裹上「历史回顾」标记，语义与 narrative 路径一致
         for m in out:
             if m.get("role") == "user" and not m.get("_sys_tool"):
                 c = str(m.get("content") or "")
-                if c and not c.startswith("[历史回顾"):
-                    m["content"] = f"[历史回顾 · 非新事件 · {time_range}]\n{c}\n[/历史回顾]"
+                if not c or c.startswith("[历史回顾"):
+                    continue
+                c = _strip_wake_prompt_directives(c)
+                if len(c) > 800:
+                    c = c[:800] + "\n[…过长已截断…]"
+                m["content"] = f"[历史回顾 · 非新事件 · {time_range}]\n{c}\n[/历史回顾]"
         return out
     except Exception as e:
         # 绝不抛 —— 降级为段首尾
@@ -387,6 +416,18 @@ def _split_monolith_segment_by_gap(segment: list[dict], *, gap_seconds: float = 
         cur.append(m)
     if cur:
         splits.append(cur)
+
+    # 碎片段合并：连续快速对话按锚点会切出只有几条消息的碎段（实测有
+    # 1 条、3 条的段），它们单独成"历史回顾"粒度太碎。把 ≤6 条的碎段
+    # 并入前一段；大段（一个完整 wake 的体量）保持独立。
+    if len(splits) > 1:
+        merged: list[list[dict]] = [splits[0]]
+        for seg in splits[1:]:
+            if len(seg) <= 6:
+                merged[-1].extend(seg)
+            else:
+                merged.append(seg)
+        splits = merged
     return splits if splits else [segment]
 
 

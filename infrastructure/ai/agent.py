@@ -1868,6 +1868,16 @@ class AIAgent:
                 update_affair(aid, status=AffairStatus.RUNNING)
                 clear_wait_intent(aid)
 
+            # 3. 给 rest result 打 revoked 标记。段折叠摘要（_segment_rest_digest）
+            #    据此跳过这次 rest 的 mental_context——它是"打算休息时"的状态，
+            #    被 revoke 后模型继续做的工作不在其中；直接用会漏工作 + 带过时
+            #    的"等 XX 闹钟"状态。
+            try:
+                data["__revoked__"] = True
+                rest_call["result"] = _json.dumps(data, ensure_ascii=False, default=str)
+            except Exception:
+                pass
+
             return True
         except Exception as exc:
             logger.warning("revoke_rest: failed (keeping rest as-is): %s", exc)

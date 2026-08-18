@@ -173,3 +173,43 @@ def test_rest_digest_empty_when_no_rest():
     from domain.lifecycle.scheduler import _segment_rest_digest
     seg = [_msg("user", "q", ts=1.0), _msg("assistant", "a", ts=2.0)]
     assert _segment_rest_digest(seg) == ""
+
+
+def test_revoked_rest_skipped_in_digest():
+    """被 revoke 的 rest 的 mc 跳过（过时状态），取更早的有效 rest。"""
+    import json
+    from domain.lifecycle.scheduler import _segment_rest_digest
+    seg = [
+        # 第一次 rest（有效，后来被新事件打断前的工作总结）
+        {"role": "assistant", "tool_calls": json.dumps([{
+            "id": "call_ok", "function": {"name": "rest",
+             "arguments": json.dumps({"mental_context": "完成了 A 任务"})}}]),
+         "timestamp": 1.0},
+        {"role": "tool", "tool_name": "rest", "tool_call_id": "call_ok",
+         "content": '{"__l4_block__": true, "started": true}', "timestamp": 1.1},
+        # 第二次 rest（被 revoke——打算休息时被新事件打断）
+        {"role": "assistant", "tool_calls": json.dumps([{
+            "id": "call_revoked", "function": {"name": "rest",
+             "arguments": json.dumps({"mental_context": "打算休息，等 14:20 闹钟"})}}]),
+         "timestamp": 2.0},
+        {"role": "tool", "tool_name": "rest", "tool_call_id": "call_revoked",
+         "content": '{"__l4_block__": true, "__revoked__": true}', "timestamp": 2.1},
+        # 打断后继续干活（无第三次 rest）
+        {"role": "assistant", "content": "处理了新事件", "timestamp": 2.5},
+    ]
+    digest = _segment_rest_digest(seg)
+    assert digest == "完成了 A 任务", f"应跳过 revoked 取有效 rest，got: {digest!r}"
+
+
+def test_all_rests_revoked_returns_empty():
+    """全部 rest 都被 revoke → 空串（降级到 narrative）。"""
+    import json
+    from domain.lifecycle.scheduler import _segment_rest_digest
+    seg = [
+        {"role": "assistant", "tool_calls": json.dumps([{
+            "id": "c1", "function": {"name": "rest",
+             "arguments": json.dumps({"mental_context": "过时总结"})}}]), "timestamp": 1.0},
+        {"role": "tool", "tool_name": "rest", "tool_call_id": "c1",
+         "content": '{"__revoked__": true}', "timestamp": 1.1},
+    ]
+    assert _segment_rest_digest(seg) == ""

@@ -270,13 +270,33 @@ def _segment_rest_digest(segment: list[dict]) -> str:
     （实测质量高于惰性生成的 narrative，且零额外成本）。折叠段时
     优先用它——不重复造轮子。
 
-    取段内**最后一次** rest 的 mental_context（最新状态最准）。
-    无 rest 调用或 mental_context 为空 → 返回空串（调用方降级）。
+    取段内**最后一次未被 revoke** 的 rest 的 mental_context。
+    revoked rest（被新事件打断）的 mc 是"打算休息时"的过时状态——
+    打断后的工作不在其中，跳过（result 带 __revoked__ 标记，
+    经 tool_call_id 与 assistant tool_calls 配对识别）。
+    无可用 rest → 空串（调用方降级）。
     """
     import json as _json
 
-    last_mc = ""
-    for m in reversed(segment):  # 倒序找最近一次
+    # 1. 收集被 revoke 的 rest tool_call_id（tool result 带 __revoked__）
+    revoked_ids: set[str] = set()
+    for m in segment:
+        if m.get("role") != "tool" or m.get("tool_name") != "rest":
+            continue
+        content = m.get("content")
+        if not content:
+            continue
+        try:
+            data = _json.loads(content) if isinstance(content, str) else content
+        except Exception:
+            continue
+        if isinstance(data, dict) and data.get("__revoked__"):
+            tcid = str(m.get("tool_call_id") or "")
+            if tcid:
+                revoked_ids.add(tcid)
+
+    # 2. 倒序找最近一次未被 revoke 的 rest
+    for m in reversed(segment):
         if m.get("role") != "assistant" or not m.get("tool_calls"):
             continue
         tcs = m["tool_calls"]
@@ -286,9 +306,13 @@ def _segment_rest_digest(segment: list[dict]) -> str:
             except Exception:
                 continue
         for tc in tcs if isinstance(tcs, list) else []:
-            fn = (tc.get("function") or {}) if isinstance(tc, dict) else {}
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function") or {}
             if fn.get("name") != "rest":
                 continue
+            if str(tc.get("id") or "") in revoked_ids:
+                continue  # 被 revoke 的过时总结，跳过
             try:
                 args = _json.loads(fn.get("arguments") or "{}")
             except Exception:
@@ -296,7 +320,7 @@ def _segment_rest_digest(segment: list[dict]) -> str:
             mc = str(args.get("mental_context") or "").strip()
             if mc:
                 return mc
-    return last_mc
+    return ""
 
 
 def _summarize_segment(segment: list[dict], session_db, session_id: str, seg_idx: int) -> list[dict]:

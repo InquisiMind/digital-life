@@ -1,92 +1,108 @@
-"""强制不接续 session（/new 指令）测试。
+"""/new 会话翻篇测试（session 实体状态语义）。
 
-验证：
-  - _check_continuation 在 force_new=True 时返回 None
-  - ContextVar set/reset 正确恢复
-  - /new 命令解析逻辑（剥离前缀、空正文、有正文）
-  - _bg_wake 捕获 force_new（透传到后台线程）
+实体模型（2026-08-21 重构）：
+  - /new = 对 session 实体的关闭操作：end_session(user_reset)
+  - 接续判定 = 实体终态查询：上一个终态 session 的 end_reason 不可接续
+    （user_reset）或超出 15min 窗口 → 开新 session
+  - 与触发唤醒的事件类型无关（语音/群/私聊/timer 都做同一实体判定）
+
+取代旧的 ContextVar force_new 标志（链路伪状态，跨事件线程即丢——
+16:23 实证：/new 后 9 秒的语音唤醒仍接续旧 session）。
 """
 from __future__ import annotations
 
 import pytest
 
+from domain.lifecycle import scheduler
 from domain.lifecycle.scheduler import (
-    _force_new_session_var,
     _check_continuation,
-    set_force_new_session,
-    reset_force_new_session,
+    close_session_user_reset,
 )
 
 
-# ── _check_continuation 受 force_new 控制 ────────────────────────────────────
+@pytest.fixture(autouse=True)
+def _clean():
+    yield
+    scheduler._last_session_end.pop("test-ent-iid", None)
+    scheduler._last_session_end.pop("test-ent2-iid", None)
 
 
-def test_check_continuation_force_new_returns_none(monkeypatch, tmp_path):
-    """force_new=True 时 _check_continuation 直接返回 None，不看接续窗口。"""
-    monkeypatch.setattr("infrastructure.config.get_project_root", lambda: tmp_path)
-    token = set_force_new_session(True)
-    try:
-        # 即使 _last_session_end 有近期的（本应接续），force_new 也返回 None
-        from domain.lifecycle import scheduler
-        from domain.lifecycle.clock import now_dt
-        scheduler._last_session_end["test-fn-iid"] = {
-            "session_id": "old-session",
-            "at": now_dt(),  # 刚结束，正常会接续
-        }
-        result = _check_continuation("test-fn-iid")
-        assert result is None, "force_new=True 必须返回 None（不接续）"
-    finally:
-        reset_force_new_session(token)
-
-
-def test_check_continuation_normal_when_not_forced(monkeypatch, tmp_path):
-    """force_new=False（默认）时，接续逻辑正常（有近期 session → 返回旧 id）。"""
-    monkeypatch.setattr("infrastructure.config.get_project_root", lambda: tmp_path)
-    from domain.lifecycle import scheduler
+def _set_prev(iid, sid, reason="", minutes_ago=0.0):
     from domain.lifecycle.clock import now_dt
-
-    scheduler._last_session_end["test-normal-iid"] = {
-        "session_id": "recent-session",
-        "at": now_dt(),
+    from datetime import timedelta
+    scheduler._last_session_end[iid] = {
+        "session_id": sid,
+        "at": now_dt() - timedelta(minutes=minutes_ago),
+        "end_reason": reason,
     }
-    assert _force_new_session_var.get() is False
-    result = _check_continuation("test-normal-iid")
-    assert result == "recent-session"
-    # 清理
-    scheduler._last_session_end.pop("test-normal-iid", None)
 
 
-# ── ContextVar set/reset ─────────────────────────────────────────────────────
+def test_normal_continuation_within_window():
+    """completed 终态 + 窗口内 → 接续。"""
+    _set_prev("test-ent-iid", "s1", "completed")
+    assert _check_continuation("test-ent-iid") == "s1"
 
 
-def test_force_new_session_var_default_false():
-    assert _force_new_session_var.get() is False
+def test_user_reset_blocks_continuation():
+    """user_reset 终态 → 不接续（/new 生效的实体语义）。"""
+    _set_prev("test-ent-iid", "s1", "user_reset")
+    assert _check_continuation("test-ent-iid") is None
 
 
-def test_force_new_session_var_set_reset():
-    token = set_force_new_session(True)
-    assert _force_new_session_var.get() is True
-    reset_force_new_session(token)
-    assert _force_new_session_var.get() is False
+def test_expired_window_blocks_continuation():
+    """窗口外 → 不接续（原有行为保持）。"""
+    _set_prev("test-ent-iid", "s1", "completed", minutes_ago=30)
+    assert _check_continuation("test-ent-iid") is None
 
 
-def test_force_new_session_var_nested():
-    """嵌套 set：内层 reset 不影响外层。"""
-    t1 = set_force_new_session(True)
-    assert _force_new_session_var.get() is True
-    t2 = set_force_new_session(False)
-    assert _force_new_session_var.get() is False
-    reset_force_new_session(t2)
-    assert _force_new_session_var.get() is True  # 恢复到 t1 的状态
-    reset_force_new_session(t1)
-    assert _force_new_session_var.get() is False
+def test_error_reason_still_continues():
+    """error 终态（如 429）在窗口内仍接续——只有 user_reset 翻篇。"""
+    _set_prev("test-ent-iid", "s1", "error:429")
+    assert _check_continuation("test-ent-iid") == "s1"
 
 
-# ── /new 命令解析（纯逻辑，不依赖 handler 完整链路）──────────────────────────
+def test_no_prev_session_returns_none():
+    scheduler._last_session_end.pop("test-ent2-iid", None)
+    assert _check_continuation("test-ent2-iid-none") is None
+
+
+def test_close_user_reset_flips_memory_state(monkeypatch, tmp_path):
+    """close_session_user_reset 把内存终态改为 user_reset → 接续断开。"""
+    _set_prev("test-ent-iid", "s1", "completed")
+    assert _check_continuation("test-ent-iid") == "s1"
+
+    class FakeDB:
+        def __init__(self):
+            self.calls = []
+
+        @property
+        def _conn(self):
+            class C:
+                def execute(self, *a, **k):
+                    class R:
+                        id = "s1"
+                        ended_at = 123.0
+                        def __getitem__(self, key):
+                            return getattr(self, key)
+                        def fetchone(self):
+                            return self
+                    return R()
+            return C()
+
+        def end_session(self, sid, reason, **k):
+            self.calls.append((sid, reason))
+
+    fake = FakeDB()
+    monkeypatch.setattr(
+        "infrastructure.ai.session_db.SessionDB", lambda: fake)
+
+    sid = close_session_user_reset("test-ent-iid")
+    assert sid == "s1"
+    assert fake.calls == [("s1", "user_reset")]
+    assert _check_continuation("test-ent-iid") is None
 
 
 def test_parse_new_command_strips_prefix():
-    """模拟 handler 的 /new 解析逻辑：剥离前缀得剩余正文。"""
     text = "/new 帮我查个东西"
     assert text.lstrip().startswith("/new")
     stripped = text.lstrip()[4:].strip()
@@ -94,82 +110,6 @@ def test_parse_new_command_strips_prefix():
 
 
 def test_parse_new_command_empty_body():
-    """单独 /new → 剥离后为空（纯切 session）。"""
     text = "/new"
     stripped = text.lstrip()[4:].strip()
     assert stripped == ""
-
-
-def test_parse_new_command_with_leading_space():
-    """带前导空格也能识别。"""
-    text = "  /new hello"
-    assert text.lstrip().startswith("/new")
-    stripped = text.lstrip()[4:].strip()
-    assert stripped == "hello"
-
-
-def test_normal_message_not_new_command():
-    """普通消息不以 /new 开头 → 不触发。"""
-    for text in ["hello", "/zero 帮忙", "new 开头但没斜杠", "/ne", "/newer"]:
-        if text.lstrip().startswith("/new"):
-            # /newer 这种不该匹配——但当前实现是 startswith，会误匹配
-            # 这里记录现状（/newer 会被当 /new 处理），后续可加词边界优化
-            assert text in ("/newer",)  # 已知限制
-        else:
-            assert not text.lstrip().startswith("/new")
-
-
-# ── _bg_wake 捕获 force_new（透传验证）──────────────────────────────────────
-
-
-def test_bg_wake_pattern_captures_force_new():
-    """验证"捕获 ContextVar + 后台线程 set"的模式正确（对照 _bg_wake 写法）。
-
-    不跑完整 _wake_or_inject（mock 链路太重），而是直接验证模式：
-    父线程 set force_new → 捕获值 → 新线程里 set → scheduler 能读到。
-    """
-    import threading
-    from domain.lifecycle import scheduler as sched
-
-    captured = {}
-    token = set_force_new_session(True)
-    try:
-        # 模拟 _bg_wake 的捕获（events.py 里的写法）
-        _captured_force_new = sched._force_new_session_var.get()
-        assert _captured_force_new is True
-
-        def bg():
-            # 模拟 _bg_wake 内部的 set
-            if _captured_force_new:
-                sched.set_force_new_session(True)
-            captured["read_in_thread"] = sched._force_new_session_var.get()
-
-        t = threading.Thread(target=bg)
-        t.start()
-        t.join()
-        # 后台线程里读到了 True（透传成功）
-        assert captured["read_in_thread"] is True
-    finally:
-        reset_force_new_session(token)
-    # 父线程恢复
-    assert _force_new_session_var.get() is False
-
-
-def test_bg_wake_no_force_new_when_not_set():
-    """父线程没 set force_new 时，后台线程读到的是默认 False。"""
-    import threading
-    from domain.lifecycle import scheduler as sched
-
-    captured = {}
-    assert _force_new_session_var.get() is False
-    _captured_force_new = sched._force_new_session_var.get()
-
-    def bg():
-        if _captured_force_new:
-            sched.set_force_new_session(True)
-        captured["read"] = sched._force_new_session_var.get()
-
-    t = threading.Thread(target=bg)
-    t.start()
-    t.join()
-    assert captured["read"] is False

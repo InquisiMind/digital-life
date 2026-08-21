@@ -55,24 +55,8 @@ _last_session_end: dict[str, dict] = {}  # instance_id → {"session_id": str, "
 CONTINUATION_WINDOW_S = 15 * 60
 
 # 强制不接续标志（/new 指令）。handler 检测到 /new 时 set True，
-# _check_continuation 读到即 return None（开新 session）。
-# 用 ContextVar 而非形参透传：asyncio.to_thread 自动 copy context，
-# _bg_wake 的 threading.Thread 需显式捕获并 set（见 events.py）。
-_force_new_session_var: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "force_new_session", default=False,
-)
-
-
-def set_force_new_session(value: bool = True) -> "contextvars.Token[bool]":
-    """标记本次唤醒链路应开新 session（不接续 15min 内的旧 session）。
-
-    返回 Token，调用方在 finally 里 ``reset_force_new_session(token)`` 恢复。
-    """
-    return _force_new_session_var.set(value)
-
-
-def reset_force_new_session(token: "contextvars.Token[bool]") -> None:
-    _force_new_session_var.reset(token)
+# （force_new 的 ContextVar 机制已删除——/new 现在是 session 实体操作，
+# 见 close_session_user_reset + _check_continuation 的终态判定。）
 
 # 接续时 prev_history 的时间折叠阈值：同 session 的历史 segment（= 历史 wake）
 # 若其最后一条消息距「本次 wake 开始」超过此 gap，原文折叠为摘要后回灌，
@@ -154,19 +138,26 @@ def _is_wake_in_progress(instance_id: str) -> bool:
 def _check_continuation(instance_id: str):
     """上轮 session 结束 <15min → 返回可复用的 session_id，否则 None。
 
-    先查内存 _last_session_end，丢失时（进程重启）回退到 DB 查询 sessions 表。
+    接续是 session **实体状态**的判定，与触发唤醒的事件类型无关：
 
-    若 ContextVar ``_force_new_session_var`` 为 True（用户发了 /new），
-    直接返回 None——强制开新 session，不接续（省 token）。
+      接续资格 = 上一个终态 session 的 end_reason **可接续** 且距 now < 窗口。
+
+    不可接续的终态：
+      - user_reset（用户 /new 明确翻篇——对实体做的关闭操作，不是链路标志）
+      - 后续如需扩展（如某些 error 类）在此列表追加。
+
+    先查内存 _last_session_end（含 end_reason），丢失时（进程重启）回退
+    DB 查询 sessions 表。
     """
-    if _force_new_session_var.get():
-        logger.debug("continuation skipped: force_new_session set (instance=%s)", instance_id[:8])
-        return None
     from domain.lifecycle.clock import now_dt
+    _NON_CONTINUABLE_REASONS = ("user_reset",)
+
     prev = _last_session_end.get(instance_id or "")
     if prev:
         try:
-            if (now_dt() - prev["at"]).total_seconds() <= CONTINUATION_WINDOW_S:
+            in_window = (now_dt() - prev["at"]).total_seconds() <= CONTINUATION_WINDOW_S
+            reason = str(prev.get("end_reason") or "")
+            if in_window and not reason.startswith(_NON_CONTINUABLE_REASONS):
                 return prev["session_id"]
         except Exception:
             pass
@@ -176,18 +167,58 @@ def _check_continuation(instance_id: str):
         from infrastructure.ai.session_db import SessionDB
         db = SessionDB()
         row = db._conn.execute(
-            "SELECT id, ended_at FROM sessions WHERE ended_at IS NOT NULL ORDER BY ended_at DESC LIMIT 1"
+            "SELECT id, ended_at, end_reason FROM sessions "
+            "WHERE ended_at IS NOT NULL ORDER BY ended_at DESC LIMIT 1"
         ).fetchone()
         if row:
             from datetime import datetime, timezone
             ended_dt = datetime.fromtimestamp(row["ended_at"], tz=timezone.utc)
-            if (now_dt() - ended_dt).total_seconds() <= CONTINUATION_WINDOW_S:
+            reason = str(row["end_reason"] or "")
+            if ((now_dt() - ended_dt).total_seconds() <= CONTINUATION_WINDOW_S
+                    and not reason.startswith(_NON_CONTINUABLE_REASONS)):
                 logger.debug("Continuation session recovered from DB: %s", row["id"])
-                _last_session_end[instance_id or ""] = {"session_id": row["id"], "at": ended_dt}
+                _last_session_end[instance_id or ""] = {
+                    "session_id": row["id"], "at": ended_dt,
+                    "end_reason": reason,
+                }
                 return row["id"]
     except Exception:
         pass
     return None
+
+
+def close_session_user_reset(instance_id: str) -> str:
+    """/new 的实体操作：把实例当前 session 置为终态 user_reset。
+
+    语义：对 session 实体本身做"翻篇"关闭——此后接续判定（任何事件来源
+    的下一次唤醒）看到 user_reset 终态即开新 session。取代旧的
+    ContextVar force_new 标志（链路伪状态：事件一换线程就丢，/new 实际
+    从未对跨事件生效）。
+
+    返回被关闭的 session_id（无可关的活跃 session 返回空串——此时
+    天然无接续对象，效果等价）。
+    """
+    prev = _last_session_end.get(instance_id or "")
+    sid = (prev or {}).get("session_id") or ""
+    try:
+        from infrastructure.ai.session_db import SessionDB
+        db = SessionDB()
+        row = db._conn.execute(
+            "SELECT id, ended_at FROM sessions "
+            "WHERE ended_at IS NOT NULL ORDER BY ended_at DESC LIMIT 1"
+        ).fetchone()
+        if row:
+            sid = sid or row["id"]
+        if sid:
+            db.end_session(sid, "user_reset")
+            _last_session_end[instance_id or ""] = {
+                "session_id": sid,
+                "at": __import__("domain.lifecycle.clock", fromlist=["now_dt"]).now_dt(),
+                "end_reason": "user_reset",
+            }
+    except Exception as exc:
+        logger.warning("close_session_user_reset failed: %s", exc)
+    return sid
 
 
 def _enabled_toolsets_for_reason(reason: str) -> list[str]:
@@ -1699,7 +1730,11 @@ def _wake_digital_life_inner_safe(
         if _session_db and session_id:
             try:
                 from domain.lifecycle.clock import now_dt
-                _last_session_end[instance_id or ""] = {"session_id": session_id, "at": now_dt()}
+                # error 回滚路径的终态（completed 路径在 end_session 处登记）
+                _last_session_end[instance_id or ""] = {
+                    "session_id": session_id, "at": now_dt(),
+                    "end_reason": rollback_reason,
+                }
             except Exception:
                 pass
         if _chat_token is not None:
@@ -1730,6 +1765,12 @@ def _wake_digital_life_inner_safe(
                     )
                 else:
                     _session_db.end_session(session_id, end_reason)
+                # 终态实体登记（接续判定读这里；end_reason 是实体属性）
+                from domain.lifecycle.clock import now_dt as _now_dt
+                _last_session_end[instance_id or ""] = {
+                    "session_id": session_id, "at": _now_dt(),
+                    "end_reason": end_reason,
+                }
         except Exception as e:
             logger.debug("Failed to mark wake session ended: %s", e)
         # End the audit wake (mirror legacy end_session for the new audit DB).

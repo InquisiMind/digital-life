@@ -425,13 +425,8 @@ def _wake_or_inject(triggering_event_id: int) -> None:
         _captured_aid = life_aid
         _captured_reason = reason
         _captured_events = events
-        # 捕获 force_new_session（/new 指令）：和 instance_id 同理，新线程要显式 set
-        # 才能让 scheduler._check_continuation 读到（否则 force_new 丢失 → 错误接续）。
-        try:
-            from domain.lifecycle.scheduler import _force_new_session_var as _fnsv
-            _captured_force_new = _fnsv.get()
-        except Exception:
-            _captured_force_new = False
+        # force_new_session（/new）已改为 session 实体状态（user_reset 终态），
+        # 不再走 ContextVar 透传——旧捕获/重放块已删（链路伪状态，跨事件即丢）。
 
         def _bg_wake() -> None:
             import os as _os
@@ -445,13 +440,6 @@ def _wake_or_inject(triggering_event_id: int) -> None:
                 set_instance_context(_captured_iid)
             except Exception:
                 pass
-            # 透传 force_new_session（/new → 不接续）
-            if _captured_force_new:
-                try:
-                    from domain.lifecycle.scheduler import set_force_new_session
-                    set_force_new_session(True)
-                except Exception:
-                    pass
             try:
                 from domain.lifecycle.scheduler import wake_digital_life
                 wake_digital_life(

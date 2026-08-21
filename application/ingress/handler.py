@@ -178,28 +178,28 @@ async def handle_message(*, adapter: IngressAdapter, msg: NormalizedMessage) -> 
         await adapter.send(msg.chat_id, orchestration_reply, reply_to=msg.message_id)
         return True
 
-    # /new 指令：强制下次唤醒开新 session（不接续 15min 内的旧 session，省 token）。
-    #   /new（单独）→ 纯切 session，回复确认，不 emit 不 wake
-    #   /new <正文> → 剥离前缀，用正文开新 session 唤醒
-    # RUNNING 时延后生效：正文注入当前会话，下次唤醒才开新（不打断当前 wake）。
-    _force_new_token = None
+    # /new 指令：把实例当前 session 实体置为 user_reset 终态。
+    #   /new（单独）→ 翻篇：接续判定看到 user_reset 即开新（不接续），回复确认
+    #   /new <正文> → 同样翻篇，并用正文立刻唤醒（新 session）
+    # 语义注：作用于 session 实体状态（close_session_user_reset），不是事件
+    # 链路标志——任何来源的下次唤醒（语音/群/timer）都做同一个实体判定。
+    # RUNNING 时同样生效：实体终态已记，当前 wake 结束后下一次唤醒开新。
     if text and text.lstrip().startswith("/new"):
         stripped = text.lstrip()[4:].strip()  # len("/new") == 4
-        from domain.lifecycle.scheduler import set_force_new_session, reset_force_new_session
-        _force_new_token = set_force_new_session(True)
+        from domain.lifecycle.scheduler import close_session_user_reset
+        closed_sid = close_session_user_reset(instance_id)
         if not stripped:
             # 纯切 session：不 emit、不 wake，直接回复确认
             try:
                 await adapter.send(
                     msg.chat_id,
-                    "✂️ 下次唤醒将开新会话（不接续历史）。",
+                    f"✂️ 会话已翻篇（{'已关闭 ' + closed_sid[:24] if closed_sid else '无活跃会话，天然全新'}）。下次唤醒开新会话，不接续历史。",
                     reply_to=msg.message_id,
                 )
             except Exception:
                 pass
-            reset_force_new_session(_force_new_token)
             return True
-        text = stripped  # 用剩余正文继续走正常 emit（且 ContextVar 已标 force_new）
+        text = stripped  # 用剩余正文继续走正常 emit（实体已置 user_reset）
 
     # /observe 指令：触发一次屏幕+麦克风感知（等效快捷键，但不依赖辅助功能权限）。
     # 绕过 pynput 全局快捷键的 TCC 限制——飞书发 /observe 即可触发录制。
@@ -261,8 +261,6 @@ async def handle_message(*, adapter: IngressAdapter, msg: NormalizedMessage) -> 
             reset_instance_context(ctx_token)
             if prev_id:
                 os.environ["DIGITAL_LIFE_INSTANCE_ID"] = prev_id
-            if _force_new_token is not None:
-                reset_force_new_session(_force_new_token)
     return True
 
 

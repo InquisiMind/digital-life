@@ -381,26 +381,37 @@ class FeishuAdapter(IngressAdapter):
             return False
         try:
             if reply_to:
+                # ⚠ SDK 1.6.5 的 Request 类在 lark.im.v1 顶层（不在 .message 子命名空间）
+                # ——旧引用 lark.im.v1.message.ReplyMessageRequest 一直 AttributeError，
+                # 所有"引用回复"（/new 确认、reply_to 消息）静默失败。
+                # Body 构造也必须走 builder（构造函数只接受 dict）。
+                from lark_oapi.api.im.v1.model.reply_message_request import ReplyMessageRequest
+                from lark_oapi.api.im.v1.model.reply_message_request_body import ReplyMessageRequestBodyBuilder
                 req = (
-                    lark.im.v1.message.ReplyMessageRequest.builder()
+                    ReplyMessageRequest.builder()
                     .message_id(reply_to)
-                    .data(
-                        lark.im.v1.message.ReplyMessageRequestBody(
-                            msg_type="text",
-                            content=content,
-                        )
+                    .request_body(
+                        ReplyMessageRequestBodyBuilder()
+                        .msg_type("text")
+                        .content(content)
+                        .build()
                     )
                 )
             else:
                 import json as _json
 
-                body = {"text": content}
+                from lark_oapi.api.im.v1.model.create_message_request import CreateMessageRequest
+                from lark_oapi.api.im.v1.model.create_message_request_body import CreateMessageRequestBodyBuilder
                 req = (
-                    lark.im.v1.message.CreateMessageRequest.builder()
+                    CreateMessageRequest.builder()
                     .receive_id_type("chat_id")
-                    .receive_id(chat_id)
-                    .msg_type("text")
-                    .content(_json.dumps(body, ensure_ascii=False))
+                    .request_body(
+                        CreateMessageRequestBodyBuilder()
+                        .receive_id(chat_id)
+                        .msg_type("text")
+                        .content(_json.dumps({"text": content}, ensure_ascii=False))
+                        .build()
+                    )
                 )
 
             def _do_send():

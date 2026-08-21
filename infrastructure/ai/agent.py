@@ -2230,6 +2230,8 @@ class AIAgent:
             # 三轮分权重联想: 逐轮 recall + 综合评分
             # 近期 turn 权重更高, 让真正相关的认知优先浮出
             all_results_map: dict[int, dict] = {}  # chunk_id → best result
+            import time as _time
+            _now = _time.time()  # P4 时序感知: 启用 valid_at/invalid_at 过滤
             for turn_text, turn_weight in turn_queries:
                 turn_hits = unified_recall(
                     turn_text,
@@ -2237,6 +2239,7 @@ class AIAgent:
                     exclude_chunk_ids=self._injected_memory_ids_as_chunk_ids(),
                     budget_kind="passive",
                     cognition_only=True,
+                    center_time=_now,
                 )
                 for h in turn_hits:
                     cid = h.get("chunk_id", -1)

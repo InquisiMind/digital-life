@@ -655,6 +655,19 @@ class EmployeeConsoleAPIService:
         contact = create_contact(name=name, notes=notes, kind=kind, platform_ids=cleaned)
         return web.json_response({"ok": True, "contact": contact}, status=201)
 
+    async def _handle_console_update_chat_notes(self, request: web.Request) -> web.Response:
+        """PATCH /api/employee/{iid}/chats/{chat_id}/notes — 编辑窗口备注。"""
+        from domain.contacts import update_chat_notes
+        chat_id = request.match_info.get("chat_id", "").strip()
+        if not chat_id:
+            return web.json_response({"ok": False, "reason": "chat_id 不能为空"}, status=400)
+        data = await self._input(request)
+        notes = str(data.body.get("notes") or "").strip()
+        ok = update_chat_notes(chat_id, notes)
+        if not ok:
+            return web.json_response({"ok": False, "reason": "窗口不存在"}, status=404)
+        return web.json_response({"ok": True})
+
     async def _handle_console_update_contact(self, request: web.Request) -> web.Response:
         """PATCH 修改 contact 字段. body: name? / notes? / platform_ids?"""
         data = await self._input(request)
@@ -1417,6 +1430,7 @@ def _add_console_api_routes(app: web.Application, api_prefix: str, service: Empl
     app.router.add_post(f"{api_prefix}/contacts/{{id}}/block", service._handle_console_toggle_block_contact)
     app.router.add_delete(f"{api_prefix}/contacts/{{id}}", service._handle_console_delete_contact)
     app.router.add_post(f"{api_prefix}/contacts/merge", service._handle_console_merge_contacts)
+    app.router.add_patch(f"{api_prefix}/chats/{{chat_id}}/notes", service._handle_console_update_chat_notes)
 
     # todos (v5)
     app.router.add_get(f"{api_prefix}/todos", service._handle_console_todos)

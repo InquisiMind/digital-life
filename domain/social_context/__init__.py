@@ -91,7 +91,8 @@ def render_social_context(instance_id: str) -> str:
                 t = ch.get("type") or ""
                 t_label = {"group": "群", "dm": "私聊"}.get(t, "会话")
                 name = (ch.get("name") or "").strip() or "(未命名)"
-                lines.append(f"  · {name}（{cid}，{t_label}）")
+                note = (ch.get("notes") or "").strip()
+                lines.append(f"  · {name}（{cid}，{t_label}）" + (f" — {note}" if note else ""))
     except Exception as exc:
         logger.debug("social_context chats failed: %s", exc)
 

@@ -29,7 +29,7 @@
             <el-tag v-else-if="row.kind === 'system'" size="small" type="info">system</el-tag>
             <el-tag v-if="row.blocked" size="small" type="danger">blocked</el-tag>
           </div>
-          <div class="brand-sub mono" style="color: var(--text-muted); font-size: 10px;">
+          <div v-if="!row.name" class="brand-sub mono" style="color: var(--text-muted); font-size: 10px;">
             {{ row.id.slice(0, 8) }}
           </div>
         </template>
@@ -99,7 +99,7 @@
         </div>
       </div>
       <el-table :data="chats" size="small" style="width: 100%;" :show-header="false">
-        <el-table-column min-width="180">
+        <el-table-column min-width="200">
           <template #default="{ row }">
             <div style="display: flex; align-items: center; gap: 8px;">
               <el-tag size="small" :type="row.type === 'dm' ? 'success' : 'info'" effect="plain">
@@ -107,11 +107,19 @@
               </el-tag>
               <span style="font-size: 13px;">{{ row.name || '(未命名)' }}</span>
             </div>
+            <div v-if="row.notes" class="brand-sub" style="font-size: 11px; color: var(--text-secondary); margin-top: 2px;">
+              {{ row.notes }}
+            </div>
           </template>
         </el-table-column>
-        <el-table-column min-width="280">
+        <el-table-column min-width="260">
           <template #default="{ row }">
             <span class="mono" style="font-size: 11px; color: var(--text-muted);">{{ row.chat_id }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column width="60" align="right">
+          <template #default="{ row }">
+            <el-button text size="small" @click="openChatNotes(row)">备注</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -189,7 +197,20 @@
         <el-button type="danger" :loading="blockDlg.loading" @click="confirmBlock">确认拉黑</el-button>
       </template>
     </el-dialog>
-  </div>
+  
+    <!-- 窗口备注编辑 -->
+    <el-dialog v-model="chatNotesDlg.open" title="窗口备注" width="480px" style="max-width: 90vw;">
+      <p class="brand-sub" style="color: var(--text-muted); font-size: 12px; margin: 0 0 10px;">
+        {{ chatNotesDlg.type === 'group' ? '这个群是做什么的、什么内容适合发这里——模型会在社交关系里看到。' : '这个对话的定位/注意事项。' }}
+      </p>
+      <el-input v-model="chatNotesDlg.notes" type="textarea" :rows="3"
+        placeholder="例：与 zero 协作的开发讨论群，技术细节在这里说" />
+      <template #footer>
+        <el-button @click="chatNotesDlg.open = false">取消</el-button>
+        <el-button type="primary" :loading="chatNotesDlg.loading" @click="saveChatNotes">保存</el-button>
+      </template>
+    </el-dialog>
+</div>
 </template>
 
 <script setup>
@@ -202,6 +223,28 @@ const route = useRoute()
 const iid = computed(() => String(route.params.iid || ''))
 const contacts = ref([])
 const chats = ref([])
+const chatNotesDlg = reactive({ open: false, chatId: '', type: '', notes: '', loading: false })
+const openChatNotes = (row) => {
+  chatNotesDlg.chatId = row.chat_id
+  chatNotesDlg.type = row.type
+  chatNotesDlg.notes = row.notes || ''
+  chatNotesDlg.open = true
+}
+const saveChatNotes = async () => {
+  chatNotesDlg.loading = true
+  try {
+    const myIid = String(route.params.iid || '')
+    await fetch(`/api/employee/${myIid}/chats/${encodeURIComponent(chatNotesDlg.chatId)}/notes`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes: chatNotesDlg.notes.trim() }),
+    })
+    chatNotesDlg.open = false
+    await load()
+  } finally {
+    chatNotesDlg.loading = false
+  }
+}
 const loading = ref(true)
 const searchText = ref('')
 const filter = ref('all')

@@ -97,6 +97,7 @@ def ensure_schema() -> None:
                 chat_id TEXT PRIMARY KEY,
                 name TEXT NOT NULL DEFAULT '',
                 type TEXT NOT NULL DEFAULT '',
+                notes TEXT NOT NULL DEFAULT '',
                 updated_at TEXT DEFAULT ''
             )
             """
@@ -121,6 +122,13 @@ def ensure_schema() -> None:
                     """
                 )
                 logger.info("contact_ids dedup: removed duplicates for %d id group(s)", len(dupes))
+        except sqlite3.Error:
+            pass
+        # 存量 chats 表补 notes 列（幂等）
+        try:
+            chat_cols = [r[1] for r in conn.execute("PRAGMA table_info(chats)").fetchall()]
+            if chat_cols and "notes" not in chat_cols:
+                conn.execute("ALTER TABLE chats ADD COLUMN notes TEXT NOT NULL DEFAULT ''")
         except sqlite3.Error:
             pass
         # INSERT OR IGNORE 的写入方依赖此约束拦截跨联系人重复
@@ -627,10 +635,10 @@ def lookup_chat(chat_id: str) -> dict | None:
         conn = sqlite3.connect(str(_state_db_path()))
         try:
             row = conn.execute(
-                "SELECT name, type FROM chats WHERE chat_id = ?", (cid,)
+                "SELECT name, type, notes FROM chats WHERE chat_id = ?", (cid,)
             ).fetchone()
             if row:
-                return {"chat_id": cid, "name": row[0] or "", "type": row[1] or ""}
+                return {"chat_id": cid, "name": row[0] or "", "type": row[1] or "", "notes": row[2] or ""}
             return None
         finally:
             conn.close()
@@ -647,15 +655,34 @@ def search_chats(name_query: str, *, limit: int = 10) -> list[dict]:
         conn = sqlite3.connect(str(_state_db_path()))
         try:
             rows = conn.execute(
-                "SELECT chat_id, name, type FROM chats WHERE name LIKE ? "
+                "SELECT chat_id, name, type, notes FROM chats WHERE name LIKE ? "
                 "ORDER BY updated_at DESC LIMIT ?",
                 (f"%{q}%", limit),
             ).fetchall()
-            return [{"chat_id": r[0], "name": r[1] or "", "type": r[2] or ""} for r in rows]
+            return [{"chat_id": r[0], "name": r[1] or "", "type": r[2] or "", "notes": r[3] or ""} for r in rows]
         finally:
             conn.close()
     except sqlite3.Error:
         return []
+
+
+def update_chat_notes(chat_id: str, notes: str) -> bool:
+    """更新窗口备注（console 前端编辑）。群备注="这个群是干嘛的"——
+    人补的语境信息，注入社交关系时给模型。返回是否命中。"""
+    cid = (chat_id or "").strip()
+    if not cid:
+        return False
+    ensure_schema()
+    conn = sqlite3.connect(str(_state_db_path()))
+    try:
+        cur = conn.execute(
+            "UPDATE chats SET notes = ?, updated_at = ? WHERE chat_id = ?",
+            ((notes or "").strip(), _now_iso(), cid),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
 
 
 def list_chats(*, limit: int = 50) -> list[dict]:
@@ -664,10 +691,10 @@ def list_chats(*, limit: int = 50) -> list[dict]:
         conn = sqlite3.connect(str(_state_db_path()))
         try:
             rows = conn.execute(
-                "SELECT chat_id, name, type FROM chats ORDER BY updated_at DESC LIMIT ?",
+                "SELECT chat_id, name, type, notes FROM chats ORDER BY updated_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
-            return [{"chat_id": r[0], "name": r[1] or "", "type": r[2] or ""} for r in rows]
+            return [{"chat_id": r[0], "name": r[1] or "", "type": r[2] or "", "notes": r[3] or ""} for r in rows]
         finally:
             conn.close()
     except sqlite3.Error:

@@ -85,29 +85,39 @@
     </el-table>
 
     <!-- 窗口档案（自动建档，只读）：OC=窗口ID，群/私聊是类型 -->
-    <section v-if="chats.length" style="margin-top: 24px;">
-      <h3 class="page-title" style="font-size: 15px; margin-bottom: 8px;">窗口（自动建档）</h3>
-      <p class="brand-sub" style="color: var(--text-muted); font-size: 12px; margin-bottom: 8px;">
-        OC = 窗口 ID（群/私聊都是 oc_ 开头，回复消息填 chat_id 用）；OU = 用户 ID（@人/识人）。
-        窗口由消息自动建档，无需手工维护。
-      </p>
-      <el-table :data="chats" size="small" style="width: 100%;">
-        <el-table-column label="名称" min-width="140">
-          <template #default="{ row }">{{ row.name || '(未命名)' }}</template>
-        </el-table-column>
-        <el-table-column label="类型" width="80">
+    <section v-if="chats.length" class="neon-card" style="margin-top: var(--space-5); padding: var(--space-4);">
+      <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: var(--space-3); flex-wrap: wrap; gap: 8px;">
+        <div>
+          <h3 class="page-title" style="font-size: 15px; margin: 0;">窗口</h3>
+          <p class="brand-sub" style="color: var(--text-muted); font-size: 12px; margin: 4px 0 0;">
+            自动建档 · 只读 · 无需维护
+          </p>
+        </div>
+        <div style="display: flex; gap: 16px; font-size: 12px; color: var(--text-secondary);">
+          <span>群 <strong style="color: var(--text-primary);">{{ chats.filter(c => c.type === 'group').length }}</strong></span>
+          <span>私聊 <strong style="color: var(--text-primary);">{{ chats.filter(c => c.type === 'dm').length }}</strong></span>
+        </div>
+      </div>
+      <el-table :data="chats" size="small" style="width: 100%;" :show-header="false">
+        <el-table-column min-width="180">
           <template #default="{ row }">
-            <el-tag size="small" :type="row.type === 'dm' ? 'success' : 'info'">
-              {{ row.type === 'dm' ? '私聊' : row.type === 'group' ? '群' : '会话' }}
-            </el-tag>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <el-tag size="small" :type="row.type === 'dm' ? 'success' : 'info'" effect="plain">
+                {{ row.type === 'dm' ? '私聊' : row.type === 'group' ? '群' : '会话' }}
+              </el-tag>
+              <span style="font-size: 13px;">{{ row.name || '(未命名)' }}</span>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column label="窗口 ID (OC)" min-width="280">
+        <el-table-column min-width="280">
           <template #default="{ row }">
-            <span class="mono brand-sub" style="font-size: 11px;">{{ row.chat_id }}</span>
+            <span class="mono" style="font-size: 11px; color: var(--text-muted);">{{ row.chat_id }}</span>
           </template>
         </el-table-column>
       </el-table>
+      <p class="brand-sub" style="color: var(--text-muted); font-size: 11px; margin: var(--space-3) 0 0;">
+        OC = 窗口 ID（群/私聊通用，回复消息填 chat_id）；OU = 用户 ID（@ 人 / 识别发言者，见上方联系人）
+      </p>
     </section>
 
     <div style="margin-top: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">

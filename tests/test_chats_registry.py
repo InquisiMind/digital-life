@@ -30,7 +30,7 @@ def temp_db(tmp_path, monkeypatch):
 def test_upsert_and_lookup_roundtrip(temp_db):
     upsert_chat("oc_test_group", "三人协作群", "group")
     ch = lookup_chat("oc_test_group")
-    assert ch == {"chat_id": "oc_test_group", "name": "三人协作群", "type": "group"}
+    assert ch == {"chat_id": "oc_test_group", "name": "三人协作群", "type": "group", "notes": ""}
 
 
 def test_upsert_dm_window(temp_db):
@@ -76,3 +76,12 @@ def test_dm_window_is_not_group_by_prefix(temp_db):
     """核心回归：私聊窗口 oc_ 开头，type=dm——前缀推断时代它会被标 group。"""
     upsert_chat("oc_55fbac_priv", "", "dm")
     assert lookup_chat("oc_55fbac_priv")["type"] == "dm"
+
+
+def test_update_chat_notes(temp_db):
+    """窗口备注可更新（群聊语境由人维护，模型可见）。"""
+    from domain.contacts import update_chat_notes
+    upsert_chat("oc_grp", "群", "group")
+    assert update_chat_notes("oc_grp", "开发讨论群") is True
+    assert lookup_chat("oc_grp")["notes"] == "开发讨论群"
+    assert update_chat_notes("oc_none", "x") is False  # 不存在的窗口

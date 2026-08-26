@@ -27,7 +27,6 @@
             <strong :class="{ 'stub-name': !row.name }">{{ row.name || '(未命名)' }}</strong>
             <el-tag v-if="row.kind === 'bot'" size="small" type="warning">bot</el-tag>
             <el-tag v-else-if="row.kind === 'system'" size="small" type="info">system</el-tag>
-            <el-tag v-else-if="row.kind === 'group'" size="small" type="primary">群</el-tag>
             <el-tag v-if="row.blocked" size="small" type="danger">blocked</el-tag>
           </div>
           <div class="brand-sub mono" style="color: var(--text-muted); font-size: 10px;">
@@ -157,7 +156,7 @@
           <div v-for="(pid, idx) in dlg.form.platform_ids" :key="idx"
             style="display: flex; gap: 8px; margin-bottom: 6px; width: 100%;">
             <el-input v-model="pid.platform" placeholder="feishu" style="width: 100px;" />
-            <el-input v-model="pid.platform_id" placeholder="用户ID ou_… 或 窗口ID oc_…（群联系人填 oc_）" style="flex: 1;" />
+            <el-input v-model="pid.platform_id" placeholder="用户ID ou_…（窗口 ID 不在这里维护，见下方窗口表）" style="flex: 1;" />
             <el-button text type="danger" @click="dlg.form.platform_ids.splice(idx, 1)">✕</el-button>
           </div>
           <el-button text type="primary" @click="dlg.form.platform_ids.push({ platform: '', platform_id: '' })">

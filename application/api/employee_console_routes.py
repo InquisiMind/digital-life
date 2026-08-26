@@ -636,8 +636,9 @@ class EmployeeConsoleAPIService:
             return web.json_response({"ok": False, "reason": "name 不能为空"}, status=400)
         notes = str(data.body.get("notes") or "").strip()
         kind = str(data.body.get("kind") or "human").strip().lower() or "human"
-        # group：群联系人（platform_id 须为 OC 窗口 ID）；与 store 层白名单对齐
-        if kind not in ("human", "bot", "system", "group"):
+        # 建模口径（2026-08-26 终版）：contacts 只有人（human/bot/system），
+        # 窗口（群/私聊）一律在 chats 表自动建档——不再支持群联系人
+        if kind not in ("human", "bot", "system"):
             kind = "human"
         platform_ids = data.body.get("platform_ids") or []
         if not isinstance(platform_ids, list) or not platform_ids:

@@ -15,12 +15,12 @@ event_types:
     debounce_window_s: 0
     merge_policy: latest
     consumption_policy: on_trigger
-    wake_prompt: '💬 新消息。
+    wake_prompt: '💬 新消息（私聊）。
 
-      对话：{chat_id}
+      窗口：{chat_id}（私聊）
 
+      发言：{sender_name}（{sender_id}）：{text}
 
-      {sender_name}：{text}
 
       {attachments_block}
 
@@ -28,9 +28,7 @@ event_types:
       {sender_notes_block}
 
 
-      如需回应，必须用 `express_to_human` 工具发送（直接 text 输出对方收不到）。
-
-      默认 chat_id 留空 = 回复当前对话。
+      —— 回复：chat_id 留空 = 回到本窗口。@ 他时用他的 OU（{sender_id}）。
 
       如果上文中出现 `[图片 xxx]` / `[文件 xxx]`，可调 `sense_image(attachment_id)` 看图。
 
@@ -78,9 +76,10 @@ event_types:
     consumption_policy: on_trigger
     wake_prompt: '💬 群聊有新消息。
 
-      群：{chat_name}（{chat_id}）
+      窗口：{chat_name}（{chat_id}，群）
 
-      {sender_name}{sender_position}：{text}
+      发言：{sender_name}{sender_position}（{sender_id}）：{text}
+
 
       {_merged_texts_block}
 
@@ -89,11 +88,9 @@ event_types:
       {sender_notes_block}
 
 
-      如需回应，必须用 `express_to_human` 工具发送（直接 text 输出对方收不到）。
+      —— 回复：chat_id 留空 = 回到本群。@ 人时用对方的 OU。
 
-      默认 chat_id 留空 = 回复当前群。当多条消息被合并（_merged_count > 1）时，
-
-      可读后决定是否一并发声，沉默也合理。
+      当多条消息被合并（_merged_count > 1）时，可读后决定是否一并发声，沉默也合理。
 
       如果上文中出现 `[图片 xxx]` / `[文件 xxx]`，可调 `sense_image(attachment_id)` 看图。
 

@@ -121,6 +121,23 @@ async def handle_message(*, adapter: IngressAdapter, msg: NormalizedMessage) -> 
         except Exception:
             pass
 
+    # ── 窗口档案自动建档（OC → name/type，chats 表）──
+    # OC = 窗口 ID（群/私聊一律平等）；type 只取 is_group 真值，永不从前缀猜。
+    # 群窗口名取 msg.chat_name（ingress 已拉）；私聊窗口名记对方人名（展示用）。
+    if msg.chat_id:
+        try:
+            from domain.contacts import upsert_chat
+            _win_name = (getattr(msg, "chat_name", "") or "").strip()
+            if not _win_name and not msg.is_group:
+                _win_name = (msg.sender_name or "").strip()
+            upsert_chat(
+                msg.chat_id,
+                name=_win_name,
+                chat_type="group" if msg.is_group else "dm",
+            )
+        except Exception:
+            pass
+
     text = msg.content
     # 多模态附件：从 NormalizedMessage 提取 attachment 摘要（不含 local_path，避免 prompt 泄漏）
     # 每元素形如 {"attachment_id", "source", "source_key", "mime", "kind"}

@@ -87,6 +87,47 @@ def ensure_schema() -> None:
             "CREATE INDEX IF NOT EXISTS idx_contact_ids_lookup "
             "ON contact_ids(platform, platform_id)"
         )
+        # ── chats 窗口档案表（2026-08-26 联系人机制重构）──
+        # OC = 窗口 ID（群窗口/私聊窗口一律平等）；dm|group 是 type 字段，
+        # 只从 ingress 的 is_group 真值写入，永不从 ID 前缀推断。
+        # 自动建档（ingress 每条消息 upsert），模型只读。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chats (
+                chat_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL DEFAULT '',
+                type TEXT NOT NULL DEFAULT '',
+                updated_at TEXT DEFAULT ''
+            )
+            """
+        )
+        # ── contact_ids 唯一性防线：同一 (platform, platform_id) 只能挂一个联系人。
+        # 旧数据可能已有重复（alpha 曾有同 ou 双挂）——建 UNIQUE 索引前清一次：
+        # 每组重复保留 contact_id 字典序最小的一行（确定性去重）。
+        try:
+            dupes = conn.execute(
+                """
+                SELECT platform, platform_id, COUNT(*) c
+                FROM contact_ids GROUP BY platform, platform_id HAVING c > 1
+                """
+            ).fetchall()
+            if dupes:
+                conn.execute(
+                    """
+                    DELETE FROM contact_ids WHERE rowid NOT IN (
+                        SELECT MIN(rowid) FROM contact_ids
+                        GROUP BY platform, platform_id
+                    )
+                    """
+                )
+                logger.info("contact_ids dedup: removed duplicates for %d id group(s)", len(dupes))
+        except sqlite3.Error:
+            pass
+        # INSERT OR IGNORE 的写入方依赖此约束拦截跨联系人重复
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_contact_ids_platform_id "
+            "ON contact_ids(platform, platform_id)"
+        )
         # Migration: 旧 contacts 表（v1, open_id 为 PK）→ v2
             # 仅在 schema 是 v1 时执行；用 PRAGMA 检测。
         try:
@@ -540,6 +581,97 @@ def set_blocked(contact_id: str, blocked: bool, reason: str = "") -> bool:
 
 
 # ──────────────────────────────── Lookup helpers ────────────────────────────────
+
+
+# ── chats 窗口档案（OC → name/type；自动建档，模型只读）──────────────────────
+
+
+def upsert_chat(chat_id: str, name: str = "", chat_type: str = "") -> None:
+    """窗口档案 upsert（ingress 每条入站消息调用）。
+
+    chat_type 只接受 'dm' | 'group'——必须来自 ingress 的 is_group 真值，
+    永不从 OC 前缀推断（私聊窗口也是 oc_ 开头，前缀推断是历史 bug 源头）。
+    name：群窗口为群名；私聊窗口为对方人名（展示用）。空值不覆盖已有。
+    """
+    cid = (chat_id or "").strip()
+    if not cid:
+        return
+    _name = (name or "").strip()
+    _type = (chat_type or "").strip().lower()
+    if _type not in ("dm", "group"):
+        _type = ""  # 未知类型留空（中性），绝不猜
+    ensure_schema()
+    conn = sqlite3.connect(str(_state_db_path()))
+    try:
+        conn.execute(
+            """
+            INSERT INTO chats (chat_id, name, type, updated_at) VALUES (?, ?, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                name = CASE WHEN excluded.name != '' THEN excluded.name ELSE chats.name END,
+                type = CASE WHEN excluded.type != '' THEN excluded.type ELSE chats.type END,
+                updated_at = excluded.updated_at
+            """,
+            (cid, _name, _type, _now_iso()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def lookup_chat(chat_id: str) -> dict | None:
+    """OC → {name, type}。无档案返回 None（调用方中性显示，不猜类型）。"""
+    cid = (chat_id or "").strip()
+    if not cid:
+        return None
+    try:
+        conn = sqlite3.connect(str(_state_db_path()))
+        try:
+            row = conn.execute(
+                "SELECT name, type FROM chats WHERE chat_id = ?", (cid,)
+            ).fetchone()
+            if row:
+                return {"chat_id": cid, "name": row[0] or "", "type": row[1] or ""}
+            return None
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+
+
+def search_chats(name_query: str, *, limit: int = 10) -> list[dict]:
+    """按名称（含部分匹配）搜窗口档案 → [{chat_id, name, type}]。"""
+    q = (name_query or "").strip()
+    if not q:
+        return []
+    try:
+        conn = sqlite3.connect(str(_state_db_path()))
+        try:
+            rows = conn.execute(
+                "SELECT chat_id, name, type FROM chats WHERE name LIKE ? "
+                "ORDER BY updated_at DESC LIMIT ?",
+                (f"%{q}%", limit),
+            ).fetchall()
+            return [{"chat_id": r[0], "name": r[1] or "", "type": r[2] or ""} for r in rows]
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return []
+
+
+def list_chats(*, limit: int = 50) -> list[dict]:
+    """全部窗口档案（social_context 渲染用），按更新时间倒序。"""
+    try:
+        conn = sqlite3.connect(str(_state_db_path()))
+        try:
+            rows = conn.execute(
+                "SELECT chat_id, name, type FROM chats ORDER BY updated_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [{"chat_id": r[0], "name": r[1] or "", "type": r[2] or ""} for r in rows]
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return []
 
 
 def get_or_create_stub(platform: str, platform_id: str, *, kind: str = "human") -> dict | None:

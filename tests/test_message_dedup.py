@@ -193,7 +193,9 @@ def test_feishu_normalize_detects_app_sender():
     adapter._app_secret = ""
     adapter._bot_name = ""
     adapter._chat_name_cache = {}
+    adapter._user_name_cache = {}
     adapter._fetch_chat_name = lambda _cid: ""
+    adapter._fetch_user_name = lambda _oid: ""
     nmsg = adapter._normalize(event)
     assert nmsg.sender_is_bot is True
     assert nmsg.sender_id == "ou_bot_app"
@@ -214,6 +216,8 @@ def test_feishu_normalize_human_sender_not_bot():
     adapter._app_secret = ""
     adapter._bot_name = ""
     adapter._chat_name_cache = {}
+    adapter._user_name_cache = {}
     adapter._fetch_chat_name = lambda _cid: ""
+    adapter._fetch_user_name = lambda _oid: ""
     nmsg = adapter._normalize(event)
     assert nmsg.sender_is_bot is False

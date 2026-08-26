@@ -33,6 +33,10 @@ from domain.contacts.store import (
     lookup_kind,
     any_id_is_bot,
     is_blocked,
+    upsert_chat,
+    lookup_chat,
+    search_chats,
+    list_chats,
 )
 
 __all__ = [
@@ -49,4 +53,8 @@ __all__ = [
     "lookup_kind",
     "any_id_is_bot",
     "is_blocked",
+    "upsert_chat",
+    "lookup_chat",
+    "search_chats",
+    "list_chats",
 ]

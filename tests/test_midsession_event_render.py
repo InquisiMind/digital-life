@@ -40,7 +40,7 @@ def test_render_private_message_contains_chat_id_and_sender():
     assert "#9999 · 新消息到达" in out
     # 契约 2：含 chat_id（私聊模板的 `对话：{chat_id}`）
     assert "oc_private_chat_abc123" in out, "私聊 chat_id 必须出现"
-    assert "对话" in out, "私聊模板必须含『对话』字段标识"
+    assert "窗口" in out, "私聊模板必须含『窗口』字段标识（2026-08-26 模板改版：OC=窗口）"
     # 契约 3：sender 和 text
     assert "张浩普" in out
     assert "你能听见我吗？" in out
@@ -100,7 +100,7 @@ def test_render_differs_between_private_and_group():
         "event_id": 1, "kind": "group_message", "payload": dict(common_payload),
     })
     # 两份应该不同：私聊含『对话』、群含『群：群名』
-    assert "对话" in private_out
+    assert "私聊" in private_out
     assert "群" in group_out
     assert "群名" in group_out
     assert "群名" not in private_out, "私聊渲染不应该带 chat_name（私聊没群）"

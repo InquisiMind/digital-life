@@ -355,7 +355,7 @@ def last_inbound_per_sender(senders: list[str]) -> dict[str, dict]:
 
     Returns:
         {platform_id: {id, ts, text, sender_name, chat_id, chat_kind}}.
-        chat_kind 由 chat_id 前缀判定: oc_* → "group", ou_/on_* → "dm", 其它 → "".
+        chat_kind 从 chats 档案表读真值（group/dm）；无档案为空串（中性）。
         没有 inbound 消息的 sender 不出现在返回 dict 中。
     """
     senders = [s for s in senders if s]
@@ -385,11 +385,19 @@ def last_inbound_per_sender(senders: list[str]) -> dict[str, dict]:
         conn.close()
 
     def _chat_kind(chat_id: str) -> str:
-        cid = (chat_id or "").lower()
-        if cid.startswith("oc_"):
-            return "group"
-        if cid.startswith(("ou_", "on_")):
-            return "dm"
+        """窗口类型：只从 chats 档案表读真值，永不从 ID 前缀猜。
+
+        历史教训：oc_→group 的前缀推断把所有私聊窗口误标成群
+        （私聊 chat_id 也是 oc_ 开头）——模型据此建立了错误的世界模型。
+        无档案 → 空串（中性），调用方按"会话"展示。
+        """
+        try:
+            from domain.contacts import lookup_chat
+            ch = lookup_chat(chat_id)
+            if ch:
+                return ch.get("type") or ""
+        except Exception:
+            pass
         return ""
 
     result: dict[str, dict] = {}

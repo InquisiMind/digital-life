@@ -615,7 +615,8 @@ def _express_one(args: Dict[str, Any], channel: str, **context) -> str:
                     "text": text,
                     "error": (
                         "你没有指定发给谁，且本次唤醒也没有明确的回复上下文。"
-                        "请显式传 chat_id（oc_xxx 群 / ou_xxx 私聊），或先调 sense_contacts 按名字查到 ID 再发。"
+                        "请显式传 chat_id（OC = 窗口 ID，群和私聊窗口都是 oc_ 开头），"
+                        "或先调 sense_contacts 按名字查到窗口 ID 再发。"
                     ),
                     "candidates": _candidates,
                 })

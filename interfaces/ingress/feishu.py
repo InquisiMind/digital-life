@@ -149,6 +149,8 @@ class FeishuAdapter(IngressAdapter):
         self._ws_last_active = time.time()
         self._chat_name_cache: dict[str, tuple[str, float]] = {}
         self._chat_name_cache_ttl = 300.0
+        self._user_name_cache: dict[str, tuple[str, float]] = {}
+        self._user_name_cache_ttl = 300.0
 
         # WS watchdog: lark SDK 重连失败后静默挂着, 需要外部定期检查 + 重建
         self._ws_watchdog_stop = threading.Event()
@@ -302,6 +304,42 @@ class FeishuAdapter(IngressAdapter):
                 return (bot.get("app_name") or "").strip()
         except Exception:
             return ""
+
+    def _fetch_user_name(self, open_id: str) -> str:
+        """OU → 姓名兜底（contact/v3/users）。失败返回空串。
+
+        权威名称源是飞书 API；本地 contacts 是缓存。本方法仅在缓存 miss
+        时调用（主路径：事件自带 display_name / contacts 表）。
+        注：需应用具备 contact:user.base:readonly（完整版返回 name 字段；
+        基础版只返回 ID——此时返回空串，回落短码显示）。
+        """
+        if not open_id:
+            return ""
+        import time as _time
+        now = _time.time()
+        cached = self._user_name_cache.get(open_id)
+        if cached and (now - cached[1]) < self._user_name_cache_ttl:
+            return cached[0]
+        name = ""
+        try:
+            import httpx
+            with httpx.Client(timeout=5.0) as c:
+                token = self._get_token()
+                if token:
+                    cr = c.get(
+                        f"https://open.feishu.cn/open-apis/contact/v3/users/{open_id}",
+                        params={"user_id_type": "open_id"},
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                    data = cr.json() or {}
+                    if data.get("code") == 0:
+                        user = (data.get("data") or {}).get("user") or {}
+                        name = (user.get("name") or "").strip()
+        except Exception as exc:
+            logger.debug("fetch user_name failed: %s", exc)
+            name = ""
+        self._user_name_cache[open_id] = (name, now)
+        return name
 
     def _fetch_chat_name(self, chat_id: str) -> str:
         """同步拉群名，5min cache。失败返回空字符串。"""
@@ -952,7 +990,8 @@ class FeishuAdapter(IngressAdapter):
         mentions_bot_self = (self._app_id in mentioned_ids) or bot_names_match
 
         # 查 contacts 表补 sender_name（platform+platform_id → name 映射）
-        # 未命中时显示友好短码（ou_xxx 前 12 位），避免 prompt 显示完整 open_id 太丑
+        # 未命中时：飞书 API 兜底（contact/v3/users 拉真名并回写缓存）——
+        # 权威名称源是飞书，本地表是缓存。API 也失败才显示友好短码。
         sender_name_resolved = ""
         if sender_open_id:
             try:
@@ -960,6 +999,18 @@ class FeishuAdapter(IngressAdapter):
                 sender_name_resolved = lookup_name("feishu", sender_open_id)
             except Exception:
                 sender_name_resolved = ""
+            if not sender_name_resolved:
+                # API 兜底：拉真名 → 回写 contacts stub 的 name（后续命中缓存）
+                api_name = self._fetch_user_name(sender_open_id)
+                if api_name:
+                    sender_name_resolved = api_name
+                    try:
+                        from domain.contacts.store import get_or_create_stub, update_contact
+                        stub = get_or_create_stub("feishu", sender_open_id)
+                        if stub and not (stub.get("name") or "").strip():
+                            update_contact(stub["id"], name=api_name)
+                    except Exception:
+                        pass
             if not sender_name_resolved:
                 # 短码 fallback：ou_eb5083eb... → "用户 eb5083eb"
                 short = sender_open_id[3:11] if len(sender_open_id) > 11 else sender_open_id

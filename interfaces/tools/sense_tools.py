@@ -912,46 +912,83 @@ def _handle_sense_goals(args: Dict[str, Any], **_) -> str:
 # ──────────────────────────────── sense_contacts ────────────────────────────────
 
 def _handle_sense_contacts(args: Dict[str, Any], **_) -> str:
-    """列出当前实例的联系人 + 各平台完整 ID（ou_xxx / oc_xxx / 微信 openid），给 express_to_human 提供 channel/chat_id 来源。
+    """社交关系双向查询：不传参 = 全量清单；传 id/name = 反查。
 
-    返回**所有平台完整 ID**，模型可直接填进 express_to_human(channel=...) 发，
-    绝不截断——任何截断都会让模型拿到无法发送的废字符串。
+    ID 语义（系统统一口径）：
+      OC（oc_ 开头）= 窗口 ID：群窗口和私聊窗口都是它，回复消息填 chat_id 用 OC
+      OU（ou_ 开头）= 用户 ID：@ 人 / 识别"谁在说话"用 OU
+      群还是私聊是窗口的 type 字段，不从 ID 前缀判断（私聊窗口也是 oc_ 开头）
     """
     _burn()
+    query = (args.get("query") or "").strip()
+
     try:
         from domain.contacts import list_contacts
     except Exception as exc:
         return _j({"ok": False, "error": f"加载联系人失败: {exc}"})
+
+    # ── 反查模式：传了 OU / OC / 名字 ──
+    if query:
+        result: Dict[str, Any] = {"ok": True, "query": query}
+        if query.startswith("ou_"):
+            for c in list_contacts() or []:
+                for p in (c.get("platform_ids") or []):
+                    if (p.get("platform_id") or "") == query:
+                        result["match"] = {"type": "user", "name": c.get("name") or "(未命名)",
+                                           "kind": c.get("kind"), "ou": query,
+                                           "notes": (c.get("notes") or "")[:120]}
+                        return _j(result)
+            result["match"] = None
+            result["note"] = "未知 OU（从未与此实例交互过）"
+        elif query.startswith("oc_"):
+            from domain.contacts import lookup_chat
+            ch = lookup_chat(query)
+            result["match"] = ({"type": "chat", "name": ch.get("name") or "(未命名)",
+                                "chat_type": ch.get("type") or "未知",
+                                "oc": query} if ch else None)
+            if not ch:
+                result["note"] = "未知 OC（此窗口无档案）"
+        else:
+            # 按名字搜（人 + 窗口）
+            hits: list = []
+            for c in list_contacts() or []:
+                if query in (c.get("name") or ""):
+                    ids = [p.get("platform_id") for p in (c.get("platform_ids") or [])]
+                    hits.append({"type": "user", "name": c.get("name"), "kind": c.get("kind"), "ids": ids})
+            from domain.contacts import search_chats
+            for ch in search_chats(query, limit=5):
+                hits.append({"type": "chat", "name": ch.get("name"), "chat_type": ch.get("type"), "id": ch.get("chat_id")})
+            result["matches"] = hits[:10]
+        return _j(result)
+
+    # ── 全量模式 ──
     cs = list_contacts() or []
     out = []
     for c in cs:
-        # 收集所有平台的完整 ID（带前缀，便于模型直接填 channel=...）
         all_ids = []
         for p in (c.get("platform_ids") or []):
             pf = (p.get("platform") or "").strip()
             pid = (p.get("platform_id") or "").strip()
             if not pid:
                 continue
-            if pf == "feishu":
-                all_ids.append(f"feishu:{pid}")
-            elif pf == "wechat":
-                all_ids.append(f"wechat:{pid}")
-            else:
-                all_ids.append(f"{pf}:{pid}")
+            all_ids.append(f"{pf or 'unknown'}:{pid}")
         out.append({
             "name": c.get("name") or "(未命名)",
             "kind": c.get("kind") or "unknown",
-            "channels": all_ids,
+            "ids": all_ids,
             "notes": (c.get("notes") or "").strip()[:80],
             "blocked": bool(c.get("blocked")),
         })
-    reachable = [x for x in out if x["channels"] and x["kind"] == "human"]
+    from domain.contacts import list_chats
+    chats = [{"name": ch.get("name") or "(未命名)", "chat_type": ch.get("type") or "",
+              "oc": ch.get("chat_id")} for ch in (list_chats(limit=30) or [])]
     summary_hint = (
-        f"共 {len(out)} 个联系人，其中 {len(reachable)} 个有可达 channel。"
-        "channel 字段已含前缀（feishu:ou_xxx 私聊 / feishu:oc_xxx 飞书群 / wechat:<openid> 微信），"
-        "直接填入 express_to_human(channel=...)。"
+        f"人 {len(out)} 个 / 窗口 {len(chats)} 个。"
+        "ID 语义：OC=窗口 ID（群/私聊都是它，回复填 chat_id 用）；OU=用户 ID（@人/识人用）。"
+        "群还是私聊看 chat_type 字段，不从 ID 前缀判断。"
+        "传 query 参数可反查：OU→姓名 / OC→窗口名 / 名字→ID。"
     )
-    return _j({"ok": True, "contacts": out, "summary": summary_hint})
+    return _j({"ok": True, "contacts": out, "chats": chats, "summary": summary_hint})
 
 
 registry.register(
@@ -960,11 +997,17 @@ registry.register(
     schema={
         "name": "sense_contacts",
         "description": (
-            "查看你的联系人清单（含飞书 open_id/chat_id 完整 ID）和参与群。"
-            "express_to_human 发私聊但不知道 chat_id 时，先调这个拿到 ou_xxx/oc_xxx，"
-            "再填进 chat_id 参数。"
+            "社交关系查询（人 + 窗口）。不传参 = 全量清单；传 query 可反查："
+            "OU(ou_…)→姓名、OC(oc_…)→窗口名和类型、名字→ID。"
+            "ID 语义：OC=窗口 ID（群/私聊都是 oc_ 开头，回复消息填 chat_id 用它）；"
+            "OU=用户 ID（@人、识别发言者）。群/私聊是窗口的类型字段，别从 ID 前缀猜。"
         ),
-        "parameters": {"type": "object", "properties": {}},
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "反查目标：ou_xxx / oc_xxx / 名字（留空=全量）"},
+            },
+        },
     },
     handler=_handle_sense_contacts,
     check_fn=lambda: True,

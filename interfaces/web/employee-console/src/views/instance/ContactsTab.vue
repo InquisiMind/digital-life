@@ -27,6 +27,7 @@
             <strong :class="{ 'stub-name': !row.name }">{{ row.name || '(未命名)' }}</strong>
             <el-tag v-if="row.kind === 'bot'" size="small" type="warning">bot</el-tag>
             <el-tag v-else-if="row.kind === 'system'" size="small" type="info">system</el-tag>
+            <el-tag v-else-if="row.kind === 'group'" size="small" type="primary">群</el-tag>
             <el-tag v-if="row.blocked" size="small" type="danger">blocked</el-tag>
           </div>
           <div class="brand-sub mono" style="color: var(--text-muted); font-size: 10px;">
@@ -57,7 +58,7 @@
           <div v-if="row.last_message" style="display:flex; flex-direction:column; gap:3px;">
             <div style="display:flex; align-items:center; gap:6px;">
               <el-tag v-if="row.chat_kind" size="small" :type="row.chat_kind === 'dm' ? 'success' : 'info'">
-                {{ row.chat_kind === 'dm' ? '私聊' : '群' }}
+                {{ row.chat_kind === 'dm' ? '私聊' : row.chat_kind === 'group' ? '群' : '会话' }}
               </el-tag>
               <span class="brand-sub mono" style="color: var(--text-muted); font-size: 10px;">
                 {{ relTime(row.last_ts) }}
@@ -83,6 +84,32 @@
         </template>
       </el-table-column>
     </el-table>
+
+    <!-- 窗口档案（自动建档，只读）：OC=窗口ID，群/私聊是类型 -->
+    <section v-if="chats.length" style="margin-top: 24px;">
+      <h3 class="page-title" style="font-size: 15px; margin-bottom: 8px;">窗口（自动建档）</h3>
+      <p class="brand-sub" style="color: var(--text-muted); font-size: 12px; margin-bottom: 8px;">
+        OC = 窗口 ID（群/私聊都是 oc_ 开头，回复消息填 chat_id 用）；OU = 用户 ID（@人/识人）。
+        窗口由消息自动建档，无需手工维护。
+      </p>
+      <el-table :data="chats" size="small" style="width: 100%;">
+        <el-table-column label="名称" min-width="140">
+          <template #default="{ row }">{{ row.name || '(未命名)' }}</template>
+        </el-table-column>
+        <el-table-column label="类型" width="80">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.type === 'dm' ? 'success' : 'info'">
+              {{ row.type === 'dm' ? '私聊' : row.type === 'group' ? '群' : '会话' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="窗口 ID (OC)" min-width="280">
+          <template #default="{ row }">
+            <span class="mono brand-sub" style="font-size: 11px;">{{ row.chat_id }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
+    </section>
 
     <div style="margin-top: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
       <span style="color: var(--text-muted); font-size: 12px;">共 {{ filteredContacts.length }} 条</span>
@@ -130,7 +157,7 @@
           <div v-for="(pid, idx) in dlg.form.platform_ids" :key="idx"
             style="display: flex; gap: 8px; margin-bottom: 6px; width: 100%;">
             <el-input v-model="pid.platform" placeholder="feishu" style="width: 100px;" />
-            <el-input v-model="pid.platform_id" placeholder="ou_xxxxxxxx" style="flex: 1;" />
+            <el-input v-model="pid.platform_id" placeholder="用户ID ou_… 或 窗口ID oc_…（群联系人填 oc_）" style="flex: 1;" />
             <el-button text type="danger" @click="dlg.form.platform_ids.splice(idx, 1)">✕</el-button>
           </div>
           <el-button text type="primary" @click="dlg.form.platform_ids.push({ platform: '', platform_id: '' })">
@@ -165,6 +192,7 @@ import { instanceApi } from '@/api/client'
 const route = useRoute()
 const iid = computed(() => String(route.params.iid || ''))
 const contacts = ref([])
+const chats = ref([])
 const loading = ref(true)
 const searchText = ref('')
 const filter = ref('all')
@@ -208,6 +236,7 @@ async function load() {
   loading.value = false
   if (d.error) return ElMessage.error(d.error)
   contacts.value = d.contacts || []
+  chats.value = d.chats || []
 }
 
 // ── 新增 / 编辑 ──

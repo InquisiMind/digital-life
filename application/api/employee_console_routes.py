@@ -620,7 +620,13 @@ class EmployeeConsoleAPIService:
                 c["last_ts"] = ""
                 c["chat_id"] = ""
                 c["chat_kind"] = ""
-        return web.json_response({"contacts": contacts})
+        # 窗口档案（chats 表）一并返回——前端展示"窗口"栏
+        try:
+            from domain.contacts import list_chats
+            chats = list_chats(limit=50) or []
+        except Exception:
+            chats = []
+        return web.json_response({"contacts": contacts, "chats": chats})
 
     async def _handle_console_create_contact(self, request: web.Request) -> web.Response:
         """POST 新增 contact. body: {name, notes?, kind?, platform_ids: [{platform, platform_id}, ...]}"""
@@ -630,7 +636,8 @@ class EmployeeConsoleAPIService:
             return web.json_response({"ok": False, "reason": "name 不能为空"}, status=400)
         notes = str(data.body.get("notes") or "").strip()
         kind = str(data.body.get("kind") or "human").strip().lower() or "human"
-        if kind not in ("human", "bot", "system"):
+        # group：群联系人（platform_id 须为 OC 窗口 ID）；与 store 层白名单对齐
+        if kind not in ("human", "bot", "system", "group"):
             kind = "human"
         platform_ids = data.body.get("platform_ids") or []
         if not isinstance(platform_ids, list) or not platform_ids:

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import enum
 import logging
+import time
 from typing import Any, Literal
 
 from domain.memory.memory.recall.unified.slice import Slice
@@ -223,11 +224,14 @@ def supersede(
         logger.warning("supersede 要求双方已持久化(有 id);跳过链写入,只设字段")
     old.cognition_state = CognitionState.REPLACED.value
     old.freshness = 0.0
+    old.invalid_at = now if now is not None else time.time()
     if new.id is not None:
         old.supersede_by = new.id
     if old.id is not None and old.id not in new.derived_from:
         new.derived_from = list(new.derived_from) + [old.id]
         new.derive_kind = "supersede"
+    # P4: 新认知从 now 生效
+    new.valid_at = now if now is not None else time.time()
     # 新认知继承老的 entity_links(导航骨架续传)
     merged_links = set(new.entity_links) | set(old.entity_links)
     new.entity_links = sorted(merged_links)
@@ -314,7 +318,11 @@ def visibility_decay(slice: Slice, *, now: float | None = None) -> float:
         return 1.0  # 证据充足,保留可见
     # activation 越低 → 越该埋
     # evidence < 3 + activation < 0.1 = "陈旧且无人提"
-    factor = 0.5 + 0.5 * slice.activation
+    # BUG FIX (Fix 2a): slice.activation reads from DB (always 0.0 after restart).
+    # Use runtime attention_cache instead for live activation.
+    from domain.memory.memory.recall.unified.attention_cache import get_activation
+    runtime_act = get_activation(slice.id, now=now) if slice.id else 0.0
+    factor = 0.5 + 0.5 * runtime_act
     return factor
 
 

@@ -75,6 +75,10 @@ class Slice:
     payload: dict | None = None
     cog_key: str | None = None
 
+    # ───── P4 (2026-08-18): 时序感知 ─────
+    valid_at: float | None = None      # 认知生效时间(None = 用 created_at 回退)
+    invalid_at: float | None = None    # 认知失效时间(None = 仍有效)
+
     # ───── 序列化 ─────
     def to_row(self) -> dict[str, Any]:
         """转成适配 chunks 表列的 dict(JSON 字段已序列化)。
@@ -107,6 +111,8 @@ class Slice:
             "provenance": self.provenance,
             "payload": json.dumps(self.payload, ensure_ascii=False) if self.payload is not None else None,
             "cog_key": self.cog_key,
+            "valid_at": self.valid_at,
+            "invalid_at": self.invalid_at,
         }
 
     @classmethod
@@ -165,6 +171,8 @@ class Slice:
             provenance=_g("provenance", "") or "",
             payload=_jdict("payload"),
             cog_key=_g("cog_key", None),
+            valid_at=_g("valid_at", None),
+            invalid_at=_g("invalid_at", None),
         )
 
 

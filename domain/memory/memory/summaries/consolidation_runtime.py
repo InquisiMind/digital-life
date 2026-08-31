@@ -1174,11 +1174,11 @@ def _llm_summary_worker(
                 vdb.execute(
                     "INSERT OR REPLACE INTO chunks "
                     "(source, chunk_hash, text, embedding, file_mtime, created_at, "
-                    " phase, source_kind, session_id, provenance) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " phase, source_kind, session_id, provenance, cognition_state) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (f"digest_session", chunk_hash, summary, blob, time.time(), time.time(),
                      "experience", "digest", session_id,
-                     f"digest_session:{session_id}"),
+                     f"digest_session:{session_id}", "active"),
                 )
                 vdb.commit()
                 vdb.close()
@@ -1521,11 +1521,11 @@ def _index_digest_to_vectors(
             seg_id = period  # 完整 period 作为 session identifier
         vec_db.execute(
             "INSERT OR REPLACE INTO chunks "
-            "(source, chunk_hash, text, embedding, file_mtime, created_at, phase, session_id, segment_index, provenance) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(source, chunk_hash, text, embedding, file_mtime, created_at, phase, session_id, segment_index, provenance, cognition_state) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (f"digest_{layer}", chunk_hash, digest_text, blob, time.time(), time.time(),
              "experience", seg_id, seg_idx,
-             f"digest_{layer}:{period}:{seg_idx or 0}"),
+             f"digest_{layer}:{period}:{seg_idx or 0}", "active"),
         )
         vec_db.commit()
         vec_db.close()
@@ -1846,11 +1846,11 @@ def _index_single_conversation(
     vec_db.execute(
         "INSERT OR REPLACE INTO chunks "
         "(source, chunk_hash, text, embedding, file_mtime, created_at, "
-        " phase, source_kind, session_id, entity_links, provenance) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " phase, source_kind, session_id, entity_links, provenance, cognition_state) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ("conversation", chunk_hash_val, indexed_text, blob, timestamp, timestamp,
          "experience", "conversation", session_id, entity_links_json,
-         f"conversation:{session_id}:{timestamp}"),
+         f"conversation:{session_id}:{timestamp}", "active"),
     )
     return True
 
@@ -2015,11 +2015,11 @@ def index_conversations(session_db: Any = None, max_age_hours: float = 1.0) -> i
                     vec_db.execute(
                         "INSERT OR REPLACE INTO chunks "
                         "(source, chunk_hash, text, embedding, file_mtime, created_at, "
-                        " phase, source_kind, session_id, entity_links, provenance) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        " phase, source_kind, session_id, entity_links, provenance, cognition_state) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         ("conversation", h, text, blob, ts, ts,
                          "experience", "conversation", sid, ent_links,
-                         f"conversation:{sid}:{ts}"),
+                         f"conversation:{sid}:{ts}", "active"),
                     )
                     count += 1
 
@@ -2134,10 +2134,10 @@ def backfill_conversations(limit: int = 500) -> int:
                     vec_db.execute(
                         "INSERT OR REPLACE INTO chunks "
                         "(source, chunk_hash, text, embedding, file_mtime, created_at, "
-                        " phase, source_kind, session_id, entity_links) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        " phase, source_kind, session_id, entity_links, cognition_state) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         ("conversation", chunk_hash, text, blob, ts, ts,
-                         "experience", "conversation", bf_sid, ent_links),
+                         "experience", "conversation", bf_sid, ent_links, "active"),
                     )
                     count += 1
 

@@ -431,6 +431,8 @@ def promote_one(
     entity_links = [entity_name] if entity_name else list(exp.entity_links)
     new_cog = promote(exp, summary=summary, derived_from_ids=[experience_chunk_id],
                       entity_links=entity_links)
+    # P4: 时序感知 — 晋升的认知从 now 生效
+    new_cog.valid_at = time.time()
     if cog_key:
         new_cog.cog_key = cog_key
     if payload:
@@ -587,6 +589,8 @@ def supersede_one(
         # V3 #2: 继承老 cog_key/payload (新版基于老认知演变), new_payload 覆盖 value
         cog_key=old.cog_key,
         payload=merged_payload if merged_payload else None,
+        # P4: 时序感知 — 新认知从 now 生效
+        valid_at=time.time(),
     )
     try:
         db = _get_db()
@@ -890,6 +894,9 @@ def add_cognition_direct(
         entity_links=entity_links,  # Slice.to_row() 会做 json.dumps; 这里给 list, 不要预 dump
         attention_tokens=[],
         provenance=f"direct:{now:.0f}",
+        # P4: 时序感知 — valid_at/invalid_at
+        valid_at=now,
+        invalid_at=(now + payload.get("ttl_h", 0) * 3600) if (payload and payload.get("ttl_h")) else None,
         payload=payload,        # V2: dict | None
         cog_key=cog_key,        # V2: str | None
     )

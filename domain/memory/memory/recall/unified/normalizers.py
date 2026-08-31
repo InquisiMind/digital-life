@@ -181,6 +181,7 @@ def index_projects_and_todos(*, max_total: int = 60, now: float | None = None) -
             authority=0.8,
             permanence=0.9,
             freshness=1.0,
+            cognition_state="active",
             attention_tokens=[str(p.get("name"))] if p.get("name") else [],
             provenance=f"project:{pid}",
             created_at=now,
@@ -218,7 +219,7 @@ def index_projects_and_todos(*, max_total: int = 60, now: float | None = None) -
         if status in ("done", "cancelled"):
             fresh = 0.3  # 完成的"冷掉", 但不归档(响应历史查询)
         # cognition_state 给已完成的打 archived(§6.4 归档不硬删)
-        cog_state = "archived" if status in ("done", "cancelled") else None
+        cog_state = "archived" if status in ("done", "cancelled") else "active"
         # entity_links: tags + title 本身 + project_id
         links: list[str] = []
         for tag in tags:

@@ -51,31 +51,84 @@ _BUDGET_MAX_CHARS: dict[BudgetKind, int] = {
 
 # ───────────────── subroute primitives ─────────────────
 
-def _route_vector(query: str, *, extra_context: str = "", max_chars: int) -> list[dict]:
+def _route_vector(query: str, *, extra_context: str = "", max_chars: int, include_obsolete: bool = False) -> list[dict]:
     """向量语义路 — 调 recall_structured 拿 list[dict](含真实 chunk_id)。
     返回 [{chunk_id, score, source, text}]。
     (P2 修复: 原本走 recall() 字符串解析导致 chunk_id 全 -1、RRF 对应不上。)
     """
     try:
         from domain.memory.memory.recall.vector import recall_structured
-        hits = recall_structured(query, extra_context=extra_context, max_total_chars=max_chars)
+        hits = recall_structured(query, extra_context=extra_context, max_total_chars=max_chars, include_obsolete=include_obsolete)
     except Exception as e:
         logger.warning("vector route failed (will degrade): %s", e)
         return []
     if not hits:
         return []
     # 加上 metadata 让 lexical bonus 路径与 vector 共享同一字段
+    # Fix 1 (Zero audit 2026-08-18): freshness + activation 接入 vector 路
+    #   原状: vector 路完全时间盲, 一个月前和今天的认知同等权重
+    #   修复: 加载 chunk 元数据, 应用 bonus = 0.4*activation + 0.2*freshness
+    #         乘法融入 score * (1 + bonus), 避免 bonus 压过语义相关性
+
+    # 批量加载 freshness + phase from chunks 表
+    chunk_ids = [int(h.get("chunk_id", -1)) for h in hits if int(h.get("chunk_id", -1)) >= 0]
+    meta_map: dict[int, dict] = {}
+    if chunk_ids:
+        try:
+            from domain.memory.memory.recall.vector import _get_db as _get_vec_db
+            db = _get_vec_db()
+            try:
+                placeholders = ",".join("?" * len(chunk_ids))
+                rows = db.execute(
+                    f"""SELECT id, freshness, phase, created_at
+                        FROM chunks WHERE id IN ({placeholders})""",
+                    tuple(chunk_ids),
+                ).fetchall()
+                for r in rows:
+                    meta_map[r["id"]] = {
+                        "freshness": float(r["freshness"] or 0.0),
+                        "phase": r["phase"] or "experience",
+                        "created_at": float(r["created_at"] or 0),
+                    }
+            finally:
+                db.close()
+        except Exception as meta_e:
+            logger.debug("vector route: meta load failed (bonus skipped): %s", meta_e)
+
+    # 从运行时 cache 批量读 activation
+    try:
+        from domain.memory.memory.recall.unified.attention_cache import get_activations
+        cache_acts = get_activations(chunk_ids)
+    except Exception as act_e:
+        logger.debug("vector route: attention_cache read failed (treat as 0): %s", act_e)
+        cache_acts = {}
+
     out: list[dict] = []
     for h in hits:
+        cid = int(h.get("chunk_id", -1))
+        meta = meta_map.get(cid, {})
+        activation = cache_acts.get(cid, 0.0)
+        freshness = meta.get("freshness", h.get("freshness", 0.0))
+        phase = meta.get("phase", h.get("phase", "experience"))
+
+        # bonus 公式与 lexical 路一致
+        bonus = 0.4 * activation + 0.2 * freshness
+        if phase == "cognition":
+            bonus += 0.05
+
+        raw_score = float(h.get("score", 0.0))
+        # 乘法融入: bonus 不改变 score 的相对量纲, 只是让新鲜/活跃的认知微提
+        adjusted_score = raw_score * (1.0 + bonus)
+
         out.append({
-            "chunk_id": int(h.get("chunk_id", -1)),
-            "score": float(h.get("score", 0.0)),
+            "chunk_id": cid,
+            "score": adjusted_score,
             "source": h.get("source", ""),
             "source_kind": "",
             "text": h.get("text", ""),
-            "meta_phase": h.get("phase", "experience"),
+            "meta_phase": phase,
             "meta_payload": h.get("payload"),  # V3 #3: 透传 payload 给 render_breadcrumbs
-            "meta_created_at": h.get("created_at", 0),  # V6 #6
+            "meta_created_at": meta.get("created_at", h.get("created_at", 0)),  # V6 #6
             "_route": "vector",
         })
     return out[:20]
@@ -438,6 +491,7 @@ def unified_recall(
     timeout_seconds: float = _DEFAULT_TIMEOUT,
     scene_hint: str | None = None,
     cognition_only: bool = False,
+    center_time: float | None = None,
 ) -> list[dict]:
     """统一记忆检索入口。详见模块 docstring。
 
@@ -445,6 +499,10 @@ def unified_recall(
       不召回经历(digest/conversation) → 联想注入的是精华不是噪音。
     cognition_only=False (recall_memory 工具): 全局检索,包括经历 + 认知 →
       模型有明确检索意图时深挖。
+
+    center_time (P4 时序感知): 给定一个时间戳,只召回该时刻有效的认知切片。
+      过滤逻辑: valid_at <= center_time 且 (invalid_at IS NULL 或 invalid_at > center_time)。
+      None = 不过滤(向后兼容)。
 
     返回 list[dict]:
       chunk_id, text, source, source_kind, rrf_score, routes[],
@@ -485,7 +543,8 @@ def unified_recall(
     routes_raw: dict[str, list[dict]] = {}
 
     def _run_vector():
-        return _filter_cognition(_route_vector(query, extra_context=extra_context, max_chars=max_chars))
+        _incl_obs = center_time is not None  # P4: center_time 需要召回已被 supersede 的旧认知
+        return _filter_cognition(_route_vector(query, extra_context=extra_context, max_chars=max_chars, include_obsolete=_incl_obs))
     def _run_lexical():
         return _filter_cognition(_route_lexical(query, limit=20))
 
@@ -654,12 +713,91 @@ def unified_recall(
                 "scene_mult": weight_multiplier(cand_source, scene),
             }
 
+    # --- visibility_decay: 压低陈旧认知可见性 (Fix 2b, 2026-08-18) ---
+    # 认知类切片如果长期无新证据、无矛盾触及、runtime activation 低，
+    # 乘以 decay factor (0.5~1.0) 降低排序可见性。
+    # 不影响 experience 类(由 freshness 处理)。
+    cog_ids = [
+        r["chunk_id"] for r in final_pool.values()
+        if r.get("meta_phase") == "cognition"
+        and isinstance(r.get("chunk_id"), int)
+        and r["chunk_id"] >= 0
+    ]
+    if cog_ids:
+        try:
+            from domain.memory.memory.recall.vector import _get_db
+            from domain.memory.memory.recall.unified.attention_cache import get_activations
+            db = _get_db()
+            cursor = db.cursor()
+            placeholders = ",".join("?" * len(cog_ids))
+            cursor.execute(
+                f"SELECT id, evidence_count, challenge_count FROM chunks WHERE id IN ({placeholders})",
+                cog_ids
+            )
+            meta_map = {
+                row[0]: {"evidence": row[1] or 0, "challenge": row[2] or 0}
+                for row in cursor.fetchall()
+            }
+            act_map = get_activations(cog_ids)
+            for r in final_pool.values():
+                if r.get("meta_phase") != "cognition":
+                    continue
+                cid = r.get("chunk_id")
+                if not isinstance(cid, int) or cid < 0:
+                    continue
+                meta = meta_map.get(cid, {"evidence": 0, "challenge": 0})
+                if meta["challenge"] > 0 or meta["evidence"] >= 3:
+                    continue  # still active, no decay
+                act = act_map.get(cid, 0.0)
+                decay_factor = 0.5 + 0.5 * act
+                r["final_score"] *= decay_factor
+                r["visibility_decay"] = decay_factor
+        except Exception as e:
+            logger.debug("visibility_decay batch failed (will skip): %s", e)
+
     # 排序:final_score 为主
     sorted_pool = sorted(
         final_pool.values(),
         key=lambda x: x.get("final_score", 0.0),
         reverse=True,
     )
+
+    # P4 时序感知: center_time 过滤 — 只保留该时刻有效的认知
+    if center_time is not None:
+        _time_cids = [
+            r["chunk_id"] for r in sorted_pool
+            if isinstance(r.get("chunk_id"), int) and r["chunk_id"] >= 0
+        ]
+        if _time_cids:
+            try:
+                from domain.memory.memory.recall.vector import _get_db
+                _tdb = _get_db()
+                try:
+                    _ph = ",".join("?" * len(_time_cids))
+                    _sql = (
+                        "SELECT id, valid_at, invalid_at "
+                        "FROM chunks WHERE id IN (" + _ph + ")"
+                    )
+                    _rows = _tdb.execute(_sql, _time_cids).fetchall()
+                    _valid_map = {
+                        r["id"]: (r["valid_at"], r["invalid_at"]) for r in _rows
+                    }
+                finally:
+                    _tdb.close()
+            except Exception as _te:
+                logger.debug("center_time filter: DB query failed (skip filter): %s", _te)
+                _valid_map = {}
+            _skip_ids = set()
+            for _cid, (_va, _iva) in _valid_map.items():
+                if _va is not None and _va > center_time:
+                    _skip_ids.add(_cid)
+                if _iva is not None and _iva <= center_time:
+                    _skip_ids.add(_cid)
+            sorted_pool = [r for r in sorted_pool
+                           if r.get("chunk_id", -1) not in _skip_ids]
+            if _skip_ids:
+                logger.debug("center_time filter: skipped %d chunks (not valid at %s)",
+                             len(_skip_ids), center_time)
 
     # 5. 排除 + 预算 + 最低相似度阈值过滤
     filtered = [r for r in sorted_pool if r.get("chunk_id", -1) not in exclude]

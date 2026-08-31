@@ -114,13 +114,23 @@ _MMR_LAMBDA = 0.7  # 相关性 vs 多样性的权重 (1.0=纯相关性)
 # ──────────────────── Embedding API ────────────────────
 
 def _get_api_key() -> Optional[str]:
-    key = os.environ.get("LLM_API_KEY") or os.environ.get("GLM_API_KEY")
+    # EMBEDDING_API_KEY: embedding 专用 key（最高优先）。
+    # 场景：主 LLM key 与 embedding key 分属不同智谱账户时，用它在
+    # secrets.env 单独指定 embedding 轨道用的 key，不影响主 LLM。
+    # 向后兼容：不设 EMBEDDING_API_KEY 时行为与原先完全一致。
+    key = (os.environ.get("EMBEDDING_API_KEY")
+           or os.environ.get("LLM_API_KEY")
+           or os.environ.get("GLM_API_KEY"))
     if key:
         return key
     env_path = get_runtime_env_path()
     if env_path.exists():
-        for line in env_path.read_text().splitlines():
-            line = line.strip()
+        lines = [l.strip() for l in env_path.read_text().splitlines()]
+        # 两遍扫描：EMBEDDING_API_KEY 优先于行序（GLM 行可能在文件更前面）
+        for line in lines:
+            if line.startswith("EMBEDDING_API_KEY="):
+                return line.split("=", 1)[1].strip()
+        for line in lines:
             if line.startswith("LLM_API_KEY=") or line.startswith("GLM_API_KEY="):
                 return line.split("=", 1)[1].strip()
     return None
@@ -282,6 +292,23 @@ def _get_db() -> sqlite.Connection:
     except Exception:
         pass
 
+    # P4 (2026-08-18): 时序感知 — valid_at/invalid_at (Memory P0)
+    # valid_at: 认知生效时间(NULL=用 created_at 回退, 老数据无需回填)
+    # invalid_at: 认知失效时间(NULL=仍有效)
+    try:
+        db.execute("ALTER TABLE chunks ADD COLUMN valid_at REAL")
+    except Exception:
+        pass
+    try:
+        db.execute("ALTER TABLE chunks ADD COLUMN invalid_at REAL")
+    except Exception:
+        pass
+    try:
+        db.execute("CREATE INDEX IF NOT EXISTS idx_chunks_valid_at ON chunks(valid_at) WHERE valid_at IS NOT NULL")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_chunks_invalid_at ON chunks(invalid_at) WHERE invalid_at IS NOT NULL")
+    except Exception:
+        pass
+
     # P3 T035: FTS5 虚拟表 + 触发器(若环境支持)。失败时静默降级(unified.fts 模块
     # 会日志提示,检索不会因此失败 — FR-001 检索非阻断点)。
     try:
@@ -429,9 +456,9 @@ def _index_source(db: sqlite.Connection, label: str, cfg: dict) -> int:
         blob = _embedding_to_blob(emb)
         db.execute(
             "INSERT OR REPLACE INTO chunks "
-            "(source, chunk_hash, text, embedding, file_mtime, created_at, phase, source_kind) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (canonical_label, ch, text, blob, mt, time.time(), insert_phase, insert_source_kind),
+            "(source, chunk_hash, text, embedding, file_mtime, created_at, phase, source_kind, cognition_state) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (canonical_label, ch, text, blob, mt, time.time(), insert_phase, insert_source_kind, "active"),
         )
         count += 1
     db.commit()

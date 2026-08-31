@@ -137,8 +137,35 @@ def _save_registry(registry: dict[str, dict]) -> None:
 # ── Instance ID resolution ────────────────────────────────────────────
 
 
+_default_fallback_warned = False
+
+
 def _default_instance_id() -> str:
-    """Return the default instance UUID (first in registry, or legacy fallback)."""
+    """Return the default instance UUID (first in registry, or legacy fallback).
+
+    8/26 跨库写入 bug 修复（case_20260826）：静默 fallback 曾导致 env/ContextVar
+    缺失的调用路径无声路由进 1 号实例库。保留 fallback 行为（master 启动路径
+    依赖），但首次触发时打 WARNING 日志——变"静默"为"有声"，
+    所有变体 bug 的触发瞬间都会留痕。
+    """
+    global _default_fallback_warned
+    if not _default_fallback_warned:
+        import inspect
+        caller = ""
+        for frame_info in inspect.stack()[1:]:
+            fname = frame_info.filename
+            if "/infrastructure/config/" not in fname:
+                caller = f"{fname.split('/')[-1]}:{frame_info.lineno}"
+                break
+        import logging
+        logging.getLogger("digital_life.config").warning(
+            "instance fallback engaged: no explicit instance context "
+            "(env/ContextVar), defaulting to registry-first. caller=%s "
+            "[case_20260826 cross-db write bug] — if this fires during "
+            "add_cognition/write paths, the write may land in the WRONG "
+            "instance library", caller,
+        )
+        _default_fallback_warned = True
     registry = _load_registry()
     if registry:
         return next(iter(registry))

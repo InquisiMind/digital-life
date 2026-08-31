@@ -70,11 +70,18 @@ def _record_summary_token_usage(raw_response: dict[str, Any]) -> None:
     try:
         from infrastructure.config import get_app_instance_id
         from infrastructure.budget import get_token_tracker
+        try:
+            details = usage.get("prompt_tokens_details") or {}
+            cached_t = int(details.get("cached_tokens") or 0) if isinstance(details, dict) else 0
+        except (ValueError, TypeError):
+            cached_t = 0
         get_token_tracker().record(
             instance_id=get_app_instance_id() or "",
             input_tokens=in_t,
             output_tokens=out_t,
             kind="session_summary",
+            model=str(raw_response.get("model") or ""),
+            cached=cached_t,
         )
     except Exception:
         logger.debug("record summary token usage failed", exc_info=True)

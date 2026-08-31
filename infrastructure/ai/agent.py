@@ -715,6 +715,7 @@ class AIAgent:
                             input_tokens=0, output_tokens=0, total_tokens=0,
                             session_id=self.session_id or "",
                             kind="llm_call_429",
+                            model=str(self.model or ""),
                         )
                     except Exception:
                         pass
@@ -844,12 +845,21 @@ class AIAgent:
             from infrastructure.config import get_app_instance_id
             from infrastructure.budget import get_token_tracker
             iid = get_app_instance_id() or ""
+            # model: 响应回带的实际服务模型名优先，缺省回填配置名。
+            # cached: OpenAI 兼容 usage.prompt_tokens_details.cached_tokens。
+            try:
+                details = usage.get("prompt_tokens_details") or {}
+                cached_t = int(details.get("cached_tokens") or 0) if isinstance(details, dict) else 0
+            except (ValueError, TypeError):
+                cached_t = 0
             get_token_tracker().record(
                 instance_id=iid,
                 input_tokens=in_t,
                 output_tokens=out_t,
                 session_id=self.session_id or "",
                 kind="llm_call",
+                model=str(raw_response.get("model") or self.model or ""),
+                cached=cached_t,
             )
         except Exception as exc:
             logger.debug("record token usage failed: %s", exc)

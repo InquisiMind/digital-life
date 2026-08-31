@@ -46,7 +46,9 @@ CREATE TABLE IF NOT EXISTS budget_log (
     output_tokens   INTEGER NOT NULL DEFAULT 0,
     total_tokens    INTEGER NOT NULL DEFAULT 0,
     session_id      TEXT DEFAULT '',
-    kind            TEXT DEFAULT 'llm_call'  -- llm_call / session_summary / ...
+    kind            TEXT DEFAULT 'llm_call', -- llm_call / session_summary / ...
+    model           TEXT DEFAULT '',          -- 实际服务模型名（响应回带，缺省回填配置名）
+    cached          INTEGER DEFAULT 0         -- prompt_tokens_details.cached_tokens
 );
 CREATE INDEX IF NOT EXISTS idx_budget_log_occurred
     ON budget_log(occurred_at DESC);
@@ -90,12 +92,31 @@ class TokenUsageTracker:
         self._db_path = Path(db_path)
         self._ensure_schema()
 
+    # budget_log 历史列迁移（v2 2026-08-31 Zero/Alpha 双审 P0）：
+    # CREATE TABLE IF NOT EXISTS 对旧库不生效，需按 PRAGMA 查缺补列。
+    _MIGRATE_COLUMNS = {
+        "model": "TEXT DEFAULT ''",
+        "cached": "INTEGER DEFAULT 0",
+    }
+
     def _ensure_schema(self) -> None:
-        """幂等建表。"""
+        """幂等建表 + 旧库补列迁移。"""
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with self._connect() as conn:
                 conn.executescript(_SCHEMA_SQL)
+                # 旧库升级：CREATE IF NOT EXISTS 不改已存在的表，
+                # 按 table_info 查缺列逐个 ALTER（幂等，重复跑无害）。
+                rows = conn.execute(
+                    "PRAGMA table_info(budget_log)"
+                ).fetchall()
+                existing = {r["name"] for r in rows}
+                for col, decl in self._MIGRATE_COLUMNS.items():
+                    if col not in existing:
+                        conn.execute(
+                            f"ALTER TABLE budget_log ADD COLUMN {col} {decl}"
+                        )
+                        logger.info("budget_log migrated: +column %s", col)
                 conn.commit()
         except Exception as exc:
             logger.warning("budget_log schema init failed: %s", exc)
@@ -121,6 +142,8 @@ class TokenUsageTracker:
         session_id: str = "",
         kind: str = "llm_call",
         occurred_at: Optional[float] = None,
+        model: str = "",
+        cached: int = 0,
     ) -> None:
         """记一笔 token 用量。
 
@@ -143,10 +166,10 @@ class TokenUsageTracker:
                 conn.execute(
                     "INSERT INTO budget_log "
                     "(instance_id, occurred_at, input_tokens, output_tokens, "
-                    "total_tokens, session_id, kind) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "total_tokens, session_id, kind, model, cached) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (instance_id, ts, int(input_tokens), int(output_tokens),
-                     int(total), session_id, kind),
+                     int(total), session_id, kind, model, int(cached)),
                 )
                 conn.commit()
         except Exception as exc:

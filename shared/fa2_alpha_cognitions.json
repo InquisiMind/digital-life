@@ -1,0 +1,281 @@
+{
+  "export_info": {
+    "source": "alpha",
+    "project": "proj-001",
+    "export_date": "2026-08-18",
+    "total_cognitions": 25,
+    "purpose": "FA-2 跨项目蒸馏验证 - Alpha侧认知导出"
+  },
+  "cognitions": [
+    {
+      "id": 33887,
+      "category": "insight",
+      "text": "zhp 8/17 提出三个项目方向：1)商业化方案 2)记忆优化方案 3)realtime方案。Alpha和Zero共识：记忆是地基、realtime是交互层、商业化是输出层。落地优先级：realtime先做A→B；记忆P0先做；商业化待验证。",
+      "entity_links": [
+        "zhp",
+        "zero",
+        "realtime",
+        "memory",
+        "商业化"
+      ]
+    },
+    {
+      "id": 34162,
+      "category": "fact",
+      "text": "FA-1蒸馏Pipeline验证通过（8/17）：Recall 100%（12/12 GT全匹配），Precision修正后≈100%。106条认知输入→40个模式提取→4层Pipeline端到端跑通。",
+      "entity_links": [
+        "FA-1",
+        "蒸馏Pipeline",
+        "recall",
+        "precision"
+      ]
+    },
+    {
+      "id": 34831,
+      "category": "fact",
+      "text": "Pipeline产品化完成两个核心模块（8/18）：Module1 Auto Entity Link Extractor（94.3%覆盖率）和Module2 Skill Candidate Generator（40模式→6 skill候选）。",
+      "entity_links": [
+        "Pipeline产品化",
+        "entity_links",
+        "skill_candidate"
+      ]
+    },
+    {
+      "id": 33850,
+      "category": "insight",
+      "text": "FA-1核心发现：输入覆盖度=recall上限。Step3(20条)recall=58.3%，Step3b(35条)recall=100%。单实例认知库天然有结构性盲区，跨实例合并是提升recall的关键路径。",
+      "entity_links": [
+        "FA-1",
+        "recall",
+        "输入覆盖度"
+      ]
+    },
+    {
+      "id": 33905,
+      "category": "insight",
+      "text": "蒸馏Pipeline Step3c验证：106条认知合并输入，recall 100%，precision 30%是假问题——40个提取模式中28个是GT未覆盖的真实模式，false positive rate≈0%。GT是下限不是上限。",
+      "entity_links": [
+        "蒸馏Pipeline",
+        "recall",
+        "precision",
+        "GT"
+      ]
+    },
+    {
+      "id": 33907,
+      "category": "insight",
+      "text": "记忆链路诊断：写入端最严重问题是碎片化（同一事件写成rule+lesson+insight），根因是无'是否值得写'的判断标准；维护端过时认知堆积；召回端embedding盲区不可解决。",
+      "entity_links": [
+        "记忆链路",
+        "碎片化",
+        "embedding",
+        "memory"
+      ]
+    },
+    {
+      "id": 33930,
+      "category": "insight",
+      "text": "竞品调研结论：Mem0/Zep/Letta/Pipecat对标。我们领先：经验蒸馏pipeline（无竞品）、数字生命周期模型、多实例协作。我们落后：写入成本高、召回单一、冲突处理粗糙。",
+      "entity_links": [
+        "竞品调研",
+        "Mem0",
+        "Zep",
+        "Letta",
+        "Pipecat"
+      ]
+    },
+    {
+      "id": 33948,
+      "category": "insight",
+      "text": "记忆写入分层策略（Alpha+Zero对齐）：参数/规则类→supersede，经验/教训类→ADD-only，事实类→valid_at/invalid_at（Zep模式）。",
+      "entity_links": [
+        "记忆写入",
+        "supersede",
+        "ADD-only",
+        "Zep"
+      ]
+    },
+    {
+      "id": 34355,
+      "category": "insight",
+      "text": "记忆优化P0方案Alpha+Zero对齐确认。P0三项：①auto entity_links ②两层冲突检测（payload key精确+cos>0.85语义）③三层分类落地（rule→supersede, lesson/insight→ADD, fact→valid_at）。",
+      "entity_links": [
+        "记忆优化",
+        "P0",
+        "entity_links",
+        "冲突检测",
+        "分类"
+      ]
+    },
+    {
+      "id": 33906,
+      "category": "fact",
+      "text": "Realtime Phase1 VAD技术选型：推荐Silero VAD（ONNX模式）。优势：噪声鲁棒性强、6000+语言含中文、概率输出可调阈值、活跃维护。",
+      "entity_links": [
+        "Realtime",
+        "VAD",
+        "Silero"
+      ]
+    },
+    {
+      "id": 34219,
+      "category": "fact",
+      "text": "Realtime Phase1 scope收敛决策：只做单次唤醒（快捷键toggle→Silero VAD录音→静音切分→ASR转写→消息注入）。持续听觉留Phase2。",
+      "entity_links": [
+        "Realtime",
+        "Phase1",
+        "scope"
+      ]
+    },
+    {
+      "id": 34075,
+      "category": "fact",
+      "text": "LangGraph的thread+Store双层模型是Multi-Window Context范式最接近的现成参考实现。Thread=独立上下文窗口，Store=跨thread共享层。",
+      "entity_links": [
+        "LangGraph",
+        "Multi-Window",
+        "Context"
+      ]
+    },
+    {
+      "id": 21216,
+      "category": "insight",
+      "text": "商业化关键洞察：Layer0不仅有'已蒸馏的知识包'，还有'蒸馏能力本身'——后者才是真正的meta-capability。蒸馏pipeline自动化是商业化护城河。",
+      "entity_links": [
+        "商业化",
+        "蒸馏Pipeline",
+        "meta-capability"
+      ]
+    },
+    {
+      "id": 21419,
+      "category": "insight",
+      "text": "Distillation Pipeline产品化起点不是从零设计，而是提取现有Dream阶段的memory_hygiene逻辑。产品化=Dream逻辑提取+自动化调度+多租户支持。",
+      "entity_links": [
+        "蒸馏Pipeline",
+        "Dream",
+        "memory_hygiene",
+        "产品化"
+      ]
+    },
+    {
+      "id": 21421,
+      "category": "insight",
+      "text": "商业化护城河不是先发时间差，是distillation pipeline自动化成熟度×L1知识库网络效应。数据飞轮（客户多→L1蒸馏产出多→新客户冷启动快）是网络效应。",
+      "entity_links": [
+        "商业化",
+        "护城河",
+        "distillation",
+        "数据飞轮"
+      ]
+    },
+    {
+      "id": 21689,
+      "category": "insight",
+      "text": "PoC FA-1验证设计已就绪：用Zero手动识别的8个共享模式做GT（3个L1/L2+5个L3语义匹配），让LLM从196条认知中独立提取模式+生成signature。通过标准：召回≥70%，精度≥50%。",
+      "entity_links": [
+        "FA-1",
+        "PoC",
+        "GT",
+        "signature"
+      ]
+    },
+    {
+      "id": 21712,
+      "category": "insight",
+      "text": "PoC A方案验证揭示架构瓶颈：signature生成的召回率瓶颈不在字段数，在生成方法。keyword-based方法召回率33%，LLM语义理解召回率100%。FA-1(LLM生成signature)不是可选自动化，是质量保证的必经路径。",
+      "entity_links": [
+        "PoC",
+        "signature",
+        "LLM",
+        "召回率"
+      ]
+    },
+    {
+      "id": 25407,
+      "category": "insight",
+      "text": "P3 Step2b L3 embedding过滤结果：340对L3候选→θ=0.75过滤→14对(95.9%缩减)。2对sim≥0.85可auto-merge，12对需LLM review。",
+      "entity_links": [
+        "P3",
+        "embedding",
+        "过滤",
+        "碎片化"
+      ]
+    },
+    {
+      "id": 25436,
+      "category": "insight",
+      "text": "P3 Step2c LLM最终判定：14对θ≥0.75候选→12 match(85.7%)+2 partial(14.3%)+0 no_match。2个partial是案例→规则的抽象层次差异，应link不应merge。",
+      "entity_links": [
+        "P3",
+        "LLM",
+        "判定",
+        "多对一映射"
+      ]
+    },
+    {
+      "id": 25556,
+      "category": "insight",
+      "text": "P3蒸馏管线验证全部完成：P2 embedding实验(F1=0.724@θ=0.77)+P3双盲抽检(5/5=100%)+Step2b L3过滤(340→14对)+Step2c LLM判定(12match/2partial).推荐管线:θ=0.75+LLM review.",
+      "entity_links": [
+        "P3",
+        "embedding",
+        "蒸馏管线",
+        "F1"
+      ]
+    },
+    {
+      "id": 11419,
+      "category": "rule",
+      "text": "zhp 7/23明确记忆模块设计方向：多实例间不搞共享记忆层，而是通过项目空间的持久化文档做信息交换。文档是显式契约，可追溯、版本可控。",
+      "entity_links": [
+        "zhp",
+        "记忆模块",
+        "项目空间",
+        "契约"
+      ]
+    },
+    {
+      "id": 18200,
+      "category": "rule",
+      "text": "跨实例认知去重不需要做：认知库按实例隔离，Alpha和Zero各维护独立库。同一事件从不同视角记录产生重叠是正常且有益的——互补而非冗余。",
+      "entity_links": [
+        "跨实例",
+        "认知去重",
+        "实例隔离"
+      ]
+    },
+    {
+      "id": 17763,
+      "category": "rule",
+      "text": "认知沉淀原则：所有学到的新东西或新教训，必须当场用add_cognition沉淀。不写下来的教训等于没学到。zhp 7/30强调。",
+      "entity_links": [
+        "认知沉淀",
+        "add_cognition",
+        "zhp"
+      ]
+    },
+    {
+      "id": 18177,
+      "category": "rule",
+      "text": "认知写入前先recall检查同类认知，避免跨source重复。rule是前瞻性规则，lesson是回顾性教训。",
+      "entity_links": [
+        "认知写入",
+        "recall",
+        "去重",
+        "rule",
+        "lesson"
+      ]
+    },
+    {
+      "id": 16647,
+      "category": "rule",
+      "text": "认知整理节奏规则：每周至少一次完整dream记忆整理（意识流清理+认知网络关联检查+重复合并+过时标记）。",
+      "entity_links": [
+        "认知整理",
+        "dream",
+        "节奏"
+      ]
+    }
+  ]
+}

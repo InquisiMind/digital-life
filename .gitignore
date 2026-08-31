@@ -156,3 +156,7 @@ todos/
 # ZCode 客户端本地产物（含 plan、缓存等），不入 git
 .zcode/
 models/
+
+# 运行时产物（Zero 治理 2026-08-31）
+/_trash/
+/media/

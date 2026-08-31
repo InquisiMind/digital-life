@@ -7,6 +7,14 @@
       "registered_at": "2026-06-17T14:41:05",
       "scope": "shared",
       "file": "shared/skills/self_review/SKILL.md"
+    },
+    {
+      "name": "cognition_extraction_pipeline",
+      "description": "# 认知提取 Pipeline 方法论",
+      "version": "1",
+      "registered_at": "2026-08-25T08:29:33",
+      "scope": "shared",
+      "file": "shared/skills/cognition_extraction_pipeline/SKILL.md"
     }
   ]
 }

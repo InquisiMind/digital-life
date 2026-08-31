@@ -1,6 +1,8 @@
 """语音输出通道（TTS）—— 本地播放，不依赖飞书。
 
-引擎策略（2026-08-14 定）：默认 macOS Siri 神经语音（say，本地合成，
+引擎策略（2026-08-18 更新）：三引擎并存——
+Kokoro（本地 ONNX，离线高音质，~3s 出声）；
+macOS Siri 神经语音（say，本地合成，
 零网络零抖动，~1s 出声）；edge-tts（微软云端，音质上限更高但端点
 间歇抖动严重——半小时内每条都重试）作为可选高音质配置
 （app.yaml perception.tts_engine: edge / tts_voice: zh-CN-YunxiNeural）。
@@ -29,6 +31,12 @@ DEFAULT_ENGINE = os.getenv("DIGITAL_LIFE_TTS_ENGINE", "say")
 # say 默认声：Reed = Siri 神经中文男声；edge 默认声：云希
 DEFAULT_SAY_VOICE = "Reed"
 DEFAULT_EDGE_VOICE = "zh-CN-YunxiNeural"
+
+DEFAULT_KOKORO_VOICE = "zf_017:0.83,zm_014:0.17"
+KOKORO_SERVER_URL = os.getenv("KOKORO_SERVER_URL", "http://127.0.0.1:8300")
+KOKORO_VENV_PYTHON = "/Users/zhanghaopu/Downloads/models/.venv/bin/python3"
+KOKORO_SERVER_SCRIPT = "/Users/zhanghaopu/Downloads/models/server.py"
+
 # 是否启用 TTS（环境变量 / 实例配置控制）
 DEFAULT_ENABLED = os.getenv("DIGITAL_LIFE_TTS", "0") == "1"
 
@@ -36,6 +44,24 @@ DEFAULT_ENABLED = os.getenv("DIGITAL_LIFE_TTS", "0") == "1"
 def _looks_like_edge_voice(voice: str) -> bool:
     """edge-tts 声音名形如 zh-CN-YunxiNeural（含 '-' 且全 ASCII）。"""
     return bool(voice) and "-" in voice and voice.isascii()
+
+def _looks_like_kokoro_voice(voice: str) -> bool:
+    """Kokoro voice names: zf_xxx (中文女声), zm_xxx (中文男声), bf_xxx, bm_xxx, etc.
+    Also supports blend syntax: zf_017:0.83,zm_014:0.17"""
+    if not voice or len(voice) < 4:
+        return False
+    # Blend syntax: contains ':' and ','
+    if ':' in voice and ',' in voice:
+        parts = voice.split(',')
+        for p in parts:
+            tokens = p.strip().split(':')
+            if len(tokens) < 2 or len(tokens[0]) < 4 or tokens[0][2] != '_' or tokens[0][0] not in ('z', 'b', 'a'):
+                return False
+        return True
+    # Single voice: zf_xxx
+    return voice[2] == "_" and voice[0] in ("z", "b", "a")
+
+
 
 
 def _resolve_say_voice(voice: str) -> str:
@@ -139,10 +165,11 @@ def speak(text: str, *, voice: str = "", rate: str = "+0%") -> bool:
 
     Args:
         text: 要播放的文本（会自动清理标记）
-        voice: 声音名。macOS 声（"Reed"/"Rocko"/"Eddy"…）→ say 本地合成；
+        voice: 声音名。Kokoro 声（"zf_001"/"zm_030"…）→ 本地 ONNX 合成（离线高音质）；
+            macOS 声（"Reed"/"Rocko"/"Eddy"…）→ say 本地合成；
             edge-tts 名（"zh-CN-YunxiNeural"…）→ 云端合成（高音质，有抖动）。
-            空串 = 引擎默认声（say→Reed / edge→云希）。
-        rate: 语速调整（"+0%" 正常 / "+10%" 稍快；仅 edge 引擎生效）
+            空串 = 引擎默认声（say→Reed / edge→云希 / kokoro→zf_001）。
+        rate: 语速调整（"+0%" 正常 / "+60%" 快60%；edge 和 Kokoro 引擎均生效）
     """
     clean = _clean_text_for_tts(text)
     if not clean:
@@ -242,6 +269,148 @@ def _player_loop() -> None:
         _speak_one(text, voice, rate, gen)
 
 
+
+
+# ── Kokoro 本地引擎（离线、无抖动）────────────────────────────────────────────
+_kokoro_server_checked = False
+_kokoro_server_available = False
+
+
+def _ensure_kokoro_server() -> bool:
+    """检查 Kokoro server 是否在运行，没运行则自动启动。返回是否可用。
+
+    Server 启动需要 ~5s（加载 ONNX 模型），首次调用会阻塞等待。
+    """
+    global _kokoro_server_checked, _kokoro_server_available, _kokoro_server_last_check
+    if _kokoro_server_checked:
+        if not _kokoro_server_available:
+            # 每 60s 重试一次
+            import time as _t
+            if _t.time() - _kokoro_server_last_check > 60:
+                _kokoro_server_checked = False
+            else:
+                return False
+        else:
+            return True
+
+    import time as _t
+    _kokoro_server_last_check = _t.time()
+    _kokoro_server_checked = True
+
+    # Check health
+    try:
+        import requests
+        r = requests.get(f"{KOKORO_SERVER_URL}/api/health", timeout=2)
+        if r.status_code == 200 and r.json().get("engine") == "kokoro":
+            _kokoro_server_available = True
+            logger.info("Kokoro server already running (voices=%s)", r.json().get("voices"))
+            return True
+    except Exception:
+        pass
+
+    # Start server in background
+    logger.info("Starting Kokoro server...")
+    try:
+        subprocess.Popen(
+            [KOKORO_VENV_PYTHON, KOKORO_SERVER_SCRIPT],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd="/Users/zhanghaopu/Downloads/models",
+        )
+    except Exception as exc:
+        logger.warning("Failed to start Kokoro server: %s", exc)
+        _kokoro_server_available = False
+        return False
+
+    # Wait for server to be ready (max 15s)
+    for _ in range(30):
+        _t.sleep(0.5)
+        try:
+            import requests
+            r = requests.get(f"{KOKORO_SERVER_URL}/api/health", timeout=2)
+            if r.status_code == 200 and r.json().get("engine") == "kokoro":
+                _kokoro_server_available = True
+                logger.info("Kokoro server started successfully")
+                return True
+        except Exception:
+            pass
+
+    logger.warning("Kokoro server failed to start within 15s")
+    _kokoro_server_available = False
+    return False
+
+
+def _rate_to_speed(rate: str) -> float:
+    """将 edge-tts 风格 rate ('+60%', '-20%') 转为 Kokoro speed (1.6, 0.8)。"""
+    try:
+        pct = int(rate.replace('%', '').replace('+', ''))
+        speed = 1.0 + pct / 100.0
+        return min(max(speed, 0.5), 2.0)
+    except (ValueError, AttributeError):
+        return 1.0
+
+
+def _speak_kokoro(text: str, voice: str, gen: int, rate: str = "+0%") -> None:
+    """用 Kokoro 本地引擎合成并播放。
+
+    - 离线合成，无网络抖动
+    - 通过 HTTP POST /api/tts 获取 WAV 音频
+    - afplay 播放（可被 stop_playback 打断）
+    """
+    if not _ensure_kokoro_server():
+        logger.warning("Kokoro server unavailable, fallback to say")
+        _fallback_say(text, "zh-CN-YunyangNeural")
+        return
+
+    import requests as _req
+    tmp_wav = None
+    try:
+        tmp_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False, dir="/tmp")
+        tmp_wav.close()
+
+        resp = _req.post(
+            f"{KOKORO_SERVER_URL}/api/tts",
+            json={"text": text, "voice": voice or DEFAULT_KOKORO_VOICE, "speed": _rate_to_speed(rate)},
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            logger.warning("Kokoro TTS failed (HTTP %d): %s", resp.status_code, resp.text[:100])
+            _fallback_say(text, "zh-CN-YunyangNeural")
+            return
+
+        with open(tmp_wav.name, "wb") as f:
+            f.write(resp.content)
+
+        if os.path.getsize(tmp_wav.name) == 0:
+            logger.warning("Kokoro TTS returned empty audio")
+            _fallback_say(text, "zh-CN-YunyangNeural")
+            return
+
+        if gen != _generation:
+            return  # 合成等待期间被打断
+
+        player = subprocess.Popen(["afplay", tmp_wav.name],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _register_playback(player)
+        try:
+            player.wait(timeout=120)
+        finally:
+            _unregister_playback(player)
+        if player.returncode == 0:
+            logger.info("voice Kokoro played: %d chars (voice=%s)", len(text), voice)
+        else:
+            logger.info("voice Kokoro playback ended early (rc=%s)", player.returncode)
+    except Exception as exc:
+        logger.warning("voice Kokoro failed: %s", exc)
+        _fallback_say(text, "zh-CN-YunyangNeural")
+    finally:
+        if tmp_wav:
+            try:
+                os.unlink(tmp_wav.name)
+            except Exception:
+                pass
+
+
 def _speak_one(text: str, voice: str, rate: str, gen: int) -> None:
     """合成并播放一段。按 voice 形式分流引擎：
 
@@ -251,6 +420,11 @@ def _speak_one(text: str, voice: str, rate: str, gen: int) -> None:
       抖动；仍失败且中文为主 → 立即降级 say 出声 + 后台长退避探测恢复；
       英文为主不降级（say 读英文怪），后台重试成功补播
     """
+    # ── Kokoro 本地引擎（离线高音质）──
+    if _looks_like_kokoro_voice(voice):
+        _speak_kokoro(text, voice, gen, rate)
+        return
+
     # ── say 本地快路径（默认引擎）──
     if not _looks_like_edge_voice(voice or DEFAULT_SAY_VOICE):
         say_voice = _resolve_say_voice(voice or DEFAULT_SAY_VOICE)

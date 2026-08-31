@@ -121,6 +121,7 @@ class AudioSenseService:
         self._vad = None           # VADSegmenter
         self._router: AudioRouter | None = None
         self._keyword_map: dict[str, list[str]] = {}
+        self._voice_session = None    # VoiceSession（手动会话模式）
 
         # 状态
         self._running = threading.Event()
@@ -227,7 +228,11 @@ class AudioSenseService:
             self._vad.feed(pcm)
 
         # 喂 KWS（L4：唤醒词检测）—— 只在 dormant 状态跑（省 CPU）
-        if self._kws and self._router and self._router.state == VoiceState.DORMANT:
+        # 2026-08-27 patch(alpha): 手动会话期间停 KWS——用户话语可能含唤醒词，
+        # dormant 下 on_keyword_hit 仍生效，命中会把状态切回 dialog 导致双写注入。
+        if (self._kws and self._router
+                and self._router.state == VoiceState.DORMANT
+                and self._voice_session is None):
             hit = self._kws.feed(pcm)
             if hit:
                 self._router.on_keyword_hit(hit.keyword)
@@ -325,6 +330,23 @@ class AudioSenseService:
 
     def _on_state_change(self, old: VoiceState, new: VoiceState) -> None:
         """状态变化时写 state.json（供前端/调试查看）。"""
+        # 2026-08-27 patch(alpha): stop-on-timeout —— 进入 DORMANT 即手动会话必须死。
+        # 背景: 16:57 那场会话 17:02 结束后录音子进程 PID 19973 悬挂 1h46m——stop()
+        #   只在 HTTP stop_session / service.stop() 两条路径被调，router 的
+        #   dialog_timeout→dormant 只清路由状态不收会话（root cause by zero）。
+        # 语义: 进 DORMANT = 会话必须死。全路径收编：dialog_timeout tick /
+        #   force_dormant HTTP / 未来任何进 DORMANT 的转换。router 保持纯状态机。
+        # 安全性（已验证）:
+        #   1. _stop_voice_session() 自带 None guard，无会话时安全 no-op
+        #   2. VoiceSession.stop() 有 _stop_lock + _running 守卫，幂等可重入
+        #   3. router._set_state 的回调有 try/except 包裹，本补丁抛异常不伤状态机
+        #   4. 最坏阻塞 ~10s（SIGTERM wait 5s + reader join 5s），tick/HTTP 线程可接受
+        #   5. 失败留 WARN——对齐 phase2 v0.2 §5 fire-and-forget 教训
+        if new is VoiceState.DORMANT and self._voice_session is not None:
+            summary = self._stop_voice_session()
+            if not summary.get("ok"):
+                logger.warning("DORMANT transition but voice session stop failed: %s",
+                               summary.get("error", "unknown"))
         try:
             from infrastructure.perception.config import media_dir
             import json
@@ -351,14 +373,22 @@ class AudioSenseService:
 
     # ── HTTP 控制（实例 / 按键调用）──────────────────────────────────────
     def control(self, action: str, instance_id: str = "") -> dict[str, Any]:
-        """HTTP 控制端点：切换状态。
+        """HTTP 控制端点：切换状态 / 管理手动会话。
 
         Args:
             action: "focus" | "dialog" | "dormant" | "status"
-            instance_id: 可选，指定实例
+                    | "start_session" | "stop_session"
+            instance_id: 可选，指定实例（start_session 时必填）
         Returns:
-            {"ok": bool, "state": str, "action": str}
+            {"ok": bool, "state": str, "action": str, ...}
         """
+        # ── 手动会话模式（Phase 1：快捷键 toggle）──
+        if action == "start_session":
+            return self._start_voice_session(instance_id)
+        elif action == "stop_session":
+            return self._stop_voice_session()
+
+        # ── KWS 连续感知模式（dormant/dialog/focus 状态机）──
         if not self._router:
             return {"ok": False, "error": "service not running"}
 
@@ -366,7 +396,18 @@ class AudioSenseService:
             if action == "focus":
                 self._router.enter_focus()
             elif action == "dialog":
-                self._router.exit_focus()
+                # 2026-08-27: 原映射 exit_focus() 有 DORMANT guard——dormant 下
+                # control("dialog") 是 no-op，Phase 2 wake 钩子会静默失效。
+                # enter_dialog() 无 guard 且覆盖 focus→dialog（exit_focus 超集）。
+                # 2026-08-27 patch(alpha): 手动会话活跃时 dialog 请求 no-op——
+                # start_session 已 force_dormant，若另一实例经 voice_focus("dialog")
+                # （或 Phase 2 wake 钩子）把状态切回 dialog，on_segment 恢复路由，
+                # 会话音频将双写注入。会话结束状态留 dormant，KWS 常开，
+                # 喊唤醒词即可恢复 dialog——不需要 pending 补偿队列。
+                if self._voice_session is not None:
+                    logger.info("control(dialog) ignored: voice session active")
+                else:
+                    self._router.enter_dialog()
             elif action == "dormant":
                 self._router.force_dormant()
             elif action == "status":
@@ -380,11 +421,107 @@ class AudioSenseService:
                 "state": self._router.state.value,
             }
 
+    # ── 手动会话（VoiceSession）──────────────────────────────────────────
+    def _start_voice_session(self, instance_id: str) -> dict[str, Any]:
+        """启动手动语音会话：持续听 → VAD 分段 → ASR → 注入实例。
+
+        Phase 1 的核心入口。用户按快捷键触发，VoiceSession 拉起录音子进程，
+        VAD 自动分段，每段 ASR 转写后通过 emit_segment_to_instance 注入
+        目标实例作为 perception_signal 事件。
+
+        与 KWS 连续感知模式互斥：启动手动会话时自动切到 dormant（暂停 KWS 路由）。
+        """
+        if not instance_id:
+            instance_id = getattr(self._config, 'default_instance', '') if self._config else ''
+        if not instance_id:
+            return {"ok": False, "error": "instance_id required for start_session"}
+
+        if self._voice_session is not None:
+            return {"ok": False, "error": "voice session already active",
+                    "session_id": self._voice_session.session_id}
+
+        try:
+            from infrastructure.perception.voice_session import VoiceSession
+            from infrastructure.perception.config import load_config
+
+            cfg = load_config(instance_id)
+
+            def _on_transcript(wav_path: str, text: str) -> None:
+                """每段转写完成 → 注入实例作为 perception_signal。"""
+                if not text or not text.strip():
+                    logger.debug("empty transcript, skip injection")
+                    return
+                try:
+                    from infrastructure.perception.voice_router import emit_segment_to_instance
+                    emit_segment_to_instance(instance_id, text, wav_path, cfg)
+                    logger.info("voice segment injected to %s: %s",
+                                instance_id[:8], text[:40])
+                except Exception:
+                    logger.exception("emit_segment_to_instance failed")
+
+            self._voice_session = VoiceSession(
+                instance_id,
+                config=cfg,
+                on_transcript=_on_transcript,
+                on_speech_start=self._on_speech_start,
+            )
+            self._voice_session.start()
+            logger.info("voice session started for instance %s", instance_id[:8])
+
+            # 2026-08-27 patch(alpha): 兑现 docstring 承诺的 KWS 互斥——
+            # 手动会话期间强制 dormant，服务级 VAD 段不再路由（on_segment 在
+            # dormant 下忽略），防止与 VoiceSession 双写注入同一句话。
+            if self._router:
+                try:
+                    self._router.force_dormant()
+                except Exception:
+                    logger.exception("force_dormant on session start failed (non-fatal)")
+
+            return {
+                "ok": True,
+                "action": "start_session",
+                "state": "session_active",
+                "session_id": self._voice_session.session_id,
+                "instance_id": instance_id,
+            }
+        except Exception as exc:
+            logger.exception("start_voice_session failed")
+            self._voice_session = None
+            return {"ok": False, "error": str(exc)}
+
+    def _stop_voice_session(self) -> dict[str, Any]:
+        """停止手动语音会话：停录音 → flush 尾段 → 返回摘要。"""
+        if self._voice_session is None:
+            return {"ok": False, "error": "no active voice session"}
+
+        try:
+            summary = self._voice_session.stop()
+            logger.info("voice session stopped: %s (%d segments)",
+                        summary.get("session_id", "?"), summary.get("segments", 0))
+            self._voice_session = None
+            return {
+                "ok": True,
+                "action": "stop_session",
+                "state": "session_stopped",
+                **summary,
+            }
+        except Exception as exc:
+            logger.exception("stop_voice_session failed")
+            self._voice_session = None
+            return {"ok": False, "error": str(exc)}
+
     def stop(self) -> None:
         """停止所有管道。"""
         if not self._running.is_set():
             return
         self._running.clear()
+
+        # 清理活跃的 voice session（Zero 8/18 集成验证发现）
+        if self._voice_session is not None:
+            try:
+                self._stop_voice_session()
+            except Exception as e:
+                logger.warning("Failed to cleanup voice_session during stop: %s", e)
 
         if self._capture:
             self._capture.stop()

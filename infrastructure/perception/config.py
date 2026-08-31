@@ -58,10 +58,19 @@ class PerceptionConfig:
     asr_hotwords: tuple[str, ...] = field(default_factory=tuple)
     # 实时增量转写（录音中按停顿切段后台转写，停止后只等尾段 → 低延迟）
     live_transcribe: bool = True
-    live_min_segment_seconds: float = 3.0  # 攒够多少秒语音才派发一段 ASR
-    live_silence_frames: int = 25          # 停顿判定（帧 × 32ms ≈ 0.8s）
+    live_min_segment_seconds: float = 1.5  # 攒够多少秒语音才派发一段 ASR（3.0s 太大，短句易卡 buffer）
+    live_silence_frames: int = 32          # 停顿判定（帧 × 32ms ≈ 1.0s，0.8s 太短易截断）
     # 额外传递给视觉模型的 task 提示（可选）
     vision_task_hint: str = ""
+    # ASR 提供商：glm（默认）或 iflytek（科大讯飞）
+    asr_provider: str = "glm"
+    # 讯飞 IAT 凭据（asr_provider="iflytek" 时使用）
+    iflytek_app_id: str = ""
+    iflytek_api_key: str = ""
+    iflytek_api_secret: str = ""
+    # 讯飞 ASR 语言/口音
+    iflytek_language: str = "zh_cn"
+    iflytek_accent: str = "mandarin"
 
 
 def _project_root() -> Path:
@@ -134,6 +143,10 @@ def load_config(instance_id: str | None = None) -> PerceptionConfig:
     if not isinstance(hotwords, (list, tuple)):
         hotwords = []
 
+    # 讯飞 ASR 配置
+    asr_provider = (perc_cfg.get("asr_provider") or "glm").strip()
+    iflytek_cfg = perc_cfg.get("iflytek") or {}
+
     return PerceptionConfig(
         enabled=bool(perc_cfg.get("enabled", False)),
         hotkey=(perc_cfg.get("hotkey") or DEFAULT_HOTKEY).strip() or DEFAULT_HOTKEY,
@@ -148,9 +161,15 @@ def load_config(instance_id: str | None = None) -> PerceptionConfig:
         context_recent_turns=int(perc_cfg.get("context_recent_turns", 5)),
         asr_hotwords=tuple(str(h) for h in hotwords),
         vision_task_hint=str(perc_cfg.get("vision_task_hint") or ""),
+        asr_provider=asr_provider,
+        iflytek_app_id=str(iflytek_cfg.get("app_id") or ""),
+        iflytek_api_key=str(iflytek_cfg.get("api_key") or ""),
+        iflytek_api_secret=str(iflytek_cfg.get("api_secret") or ""),
+        iflytek_language=str(iflytek_cfg.get("language") or "zh_cn"),
+        iflytek_accent=str(iflytek_cfg.get("accent") or "mandarin"),
         live_transcribe=bool(perc_cfg.get("live_transcribe", True)),
-        live_min_segment_seconds=float(perc_cfg.get("live_min_segment_seconds", 3.0)),
-        live_silence_frames=int(perc_cfg.get("live_silence_frames", 25)),
+        live_min_segment_seconds=float(perc_cfg.get("live_min_segment_seconds", 1.5)),
+        live_silence_frames=int(perc_cfg.get("live_silence_frames", 32)),
     )
 
 

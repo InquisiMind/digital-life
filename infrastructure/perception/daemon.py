@@ -547,8 +547,22 @@ class PerceptionDaemon:
             finally:
                 self._live = None
 
-        # ② fallback：live 不可用/失败/无语音 → 整文件路径（含 >30s 自动分段）
-        if not transcript.strip():
+        # ② fallback：live 不可用/失败/无语音/疑似截断 → 整文件路径（含 >30s 自动分段）
+        # 疑似截断判定：live 转写文字长度与录音时长比例异常（<15 字/秒 且录音 >3s）
+        _need_fallback = not transcript.strip()
+        if transcript.strip() and audio_path:
+            try:
+                from infrastructure.perception.asr import probe_audio_duration
+                _dur = probe_audio_duration(audio_path)
+                _chars = len(transcript.strip())
+                if _dur > 3.0 and _chars / _dur < 1.5:
+                    logger.warning("live transcript may be truncated: %d chars / %.1fs = %.1f c/s, fallback to batch",
+                                   _chars, _dur, _chars / _dur)
+                    _need_fallback = True
+            except Exception:
+                pass  # 探测失败不阻塞，继续用 live 结果
+
+        if _need_fallback:
             try:
                 from infrastructure.perception.config import load_config
                 from infrastructure.perception.asr import transcribe_file, probe_audio_duration, ASR_SEGMENT_SECONDS
@@ -617,10 +631,13 @@ def _is_silent(wav_path: str, *, threshold: int = 100) -> bool:
             frames = wf.readframes(wf.getnframes())
         if not frames:
             return True
-        # 快速检测：只看前 10000 字节的最大值（足够判断静音）
+        # patch(alpha) 8/27: 全文件扫描。原实现只看前 20000 字节（16kHz 下 0.625s），
+        # 用户按下快捷键后隔 1-3s 才开口是常态（8/27 zhp 实录：前 2.7s 全 0，
+        # 语音在 3-10s 段，被误判静音丢弃）。本函数的真正目标是 TCC 拒绝时的全 0 样本
+        # （见 docstring），全扫不改变该用途；30s@16kHz int16 ≈ 960KB，np.max 微秒级。
         import numpy as np
 
-        data = np.frombuffer(frames[:20000], dtype=np.int16)
+        data = np.frombuffer(frames, dtype=np.int16)
         return int(np.abs(data).max()) < threshold if len(data) else True
     except Exception:
         return False  # 检测失败不阻断（保守地认为非静音）

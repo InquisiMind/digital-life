@@ -187,8 +187,18 @@ class AudioRouter:
             logger.debug("empty transcript in %s, skip", self._state)
             return
 
-        # 目标实例：对话中复用唤醒时的实例
-        target = self._dialog_instance or self._config.default_instance
+        # 目标实例路由（优先级）：
+        #   1. per-segment 关键词匹配——转写文本里喊了谁就路由给谁
+        #      （多实例并发 + wake 钩子场景下，对话发起者不一定是说话对象）
+        #   2. 对话发起者（唤醒时确定的 _dialog_instance）
+        #   3. default_instance fallback
+        target = ""
+        try:
+            target = self._cb.match_instance(transcript) or ""
+        except Exception:
+            logger.debug("match_instance on segment failed", exc_info=True)
+        if not target:
+            target = self._dialog_instance or self._config.default_instance
 
         # emit 对话事件
         if target:
@@ -241,6 +251,20 @@ class AudioRouter:
         if self._state != VoiceState.FOCUS:
             return
         self._set_state(VoiceState.DIALOG)
+        self._last_speech_time = time.monotonic()
+
+    def enter_dialog(self, instance_id: str = "") -> None:
+        """外部强制进入对话态（master 生命周期钩子：实例 wake 分发时调用）。
+
+        与 exit_focus() 的区别：exit_focus 有 DORMANT guard（只处理 focus→dialog），
+        DORMANT 状态下是 no-op——而 wake 钩子最常见的场景恰是 dormant 时有实例醒来。
+        本方法无状态 guard，任意状态直达 dialog。
+
+        instance_id 可选：显式指定对话目标；留空则 _dialog_instance 清零，
+        段路由交给 on_segment 的 per-segment 关键词匹配（match_instance）。
+        """
+        self._set_state(VoiceState.DIALOG)
+        self._dialog_instance = instance_id or ""
         self._last_speech_time = time.monotonic()
 
     def force_dormant(self) -> None:

@@ -60,14 +60,14 @@ _SILERO_ONNX_FILENAME = "silero_vad.onnx"
 # Silero 输出是 [0,1] 的"这段音频是语音"概率。
 DEFAULT_VAD_THRESHOLD = 0.5      # ≥ 此值视为"有人在说话"
 # 检测到说话后，连续多少帧低于阈值才算"这句话说完了"。
-# 16kHz/512 样本 = 31.25 帧/秒 → 16 帧 ≈ 0.5s 静音收尾。
-DEFAULT_SILENCE_FRAMES = 16
+# 16kHz/512 样本 = 31.25 帧/秒 → 24 帧 ≈ 0.77s 静音收尾。
+DEFAULT_SILENCE_FRAMES = 32  # ~1.0s 静默才切段（0.77s 太短，中文说话中途停顿易切） 静默才切段（16=0.5s 太短，说话中途停顿就切了）
 # 连续多少帧高于阈值才算"真正开始说话"（滤掉咳嗽/键盘等瞬时噪声）。
 DEFAULT_MIN_SPEECH_FRAMES = 3
 # 一段话最长多少秒强制截断（防止有人一直说不停，ASR 30s 上限也兜底）。
 DEFAULT_MAX_SPEECH_SECONDS = 25.0
 # 一段话最短多少帧才送 ASR（太短多半是噪声，丢弃省调用）。
-DEFAULT_MIN_SPEECH_FRAMES_TO_KEEP = 6  # ≈ 0.2s
+DEFAULT_MIN_SPEECH_FRAMES_TO_KEEP = 3  # ≈ 0.1s（6帧=0.2s 太大，短词易丢）
 
 
 def _find_silero_onnx() -> Path:

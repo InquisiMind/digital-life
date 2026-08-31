@@ -72,7 +72,28 @@ def _transcribe_segment(
     config: PerceptionConfig,
     prompt: str = "",
 ) -> str:
-    """调一次 ASR endpoint，返回该段文本。失败抛异常（调用方捕获）。"""
+    """调一次 ASR endpoint，返回该段文本。失败抛异常（调用方捕获）。
+
+    根据 ``config.asr_provider`` 路由到不同 ASR 后端：
+      - ``glm``（默认）：智谱 glm-asr-2512，HTTP API
+      - ``iflytek``：科大讯飞语音听写流式版，Websocket API
+    """
+    provider = getattr(config, "asr_provider", "glm")
+
+    if provider == "iflytek":
+        return _transcribe_segment_iflytek(audio_bytes, config=config)
+
+    return _transcribe_segment_glm(audio_bytes, filename=filename, config=config, prompt=prompt)
+
+
+def _transcribe_segment_glm(
+    audio_bytes: bytes,
+    *,
+    filename: str,
+    config: PerceptionConfig,
+    prompt: str = "",
+) -> str:
+    """智谱 GLM ASR 转写（HTTP API，OpenAI Whisper 兼容）。"""
     url = f"{config.base_url}/audio/transcriptions"
     data: dict[str, str] = {
         "model": config.asr_model,
@@ -94,6 +115,28 @@ def _transcribe_segment(
         data_resp = r.json()
     # 智谱 ASR 返回 {"text": "..."}（OpenAI Whisper 兼容）
     return (data_resp.get("text") or "").strip()
+
+
+def _transcribe_segment_iflytek(
+    audio_bytes: bytes,
+    *,
+    config: PerceptionConfig,
+) -> str:
+    """科大讯飞 IAT 流式 ASR 转写（Websocket API）。"""
+    from infrastructure.perception.iflytek_asr import transcribe_iflytek
+
+    if not config.iflytek_app_id or not config.iflytek_api_key or not config.iflytek_api_secret:
+        raise RuntimeError("讯飞 ASR 凭据未配置（需要 app_id / api_key / api_secret）")
+
+    return transcribe_iflytek(
+        audio_bytes,
+        app_id=config.iflytek_app_id,
+        api_key=config.iflytek_api_key,
+        api_secret=config.iflytek_api_secret,
+        language=config.iflytek_language,
+        accent=config.iflytek_accent,
+        hotwords=config.asr_hotwords,
+    )
 
 
 def transcribe_segment(
@@ -119,7 +162,12 @@ def transcribe_file(
 
     分段间用上一段结果作为下一段的 ``prompt``，保持连贯（spec FR-005）。
     """
-    if not config.api_key:
+    # 凭据检查：根据 provider 验证对应凭据
+    _provider = getattr(config, "asr_provider", "glm")
+    if _provider == "iflytek":
+        if not config.iflytek_app_id:
+            return {"ok": False, "error": "讯飞 app_id 未配置", "text": "", "segments": 0}
+    elif not config.api_key:
         return {"ok": False, "error": "LLM_API_KEY 未配置", "text": "", "segments": 0}
 
     paths = segment_paths or [str(audio_path)]

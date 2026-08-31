@@ -6,7 +6,8 @@
 路由：
   POST /internal/voice/control {action, instance_id?}
     action: "focus" | "dialog" | "dormant" | "status"
-    返回：{"ok": bool, "state": str, "action": str}
+            | "start_session" | "stop_session"
+    返回：{"ok": bool, "state": str, "action": str, ...}
 """
 from __future__ import annotations
 

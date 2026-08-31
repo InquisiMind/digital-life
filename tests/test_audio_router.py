@@ -264,3 +264,53 @@ def test_control_focus(router):
     router.enter_focus()
     # enter_focus 返回 None（void），但状态变了
     assert router.state == VoiceState.FOCUS
+
+
+# ── service 层：手动会话互斥（2026-08-27 patch(alpha) 配套）───────────────
+
+class TestVoiceSessionMutex:
+    """service.control() 与手动语音会话的互斥语义。
+
+    覆盖 mock 测试金字塔的空白层：control("dialog") 在会话活跃时必须
+    no-op（吞掉请求，状态留 dormant），否则另一实例的 dialog 请求会把
+    on_segment 恢复路由，会话音频双写注入。
+    """
+
+    @pytest.fixture
+    def service_router(self, mock_callbacks):
+        """构造 router 供 service fixture 引用（同 router fixture 语义）。"""
+        config = RouterConfig(dialog_timeout_s=0.2, focus_timeout_s=0.3,
+                              default_instance="default-iid")
+        return AudioRouter(config, mock_callbacks)
+
+    @pytest.fixture
+    def service(self, service_router, monkeypatch):
+        """构造 AudioSenseService，不启动 capture/KWS 线程。"""
+        from infrastructure.perception.audio_sense.service import AudioSenseService
+        svc = AudioSenseService.__new__(AudioSenseService)
+        svc._router = service_router
+        svc._voice_session = None
+        svc._running = None
+        svc._kws = None
+        svc._capture = None
+        svc._config = None
+        svc._state_lock = __import__("threading").Lock()
+        return svc
+
+    def test_dialog_noop_when_session_active(self, service, service_router):
+        """dialog 请求 + 活跃会话 = no-op（Zero 8/27 review 增量用例）。"""
+        service_router.force_dormant()
+        # 模拟手动会话活跃
+        service._voice_session = MagicMock()
+        result = service.control("dialog")
+        assert result.get("ok") is not False or "error" not in result
+        assert service_router.state == VoiceState.DORMANT, \
+            "dialog 请求在会话活跃期必须被吞，状态不得切回 dialog"
+        # router.enter_dialog 未被调用可从状态反证：DORMANT 说明没切
+
+    def test_dialog_takes_effect_when_session_done(self, service, service_router):
+        """会话结束后 dialog 请求恢复正常语义。"""
+        service_router.force_dormant()
+        service._voice_session = None
+        service.control("dialog")
+        assert service_router.state == VoiceState.DIALOG

@@ -1839,6 +1839,25 @@ def _wake_digital_life_inner_safe(
                         consume_event(eid, session_id=session_id or "")
                     except Exception:
                         pass
+        # ── exit sweep：内存池 signalled 残留扫尾（止血, 见模块头注释）──
+        # 注意上面 pending_events 段只处理 POP_DUE 拉出的；mid-session
+        # signal 进内存池（_pending_inject）的残留只在这里兜。DB 事件本身
+        # 仍 unconsumed，kick 的新 wake 会经 POP_DUE 重新带走。
+        try:
+            from domain.lifecycle.session_events import peek_signalled_events
+            _left = peek_signalled_events(instance_id=instance_id) if instance_id else []
+            if _left:
+                _ids = [int(e.get("event_id", 0)) for e in _left if e.get("event_id")]
+                logger.warning(
+                    "EXIT_SWEEP: %d signalled-but-undelivered at session end "
+                    "(instance=%s ids=%s kinds=%s) - kicking redelivery",
+                    len(_left), instance_id, _ids[:10], [e.get("kind") for e in _left][:10],
+                )
+                for _eid in _ids:
+                    _exit_sweep_kick(_eid)
+        except Exception as exc:
+            logger.warning("EXIT_SWEEP failed: %s", exc)
+
         set_current_affair(None)
         from infrastructure.config import reset_current_session_id
         reset_current_session_id(_session_id_token)
@@ -1872,6 +1891,29 @@ def _rollback_to_blocked(affair_id: str, reason: str = "unknown") -> None:
         logger.warning("Rollback: set affair %s to BLOCKED (reason=%s)", affair_id, reason)
     except Exception as e:
         logger.exception("Rollback failed for affair %s: %s", affair_id, e)
+
+
+# ── exit sweep 止血（trio §2 B / 认知 #46390）─────────────────────────────
+# 8/27 实测：mid-session signalled 的事件若本会话未消费（如 4322：13:51 EMIT
+# → 14:00 exit → 悬空 187min → 16:58 才被消费），DB 里事件 unconsumed 但
+# 只能等"下一轮任意 wake"兜底；wake 空窗 + cron tick 静默窗口内无限期滞留
+# （tick 停摆根因另查，trio §C / Alpha）。止血：会话统一收尾点扫尾内存池
+# 残留 → WARN 可见 + 主动 kick 重投（_wake_or_inject BLOCKED 分支拉新会话）。
+_EXIT_SWEEP_COUNTS: dict[int, int] = {}  # event_id -> 已 kick 次数
+
+
+def _exit_sweep_kick(event_id: int) -> None:
+    """对残留事件主动触发一次重投（决策表 BLOCKED 分支自动拉新 wake）。
+
+    同一 event_id 最多 kick 2 次：防 exit→wake→（仍未消费）→exit 紧循环。
+    计数存 master 内存，重启清零（重启本身也是新一轮兜底，可接受）。
+    """
+    n = _EXIT_SWEEP_COUNTS.get(event_id, 0)
+    if n >= 2:
+        return
+    _EXIT_SWEEP_COUNTS[event_id] = n + 1
+    from domain.lifecycle.events import _wake_or_inject
+    _wake_or_inject(event_id)
 
 
 def run_heartbeat_cycle() -> dict:

@@ -11,3 +11,5 @@
 | 2026-08-28 15:48 | 整机（事故） | Mac 重启，master+双实例裸奔 3 天 | 系统 BUG 跑崩（zhp 确认） | — | ADR-0001 动机 |
 | 2026-08-31 16:05 | interfaces/social/feishu_takeover.py | 紧急修复：import 源指向错误单行 patch，apply 即生效 | daemon 反复 ImportError | /tmp 备份 + git revert | ADR-0003 |
 | 2026-08-31 16:06 | com.zhp.social-takeover (launchd) | 重启验证 | 修复后重启 | — | 上行 |
+
+| 2026-08-31 16:20 | Zero | 拼接体实例目录清理 | 修复 voice_hotkey_daemon.py:89 + domain/project/tools.py:270 两处拼接体 UUID→正身；迁移唯一副本（memory_optimization_evaluation.md、perception session_20260825）；deliverables_index 双版合并；拼接体目录整体入 _trash/spliced_instance_c2a5c8e8-e700_20260831 | 还原 _trash 目录即可 |

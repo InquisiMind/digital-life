@@ -434,6 +434,7 @@ class FeishuAdapter(IngressAdapter):
                         .content(content)
                         .build()
                     )
+                    .build()
                 )
             else:
                 import json as _json
@@ -450,6 +451,7 @@ class FeishuAdapter(IngressAdapter):
                         .content(_json.dumps({"text": content}, ensure_ascii=False))
                         .build()
                     )
+                    .build()
                 )
 
             def _do_send():

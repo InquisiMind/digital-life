@@ -188,7 +188,7 @@ class FeishuSocialTakeover:
         except Exception:
             return ""
 
-    def _refresh_user_token(self) -> bool:
+    def _refresh_user_token(self, _allow_disk_retry: bool = True) -> bool:
         """用 refresh_token 刷新 user_access_token。
 
         Feishu OIDC 接口: /authen/v1/oidc/refresh_access_token
@@ -225,6 +225,14 @@ class FeishuSocialTakeover:
             data = resp.json()
             if data.get("code") != 0:
                 logger.warning("social_takeover: refresh failed: %s", data.get("msg", ""))
+                # 自愈: 磁盘 token 可能已被重新授权/其他进程(如 console 探针)轮换,
+                # 内存里的死 token 会永久空转 → 重读一次 social.env 再试一轮
+                if _allow_disk_retry:
+                    disk_token = _get_refresh_token(self.instance_id)
+                    if disk_token and disk_token != self._refresh_token:
+                        logger.info("social_takeover: reload refresh_token from social.env, retry once")
+                        self._refresh_token = disk_token
+                        return self._refresh_user_token(_allow_disk_retry=False)
                 return False
             token_data = data.get("data") or {}
             self._user_token = token_data.get("access_token", "")

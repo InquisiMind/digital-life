@@ -25,34 +25,47 @@ FEISHU_BASE = "https://open.feishu.cn/open-apis"
 def _get_app_creds(instance_id: str = "") -> tuple[str, str]:
     """从实例 config 读飞书 app_id + app_secret。
 
+    带 instance_id 时以该实例磁盘配置优先(env 只做兜底):
+    gateway 启动时 load_runtime_dotenv 会按挂靠实例把 FEISHU_APP_SECRET
+    强制注入 os.environ(FORCED_ENV_KEYS, infrastructure/ai/config.py),
+    跨实例请求时 env 里是挂靠实例的 secret, 与目标实例的 app_id 张冠李戴
+    → 10014 app secret invalid。因此文件凭证成对齐全时直接采用。
     Master 进程没有实例 context(env 没加载), 所以需要 explicit iid 参数。
     """
-    app_id = os.environ.get("FEISHU_APP_ID", "")
-    app_secret = os.environ.get("FEISHU_APP_SECRET", "")
-
-    # fallback: 从实例的 secrets.env / app.yaml 读
-    if (not app_id or not app_secret) and instance_id:
+    file_app_id = ""
+    file_app_secret = ""
+    if instance_id:
         from pathlib import Path
         secrets = Path("apps") / instance_id / "config" / "secrets.env"
         if secrets.exists():
             for line in secrets.read_text(encoding="utf-8").splitlines():
                 line = line.strip()
-                if line.startswith("FEISHU_APP_ID=") and not app_id:
-                    app_id = line.split("=", 1)[1].strip()
-                elif line.startswith("FEISHU_APP_SECRET=") and not app_secret:
-                    app_secret = line.split("=", 1)[1].strip()
-        if not app_id:
+                if line.startswith("FEISHU_APP_ID=") and not file_app_id:
+                    file_app_id = line.split("=", 1)[1].strip()
+                elif line.startswith("FEISHU_APP_SECRET=") and not file_app_secret:
+                    file_app_secret = line.split("=", 1)[1].strip()
+        if not file_app_id:
             try:
                 import yaml
                 cfg_path = Path("apps") / instance_id / "config" / "app.yaml"
                 if cfg_path.exists():
                     raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
                     feishu = (raw.get("channels") or {}).get("feishu") or {}
-                    app_id = app_id or feishu.get("app_id", "")
+                    file_app_id = feishu.get("app_id", "")
             except Exception:
                 pass
+        # 成对齐全 → 直接采用(避免文件+env 混拼错配)
+        if file_app_id and file_app_secret:
+            return file_app_id, file_app_secret
 
+    app_id = os.environ.get("FEISHU_APP_ID", "")
+    app_secret = os.environ.get("FEISHU_APP_SECRET", "")
+    if not app_id and instance_id:
+        app_id = file_app_id
+    if not app_secret and instance_id:
+        app_secret = file_app_secret
     return app_id, app_secret
+
 
 
 async def handle_feishu_oauth_callback(request: web.Request) -> web.Response:

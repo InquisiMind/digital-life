@@ -198,8 +198,65 @@ class EmployeeConsoleAPIService:
                     oauth_url = get_oauth_url(iid)
                 except Exception:
                     pass
+            # 活探针: authorized 只代表 social.env 里有 refresh_token(非空),
+            # 不代表 token 还能用 — 死链假阳性会误导用户以为已接管。
+            # alive: None=未授权/未知, True=token 活, False=已过期需重新授权
+            alive = None
+            if authorized:
+                alive = False
+                access_token = ""
+                for line in social_env.read_text(encoding="utf-8").splitlines():
+                    if line.startswith("FEISHU_USER_ACCESS_TOKEN="):
+                        access_token = line.split("=", 1)[1].strip()
+                        break
+                try:
+                    import httpx as _httpx
+                    if access_token:
+                        # 先用 access_token 无损探测(user_info), 成功则不轮换 token
+                        r = _httpx.get(
+                            "https://open.feishu.cn/open-apis/authen/v1/user_info",
+                            headers={"Authorization": f"Bearer {access_token}"},
+                            timeout=5,
+                        )
+                        if r.status_code == 200 and r.json().get("code") == 0:
+                            alive = True
+                    if not alive:
+                        # access 不可用 → 尝试 refresh(会轮换并写回 social.env)
+                        from application.api.oauth_routes import _get_app_creds as _creds
+                        from interfaces.social.feishu_takeover import (
+                            _save_tokens, _get_refresh_token as _get_rt,
+                        )
+                        _aid, _asec = _creds(iid)
+                        if _aid and _asec:
+                            tr = _httpx.post(
+                                "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+                                json={"app_id": _aid, "app_secret": _asec}, timeout=5,
+                            )
+                            if tr.status_code == 200 and tr.json().get("code") == 0:
+                                ttok = tr.json().get("tenant_access_token", "")
+                                rt = _get_rt(iid)
+                                if ttok and rt:
+                                    rr = _httpx.post(
+                                        "https://open.feishu.cn/open-apis/authen/v1/oidc/refresh_access_token",
+                                        headers={"Authorization": f"Bearer {ttok}",
+                                                 "Content-Type": "application/json"},
+                                        json={"grant_type": "refresh_token", "refresh_token": rt},
+                                        timeout=10,
+                                    )
+                                    rd = rr.json()
+                                    if rd.get("code") == 0:
+                                        td = rd.get("data") or {}
+                                        if td.get("access_token"):
+                                            _save_tokens(iid, td["access_token"], td.get("refresh_token", rt))
+                                            alive = True
+                except Exception as exc:  # noqa: BLE001
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "social status liveness probe failed: %s", exc)
+
             return web.json_response({
                 "authorized": authorized,
+                "alive": alive,
                 "oauth_url": oauth_url,
                 "instance_id": iid,
             })

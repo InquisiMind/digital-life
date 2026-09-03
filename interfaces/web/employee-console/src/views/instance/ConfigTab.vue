@@ -17,7 +17,8 @@
         <span class="brand-sub" style="min-width: 40px;">飞书</span>
         <div v-if="socialLoading" class="brand-sub mono" style="color: var(--text-muted);">loading…</div>
         <template v-else>
-          <el-tag v-if="socialStatus.authorized" type="success" effect="dark">已接管</el-tag>
+          <el-tag v-if="socialStatus.authorized && socialStatus.alive === false" type="warning" effect="dark">已过期 · 请重新授权</el-tag>
+          <el-tag v-else-if="socialStatus.authorized" type="success" effect="dark">已接管</el-tag>
           <el-tag v-else type="info" effect="plain">未授权</el-tag>
           <a v-if="socialStatus.oauth_url" :href="socialStatus.oauth_url" target="_blank" rel="noopener">
             <el-button type="primary" size="small">{{ socialStatus.authorized ? '重新授权' : '⟶ 接管我的飞书' }}</el-button>
@@ -157,7 +158,7 @@ const showTakeoverGuide = ref(false)
 const qrDialogVisible = ref(false)
 const qrCodeUrl = ref('')
 // 社交接管授权状态(ConfigTab 上方独立块)
-const socialStatus = ref({ authorized: false, oauth_url: '' })
+const socialStatus = ref({ authorized: false, oauth_url: '', alive: null })
 const socialLoading = ref(false)
 const socialRevoking = ref(false)
 // V6 微信全接管 (itchat)
@@ -376,7 +377,7 @@ async function loadSocialStatus() {
   socialLoading.value = true
   try {
     const d = await instanceApi(iid.value).socialStatus()
-    if (d && !d.error) socialStatus.value = { authorized: !!d.authorized, oauth_url: d.oauth_url || '' }
+    if (d && !d.error) socialStatus.value = { authorized: !!d.authorized, oauth_url: d.oauth_url || '', alive: (d.alive !== undefined) ? !!d.alive : null }
   } finally { socialLoading.value = false }
 }
 

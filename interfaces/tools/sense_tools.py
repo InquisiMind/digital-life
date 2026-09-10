@@ -182,7 +182,15 @@ registry.register(
 
 
 def _handle_sense_event_detail(args: Dict[str, Any], **kwargs) -> str:
-    """查看单个事件的完整明细，查看后标记为已消费。
+    """查看事件完整明细，查看后标记为已消费。
+
+    支持两种调用形态：
+    - 单事件（向后兼容）：event_id=123
+    - 批量（2026-09-10）：event_ids=[123, 125, 130] —— 多事件积压时一次调用
+      全部取出。拼接格式与 mid-session 多事件注入对齐：每事件一个带
+      「事件 #id」分隔头的独立块，按优先级降序（高优先级在前），
+      模型逐块阅读不混淆归属。上限 10 个/次，超出提示分批——
+      防单次 tool result 把上下文挤爆（事件 payload 可能很大）。
 
     这是事件系统的唯一生产消费入口：
     - 调用后该事件从队列中移除（consumed_at + consumed_by_session_id 被写入 DB）
@@ -190,59 +198,104 @@ def _handle_sense_event_detail(args: Dict[str, Any], **kwargs) -> str:
     - 返回事件的完整 payload，供模型决策如何响应
     """
     _burn()
-    event_id = args.get("event_id")
-    if not event_id:
-        return _j({"error": "缺少 event_id。先调用 sense_event_queue 获取列表。"})
-    try:
-        event_id = int(event_id)
-    except (TypeError, ValueError):
-        return _j({"error": f"event_id 必须是整数，收到 {event_id!r}"})
+    # ── 参数解析：单 / 批量两种形态 ──
+    raw_ids: list = []
+    if args.get("event_ids") is not None:
+        raw = args.get("event_ids")
+        if not isinstance(raw, list):
+            return _j({"error": "event_ids 必须是整数数组，如 [123, 125]。"})
+        raw_ids = raw
+    elif args.get("event_id") is not None:
+        raw_ids = [args.get("event_id")]
+    else:
+        return _j({"error": "缺少 event_id / event_ids。先调用 sense_event_queue 获取列表。"})
+
+    event_ids: list[int] = []
+    for v in raw_ids:
+        try:
+            event_ids.append(int(v))
+        except (TypeError, ValueError):
+            return _j({"error": f"event_id 必须是整数，收到 {v!r}"})
+    if len(event_ids) > 10:
+        return _j({
+            "error": f"一次最多批量查看 10 个事件（收到 {len(event_ids)} 个）。请分批调用。",
+            "hint": "可先按 sense_event_queue 返回的优先级排序，高优先级先看。",
+        })
+    if len(set(event_ids)) != len(event_ids):
+        event_ids = list(dict.fromkeys(event_ids))  # 去重保序
 
     try:
         from domain.lifecycle.events import pop_due_events, consume_event, list_recent_events
         from domain.lifecycle.event_registry import get_event_type
 
-        events = pop_due_events(limit=100)
-        match = next((ev for ev in events if ev.get("event_id") == event_id), None)
-        already_consumed = False
-        if not match:
-            # 两种可能:
-            # (1) 单事件 wake 在 prompt 阶段已直接消费(本就设计如此) → 历史里能查到
-            # (2) 上次 wake 是多事件清单 → 这次应当能在 due 队列里找到。
-            #     如果找不到, 可能是上轮被 auto-consume(老路径) 或事件太老(>2h)
-            recent = list_recent_events(hours=2, include_consumed=True, limit=200)
-            match = next((ev for ev in recent if ev.get("event_id") == event_id), None)
+        due_events = pop_due_events(limit=100)
+        recent = list_recent_events(hours=2, include_consumed=True, limit=200)
+
+        blocks: list[str] = []      # 拼接文本块（多事件时）
+        consumed_ids: list[int] = []
+        missing: list[dict] = []
+        # 优先级排序：先解出全部事件再排（高 priority 在前，无定义的按 id 升序垫底）
+        resolved: list[tuple[int, dict, bool]] = []  # (priority, match, already_consumed)
+        for eid in event_ids:
+            match = next((ev for ev in due_events if ev.get("event_id") == eid), None)
+            already = False
             if not match:
-                return _j({
-                    "event_id": event_id,
-                    "error": f"事件 {event_id} 不存在或已超过 2 小时窗口（事件清理）",
-                    "consumed": True,
-                })
-            already_consumed = bool(match.get("consumed_at"))
+                match = next((ev for ev in recent if ev.get("event_id") == eid), None)
+                if not match:
+                    missing.append({"event_id": eid, "error": "不存在或已超过 2 小时窗口（事件清理）"})
+                    continue
+                already = bool(match.get("consumed_at"))
+            tdef = get_event_type(match.get("kind", ""))
+            prio = tdef.priority if tdef else -1
+            resolved.append((prio, match, already))
+        resolved.sort(key=lambda x: (-x[0], x[1].get("event_id", 0)))
 
-        kind = match.get("kind", "")
-        type_def = get_event_type(kind)
-        payload = match.get("payload", {})
+        for prio, match, already_consumed in resolved:
+            eid = match.get("event_id")
+            kind = match.get("kind", "")
+            type_def = get_event_type(kind)
+            payload = match.get("payload", {})
 
-        if not already_consumed:
-            try:
-                consume_event(event_id, session_id=kwargs.get("session_id"))
-            except Exception:
-                pass
+            if not already_consumed:
+                try:
+                    consume_event(eid, session_id=kwargs.get("session_id"))
+                    consumed_ids.append(eid)
+                except Exception:
+                    pass
 
-        return _j({
-            "event_id": event_id,
-            "kind": kind,
-            "display_name": type_def.display_name if type_def else kind,
-            "description": type_def.description if type_def else "",
-            "priority": type_def.priority if type_def else 5,
-            "payload": payload,
-            "created_at": match.get("created_at", ""),
-            "fire_at": match.get("fire_at"),
-            "consumed": True,
-            "auto_consumed_before_session": already_consumed,
-            "wake_prompt": type_def.prompt_template if type_def else "",
-        })
+            detail = {
+                "event_id": eid,
+                "kind": kind,
+                "display_name": type_def.display_name if type_def else kind,
+                "description": type_def.description if type_def else "",
+                "priority": type_def.priority if type_def else 5,
+                "payload": payload,
+                "created_at": match.get("created_at", ""),
+                "fire_at": match.get("fire_at"),
+                "consumed": True,
+                "auto_consumed_before_session": already_consumed,
+                "wake_prompt": type_def.prompt_template if type_def else "",
+            }
+            if len(resolved) == 1 and not missing:
+                return _j(detail)  # 单事件：旧 JSON 结构原样返回（零破坏），早退
+            # 拼接块：分隔头 + 明细 JSON，与 mid-session 多事件注入格式对齐
+            blocks.append(
+                f"──── 事件 #{eid} · {detail['display_name']}（priority={detail['priority']}）────\n"
+                + _j(detail)
+            )
+
+        # ── 返回形态（单事件已在循环内早退，这里必然是批量）──
+        parts: list[str] = []
+        if blocks:
+            parts.append("\n\n".join(blocks))
+        if consumed_ids:
+            parts.append(f"[已消费] 本次新消费 {len(consumed_ids)} 个事件: {sorted(consumed_ids)}")
+        else:
+            parts.append("[已消费] 本次无新消费（事件此前已消费或查找失败）")
+        if missing:
+            parts.append("[未找到]\n" + _j(missing))
+        parts.append("[提示] 已按优先级降序排列；各事件 payload 相互独立，逐块处理。")
+        return "\n\n".join(parts)
     except Exception as exc:
         return _j({"error": f"获取事件明细失败: {exc}"})
 
@@ -291,11 +344,13 @@ registry.register(
     toolset="senses",
     schema={
         "name": "sense_event_detail",
-        "description": "查看待处理事件的完整明细。**调用后该事件标记为已消费**，不会再次出现在队列里。",
+        "description": "查看待处理事件的完整明细，**查看后该事件标记为已消费**，不会再次出现在队列里。多事件积压时可用 event_ids 数组批量查看（一次最多 10 个，按优先级降序拼接返回）。",
         "parameters": {
             "type": "object",
-            "properties": {"event_id": {"type": "integer", "description": "由 sense_event_queue 返回的 event_id"}},
-            "required": ["event_id"],
+            "properties": {
+                "event_id": {"type": "integer", "description": "单个事件 ID（由 sense_event_queue 返回）"},
+                "event_ids": {"type": "array", "items": {"type": "integer"}, "description": "批量模式：多个事件 ID 数组，最多 10 个/次。与 event_id 二选一"},
+            },
         },
     },
     handler=_handle_sense_event_detail,

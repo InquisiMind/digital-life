@@ -2397,6 +2397,19 @@ _AUTO_CONSUME_SIGNAL_KINDS: frozenset[str] = frozenset({
 })
 
 
+def _int_delay(seconds: float) -> str:
+    """延迟秒数 → 人性化时长（用于发言/注入时间差的展示）。"""
+    s = int(seconds)
+    if s < 90:
+        return f"{s}秒"
+    if s < 5400:
+        return f"{s // 60}分钟"
+    if s < 129600:
+        h, m = divmod(s, 3600)
+        return f"{h}小时" + (f"{m // 60 * 10 // 10}分" if m >= 600 else "")
+    return f"{s // 86400}天"
+
+
 def _render_signal_message(ev: dict[str, Any]) -> str:
     """渲染 mid-session 注入的消息事件为 wake_signal 提示文本（模块级 helper，便于测试）。
 
@@ -2442,9 +2455,28 @@ def _render_signal_message(ev: dict[str, Any]) -> str:
     except Exception:
         _mid_now = ""
     _now_line = f"\n⏰ 当前时间：{_mid_now}\n" if _mid_now else ""
+    # 发言时刻 vs 注入时刻对齐（2026-09-10 zhp 反馈）：消息可能在事件队列里
+    # 积压（实例忙/停摆恢复后），注入头只写"当前时间"会让模型把几小时前的
+    # 发言当成刚发生的（回"刚才你说的"是错的）。payload["at"] 是入站时刻，
+    # 延迟 >2min 时显式标注发言时间，让模型自行校准时序。
+    _spoken_line = ""
+    _at = str(payload.get("at") or "").strip()
+    if _at and _mid_now:
+        try:
+            from domain.lifecycle.clock import parse_iso as _parse_mid
+            from domain.lifecycle import clock as _clk_mid2
+            _delay = (_clk_mid2.beijing_now_dt() - _parse_mid(_at)).total_seconds()
+            if _delay > 120:
+                _spoken_line = (
+                    f"\n🕐 发言时间：{_parse_mid(_at).strftime('%Y-%m-%d %H:%M')}"
+                    f"（距现在 {_int_delay(_delay)}，非刚发生）\n"
+                )
+        except Exception:
+            pass
     return (
         f"[#{eid} · 新消息到达 - 会话中途注入]\n"
         f"{_now_line}"
+        f"{_spoken_line}"
         f"{rendered_body}\n"
         f"> 注意：消息已自动标记为已读，稍后回复即可。"
     )

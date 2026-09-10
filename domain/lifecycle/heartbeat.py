@@ -371,6 +371,28 @@ def _resolve_event_prompt(reason: str, pending_events: list | None = None) -> st
                         # 渲染成" sender:text "可读块,让模型在一次 batched wake 里
                         # 看到这 30s 窗口内的多条消息
                         payload = dict(payload)  # copy 避免污染原 payload
+                        # 发言时刻延迟标注（2026-09-10 zhp 反馈）：消息事件积压时
+                        # （实例忙/停摆恢复），wake prompt 只有唤醒时刻，模型会把
+                        # 几小时前的发言当"刚发生"。payload["at"] 是入站时刻，
+                        # 延迟 >2min 渲染 spoken_delay_block 给模板使用。
+                        _at_raw = str(payload.get("at") or "").strip()
+                        if _at_raw and reason in ("message", "group_message"):
+                            try:
+                                from .clock import beijing_now_dt, parse_iso as _pi
+                                _delay_s = (beijing_now_dt() - _pi(_at_raw)).total_seconds()
+                                if _delay_s > 120:
+                                    _mins = int(_delay_s // 60)
+                                    _human = f"{_mins}分钟" if _mins < 60 else f"{_mins // 60}小时{_mins % 60}分"
+                                    _st = _pi(_at_raw).strftime("%m-%d %H:%M")
+                                    payload["spoken_delay_block"] = (
+                                        f"⏳ 该发言发生于 {_st}（{_human}前），非刚发生——回应时注意时序。"
+                                    )
+                                else:
+                                    payload["spoken_delay_block"] = ""
+                            except Exception:
+                                payload["spoken_delay_block"] = ""
+                        else:
+                            payload["spoken_delay_block"] = ""
                         mc = payload.get("_merged_count", 1)
                         mt = payload.get("_merged_texts", [])
                         if isinstance(mc, int) and mc > 1 and isinstance(mt, list) and mt:

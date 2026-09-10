@@ -182,6 +182,12 @@ class FeishuAdapter(IngressAdapter):
         check_interval = 60
         reconnect_after = 300  # 5 分钟没动静就重建
         ws_thread_name = f"feishu-ws-{self._app_id[:8]}"
+        # rebuild 退避（2026-09-08 事故）：DNS 断连期每次 rebuild 都建不成，
+        # 无退避时每轮 tick（60s）+ 线程死分支（2s 内塌缩）连环 rebuild，
+        # 5 天 9824 次喂爆 fd 泄漏。指数退避：60s → 5min → 15min 封顶，
+        # 连成后重置。断网恢复后最多 15 分钟内自愈。
+        _rebuild_backoff = 60.0
+        _last_rebuild_ok = 0.0
 
         while not self._ws_watchdog_stop.wait(check_interval):
             try:
@@ -194,9 +200,14 @@ class FeishuAdapter(IngressAdapter):
                         break
 
                 if not ws_alive:
+                    now = time.time()
+                    if now - _last_rebuild_ok < _rebuild_backoff:
+                        continue  # 退避窗口内不重复 rebuild
                     logger.warning("feishu WS thread dead, rebuilding...")
                     self._rebuild_ws()
-                    self._ws_last_active = time.time()
+                    self._ws_last_active = now
+                    _last_rebuild_ok = now
+                    _rebuild_backoff = min(_rebuild_backoff * 2, 900)
                     continue
 
                 if idle > reconnect_after:
@@ -209,13 +220,18 @@ class FeishuAdapter(IngressAdapter):
                         # SDK 保有 _conn 但可能已 close——用 ws 线程活性双重确认
                         truly_dead = not ws_alive
                     if truly_dead:
+                        now = time.time()
+                        if now - _last_rebuild_ok < _rebuild_backoff:
+                            continue  # 退避窗口内不重复 rebuild
                         logger.warning(
                             "feishu WS dead (idle %ds, conn=%s, thread_alive=%s), rebuilding...",
                             int(idle), "none" if conn is None else "held",
                             ws_alive,
                         )
                         self._rebuild_ws()
-                        self._ws_last_active = time.time()
+                        self._ws_last_active = now
+                        _last_rebuild_ok = now
+                        _rebuild_backoff = min(_rebuild_backoff * 2, 900)
                     else:
                         # 连接活着只是没消息——刷新计时避免每轮重复评估
                         self._ws_last_active = time.time()
@@ -234,11 +250,21 @@ class FeishuAdapter(IngressAdapter):
         一夜累积 28 次 rebuild / 95 条 ESTABLISHED → 撞飞书应用连接上限
         （1000040350）→ 之后所有重连被拒、实例彻底收不到消息。
         修复：rebuild 前在旧 client 自己的 event loop 里跑 _disconnect。
+
+        ⚠ 二次泄漏事故（2026-09-08 双实例实证，9/10 定位）：SDK Client.start()
+        里 loop.run_until_complete(_select()) 永不返回，_ping_loop /
+        _receive_message_loop 是无限 task——只 _disconnect 不停 loop 的话，
+        每次 rebuild 泄漏 1 条僵尸线程 + 1 个 event loop（kqueue fd）。
+        DNS 抖动期 watchdog ~2s 一次 rebuild → 5 天 9824 次 → fd 打满
+        (Errno 24) → state.db/config 全部打不开 → 唤醒全灭两天。
+        修复：_disconnect 后调 loop.stop() 让 run_until_complete 返回、线程
+        自然退出；loop 消亡后 close 释放 kqueue，并清 _per_thread_loops 条目。
         """
         old_ws = getattr(self, "_ws", None)
+        old_tid = getattr(old_ws, "_owner_thread_id", -1) if old_ws is not None else -1
         if old_ws is not None:
             try:
-                loop = _per_thread_loops.get(getattr(old_ws, "_owner_thread_id", -1))
+                loop = _per_thread_loops.get(old_tid)
                 # SDK 的 start 在自己线程的 loop 里跑；直接用该 loop 提交关闭。
                 # 拿不到 loop 时尝试通用路径（新版本 SDK 可能有公开 API）。
                 fut = None
@@ -255,6 +281,10 @@ class FeishuAdapter(IngressAdapter):
                     )
                     fut.result(timeout=5)
                     logger.info("feishu WS rebuild: old connection closed")
+                    # 停掉 run_until_complete(_select()) —— SDK 内部的常驻
+                    # task（ping/receive loop）随 loop 一起停。不停的话线程
+                    # 永远挂在 _select()，loop/kqueue fd 泄漏（见 docstring）。
+                    target_loop.call_soon_threadsafe(target_loop.stop)
             except Exception as exc:
                 # 关不掉也得继续 rebuild——泄漏一条好过彻底失联
                 logger.warning("feishu WS rebuild: close old failed (leaked): %s", exc)
@@ -272,9 +302,27 @@ class FeishuAdapter(IngressAdapter):
             _per_thread_loops[tid] = asyncio.new_event_loop()
             asyncio.set_event_loop(_per_thread_loops[tid])
             try:
+                self._ws._owner_thread_id = tid
                 self._ws.start()
             except Exception as exc:
                 logger.warning("feishu WS rebuild: ws.start() failed: %s", exc)
+            finally:
+                # start() 返回（loop.stop 后）或异常退出：回收本线程的 loop，
+                # 释放 kqueue fd，清全局登记，防止 _per_thread_loops 无限增长。
+                lp = _per_thread_loops.pop(tid, None)
+                if lp is not None and not lp.is_closed():
+                    try:
+                        # 取消残留 task（_select/ping/receive）再关
+                        pending = asyncio.all_tasks(lp) if not lp.is_running() else set()
+                        for t in pending:
+                            t.cancel()
+                        lp.run_until_complete(lp.shutdown_asyncgens())
+                    except Exception:
+                        pass
+                    try:
+                        lp.close()
+                    except Exception:
+                        pass
 
         ws_thread = threading.Thread(
             name=f"feishu-ws-{self._app_id[:8]}",

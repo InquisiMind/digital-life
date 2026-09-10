@@ -242,7 +242,47 @@ def _load_prior_messages(session_db, session_id: str) -> list:
             out.append({"role": "user", "content": m.get("content") or ""})
         else:
             out.append({"role": role, "content": m.get("content") or ""})
-    return out
+    return _patch_dangling_tool_calls(out)
+
+
+def _patch_dangling_tool_calls(messages: list[dict]) -> list[dict]:
+    """末尾悬空 tool_calls 清洗（2026-09-10，instance_restarted 续跑配套）。
+
+    进程被硬停（SIGTERM/重启）可能打在「assistant 已落库 tool_calls、
+    tool result 未落库」之间——历史回灌后下一次 LLM 调用直接 400
+    (每 tool_call 必须紧跟 tool result)。对所有接续路径生效。
+
+    处理：末尾连续的带 tool_calls 的 assistant 消息若缺对应 tool result，
+    补占位 result（内容声明结果未落盘、已执行的操作勿重复执行）。
+    """
+    if not messages:
+        return messages
+    i = len(messages) - 1
+    # 从尾往前找第一段连续 assistant(tool_calls) / tool 消息块
+    while i >= 0 and messages[i]["role"] == "tool":
+        i -= 1
+    if i < 0 or messages[i]["role"] != "assistant" or not messages[i].get("tool_calls"):
+        return messages  # 尾部正常（非 assistant 结尾或无 tool_calls）
+    dangling = messages[i]
+    answered = {m.get("tool_call_id") for m in messages[i + 1:] if m["role"] == "tool"}
+    missing = [tc for tc in dangling["tool_calls"]
+               if tc.get("id") and tc.get("id") not in answered]
+    if not missing:
+        return messages
+    patched = list(messages)
+    placeholder = "[系统重启中断：该工具调用的结果未落盘。若该操作实际已执行，勿重复执行；不确定就先查证（sense/search）再决定。]"
+    for tc in missing:
+        patched.append({
+            "role": "tool",
+            "tool_call_id": tc["id"],
+            "name": (tc.get("function") or {}).get("name") or "",
+            "content": placeholder,
+        })
+    logger.warning(
+        "DANGLING_TOOL_CALLS_PATCHED session-history tail: %d missing tool result(s) got placeholder",
+        len(missing),
+    )
+    return patched
 
 
 def _segment_gap_end_timestamp(messages: list[dict]) -> float:

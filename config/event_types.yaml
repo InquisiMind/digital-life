@@ -741,3 +741,43 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: true
       include_vector_recall: false
+  instance_restarted:
+    display_name: 系统重启续跑
+    trigger_type: system
+    trigger_description: 实例启动时检测到上次运行是执行态（RUNNING）被重启打断——发射本事件让实例醒来继续未完成的工作
+    priority: 7
+    payload_schema:
+      turn_age_s: number?
+      interrupted_at: string?
+    description: 系统重启打断了正在进行的唤醒，重启后自动续跑
+    debounce_window_s: 0
+    merge_policy: latest
+    consumption_policy: on_trigger
+    wake_prompt: '⏸️→▶️ 系统重启打断了你的上一个工作段（不是你的错误）。原对话历史已接续加载。
+
+      打断时距最后一次动作：{turn_age_s} 秒（中断时刻：{interrupted_at}）
+
+
+      从中断处继续未完成的事——已完成的不重做，做完正常收尾。若发现无事可续，说明中断前刚好收尾完成，正常 rest 即可。
+
+      '
+    allowed_tools:
+    - sense_file
+    - sense_todos
+    - express_to_human
+    - record_thought
+    - write_file
+    - todo
+    - rest
+    context_policy:
+      include_history: true
+      max_turns: 12
+      include_rules: false
+      include_daily: false
+      include_consciousness: true
+      include_session_digests: true
+      include_entity_recall: true
+      include_self_review: false
+      include_proactive_policy: false
+      include_recent_sent: false
+      include_vector_recall: false

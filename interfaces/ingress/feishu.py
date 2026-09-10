@@ -862,17 +862,30 @@ class FeishuAdapter(IngressAdapter):
             att_id = _ingest_resource(image_key, "image", "image", fallback_mime="image/png")
             text_parts.append(f"[图片 {att_id or image_key}]" if att_id else f"[图片 {image_key}]")
         elif msg_type == "post":
-            # post 富文本：title + content list of list（每元素 {tag, text, image_key, ...}）
+            # post 富文本。两种结构：
+            # 旧版（locale 层）：{"zh": {"title":..., "content": [[{tag,text},...]]}}
+            # 新版（2026-09 客户端转发/粘贴 markdown 生成，无 locale 层）：
+            #   {"title":..., "content": [[{tag,text,style},...]], "content_v2": [[同 content]]}
+            # content_v2 与 content 同内容，只读 content，避免模型看到双份。
             try:
                 post_data = json.loads(raw_content) if raw_content.startswith("{") else {}
             except (json.JSONDecodeError, TypeError):
                 post_data = {}
-            # zh / en_us 任一即可
+
+            def _iter_post_lines(obj: Any):
+                """兼容 dict(locale)/list(直出) 两种形态，产出 (title, lines)。"""
+                if isinstance(obj, dict):
+                    title = (obj.get("title") or "").strip()
+                    lines = obj.get("content") or []
+                    return title, lines if isinstance(lines, list) else []
+                if isinstance(obj, list):
+                    return "", obj
+                return "", []
+
             locale_obj = post_data.get("zh") or post_data.get("en_us") or post_data.get("content") or {}
-            title = (locale_obj.get("title") or "").strip() if isinstance(locale_obj, dict) else ""
+            title, content_lines = _iter_post_lines(locale_obj)
             if title:
                 text_parts.append(title)
-            content_lines = locale_obj.get("content") or [] if isinstance(locale_obj, dict) else []
             for line in content_lines:
                 if not isinstance(line, list):
                     continue
@@ -881,10 +894,21 @@ class FeishuAdapter(IngressAdapter):
                     if not isinstance(el, dict):
                         continue
                     tag = el.get("tag") or el.get("type") or ""
-                    if tag == "text":
+                    if tag in ("text",):
                         t = (el.get("text") or "").strip()
                         if t:
                             line_parts.append(t)
+                    elif tag in ("a", "link"):
+                        # 新版富文本的链接元素：text + href。取文本，
+                        # href 与文本不同才附注（模型需要真实 URL 时有用）。
+                        t = (el.get("text") or "").strip()
+                        href = (el.get("href") or "").strip()
+                        if t and href and href not in t and not t.startswith("http"):
+                            line_parts.append(f"{t}({href})")
+                        elif t:
+                            line_parts.append(t)
+                        elif href:
+                            line_parts.append(href)
                     elif tag in ("img", "image"):
                         img_key = (el.get("image_key") or "").strip()
                         att_id = _ingest_resource(img_key, "image", "image", fallback_mime="image/png")
@@ -894,7 +918,7 @@ class FeishuAdapter(IngressAdapter):
                     elif tag in ("at",):
                         # post 里的 @：保留占位（mention 解析靠 event.mentions 字段，下面统一处理）
                         pass
-                    # 其它 tag（a / media 等）暂不处理
+                    # 其它 tag（media 等）暂不处理
                 if line_parts:
                     text_parts.append("".join(line_parts))
             # 如果 post 完全没解出内容，fallback 到 raw_content 显示给模型看

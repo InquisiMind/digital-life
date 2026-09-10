@@ -174,7 +174,10 @@ registry.register(
     handler=_handle_sense_event_queue,
     check_fn=lambda: True,
     emoji="📋",
-    schema_visible=False,  # V6 工具精简: 降级
+    # 2026-09-10 恢复可见：mid-session 注入的非 message 事件只给 ID+类型，
+    # 提示语明确引导「用 sense_event_detail 查看详情」——工具必须可见，
+    # 否则模型被指到一个清单里不存在的工具（zero/alpha 8/24 起实证困惑）。
+    schema_visible=True,
 )
 
 
@@ -298,7 +301,8 @@ registry.register(
     handler=_handle_sense_event_detail,
     check_fn=lambda: True,
     emoji="🔍",
-    schema_visible=False,  # V6 工具精简: 降级
+    # 2026-09-10 恢复可见：同 sense_event_queue——mid-session 事件的唯一查看途径
+    schema_visible=True,
 )
 
 

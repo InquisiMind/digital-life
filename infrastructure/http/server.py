@@ -19,6 +19,9 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+# 优雅停机：SIGTERM 后等 in-flight wake 收尾的窗口（秒）。可环境变量覆盖。
+GRACEFUL_WAKE_WAIT_S = float(os.environ.get("DIGITAL_LIFE_GRACEFUL_WAKE_WAIT_S", "180"))
+
 from aiohttp import web
 
 logger = logging.getLogger("gateway")
@@ -393,6 +396,32 @@ async def run_instance_gateway(instance_id: str) -> None:
 
     await stop_event.wait()
     logger.info("Instance %s shutting down...", instance_id[:8])
+
+    # ── 优雅停机：等当前 wake 收尾（2026-09-10 双实例被打断事故）──
+    # 历史行为：SIGTERM 到达立即拆 adapter/cron，正在跑的 wake 被拦腰截断
+    # ——模型没机会走完收尾（含 rest），affair 靠 state guard 事后归位
+    # BLOCKED，休眠态来源成谜。现在停机前给 wake 一个收尾窗口：
+    # 等 _wake_in_progress 清零（模型自然 rest / 出错回滚都算收尾），
+    # 超时 GRACEFUL_WAKE_WAIT_S（默认 180s）后放弃等待强制走原停机流程
+    # ——长 wake 也不能让 restart 永远挂死。
+    try:
+        from domain.lifecycle.scheduler import _is_wake_in_progress
+
+        _grace_deadline = time.monotonic() + GRACEFUL_WAKE_WAIT_S
+        while _is_wake_in_progress(instance_id):
+            if time.monotonic() > _grace_deadline:
+                logger.warning(
+                    "Instance %s graceful-wake wait timed out after %.0fs (wake still running) — forcing shutdown",
+                    instance_id[:8], GRACEFUL_WAKE_WAIT_S,
+                )
+                break
+            logger.info(
+                "Instance %s waiting for in-flight wake to finish (graceful shutdown, up to %.0fs)",
+                instance_id[:8], GRACEFUL_WAKE_WAIT_S,
+            )
+            await asyncio.sleep(5)
+    except Exception as exc:
+        logger.debug("graceful wake wait skipped: %s", exc)
 
     for adapter in adapters:
         try:

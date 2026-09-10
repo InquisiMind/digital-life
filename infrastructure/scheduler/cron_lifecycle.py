@@ -135,7 +135,22 @@ def _run_l4_tick_inner(instance_id: str, log) -> None:
                 from domain.lifecycle.affairs.runtime import WaitIntent, set_wait_intent
 
                 update_affair(life_aid, status=AffairStatus.BLOCKED)
-                retry_at = (now_dt() + timedelta(minutes=2)).isoformat(timespec="seconds")
+                # 硬停 vs 崩溃区分（2026-09-10 重启打断事故）：turn 心跳非常新
+                # （<3min，说明刚还在正常干活）却被判死 = 进程被外部 SIGTERM
+                # 拦腰打断，不是模型自己崩的。退避 2min 是给崩溃重试的；
+                # 硬停应该尽快续上（wake fast-path 60s 内 re-wake 让模型接着干）。
+                _hard_stop = (
+                    signals.get("last_turn_at") is not None
+                    and reason == "turn_stale"
+                    and (float(signals.get("turn_age_s") or 0)) < 180
+                )
+                retry_delay_min = 1 if _hard_stop else 2
+                if _hard_stop:
+                    log.info(
+                        "L4: hard-stop detected (turn_age=%.0fs < 180s) — short retry in %dmin for resume",
+                        float(signals.get("turn_age_s") or 0), retry_delay_min,
+                    )
+                retry_at = (now_dt() + timedelta(minutes=retry_delay_min)).isoformat(timespec="seconds")
                 set_wait_intent(
                     life_aid,
                     WaitIntent(

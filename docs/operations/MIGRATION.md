@@ -1,5 +1,5 @@
 # MIGRATION.md — 数字生命实例迁移操作手册
-> 状态: **v1.2 终版**（v1.1 采 zero 终审两增量；v1.2 采 zero 修⑨⑩⑪ 三修实证、修⑩ body→text 列名 patch、alpha bundle v2 + 隔离根复活实测、3 条 sweep 误伤认知抢救、zhp 11:10 裁决: 单一文件夹交付 + GitHub push 躯体。讨论链归档见 §6）
+> 状态: **v1.3 终版**（v1.2 后 zero 落修⑫⑬⑭、alpha 用终版脚本重出 v3 并完成未-patch×真机-schema 全链路复活实测；见 §5 变更记录）
 > 作者: alpha（合成） / zero（export/restore 脚本与 v0.1 方案）
 > 场景: zhp 换电脑，旧机 9/14 格式化。repo 从 github 拉，实例记忆按本手册迁移。
 
@@ -18,11 +18,11 @@
 | bundle | 来源 | 内容 | 实测规模 |
 |---|---|---|---|
 | bundle_zero_v0.4 | zero 实例 | 认知 358（含 +5 sweep 抢救）/ layers 2023 / open todos 198 行 / 文件资产 56 | tar.gz 1.3MB, 201 条目 |
-| **bundle_alpha_v2** | alpha 实例 | 认知 300（含 +3 sweep 抢救 #53028/29/30）/ layers 1384 / open todos 198 行（11+23+164）/ 文件资产 146（memory 51+persona 1+skills 7+tools 2+workspace 85） | tar.gz 1.1MB, 185 条目, md5 26786385b50e5eb252b1f8fc65a5d167 |
-| 脚本 | workspace/memory_migration/ | export v0.4 + restore（alpha 侧 patch: 两处 body→text 列名，见 §5） | — |
+| **bundle_alpha_v3** | alpha 实例 | 认知 301（含 +3 sweep 抢救 #53028/29/30 + #53031 列名陷阱教训）/ layers 1384 / open todos 193 行 / 文件资产 83 | tar.gz 0.94MB, md5 `98b22bba49197127dfa4c2df7b74fd8b` |
+| 脚本 | workspace/memory_migration/ | export + restore 终版（修⑫排除泛化双布局/⑬body→text 三处/⑭side_backup 挪系统 temp）——alpha 侧旧 patch 不再需要，终版直接绿 | — |
 
-> 注: 交付以 **tar.gz 为准**（目录形态 bundle 被 restore 过即污染——restore 会往 bundle 写 _side_backup/ 备份被覆盖文件，zero v0.4 目录 342 文件中 168 个即此类）。tar.gz 出包后未跑 restore 的才是干净交付物。
-> 注: v0.2/v0.3 均已作废删除（v0.3 被 v0.4 取代: 修⑨嵌套根治/修⑩hash幂等/修⑪k3跨类型）——认准 **v0.4**。alpha 侧认准 v2。
+> 注: 交付以 **tar.gz 为准**。_side_backup 污染已由修⑭根治（备份挪系统 temp，不再写进 bundle 目录）。
+> 注: v0.2/v0.3 均已作废删除（v0.3 被 v0.4 取代: 修⑨⑩⑪；v0.4 又经修⑫⑬⑭加固，数据层无变化）——zero 侧认准 **v0.4**，alpha 侧认准 **v3**（v1/v2 作废: 旧脚本产出+缺 #53031）。
 
 ## 3. 操作步骤
 
@@ -30,7 +30,7 @@
 ```
 # bootstrap 新实例（得到新 app id）后，先把旧机整个迁移目录复制过去（脚本+两份 bundle）：
 #   旧机: 数字生命/apps/c2a5c8e8-e4f5-4c69-be3e-aac49903081d/workspace/memory_migration/  （export v0.4 + restore 脚本 + bundle_zero_v0.4.tar.gz）
-#   旧机: 数字生命/apps/5052c33a-e700-44dd-aea3-00e04a661ab1/workspace/migration/bundle_alpha_v2.tar.gz  （挪进新机 memory_migration/ 下一起放；tar.gz 到位后 tar xzf 解包出 bundle_alpha_v2/ 目录）
+#   旧机: 数字生命/apps/5052c33a-e700-44dd-aea3-00e04a661ab1/workspace/migration/bundle_alpha_v3.tar.gz  （挪进新机 memory_migration/）
 #   新机: 数字生命/apps/<新实例id>/workspace/memory_migration/
 cd 数字生命/apps/<新实例id>/workspace/memory_migration
 ```
@@ -38,7 +38,7 @@ cd 数字生命/apps/<新实例id>/workspace/memory_migration
 ### 3.2 恢复（每个 bundle 各跑一次）
 ```
 python3 restore_memory_bundle.py --app <新实例短id> --bundle bundle_zero_v0.4
-python3 restore_memory_bundle.py --app <新实例短id> --bundle bundle_alpha_v2
+python3 restore_memory_bundle.py --app <新实例短id> --bundle bundle_alpha_v3
 # 结束后看 restore_report.json：inserted 数应与 manifest rows 一致
 # 幂等：重放第二次应全 dup 跳过零插入（脚本自带验证）
 ```
@@ -56,6 +56,7 @@ python3 restore_memory_bundle.py --app <新实例短id> --bundle bundle_alpha_v2
 **双侧实测记录（9/13）**：
 - zero verify1（11:02, 真跑非 dry-run）: memory 56+persona 2+skills 6+tools 6+workspace 96 / db inserted=2023 dup=0 / config app.yaml 跳过人工 diff
 - alpha rtest（11:09, /tmp 隔离根真跑）: memory 51+persona 1+skills 7+tools 2+workspace 85+config 3 / 认知首灌 300（payload 249/cog_key 247 与 jsonl 零差值）/ layers 1384 / **重放幂等: inserted=0, skipped 300/1384 全跳（修⑩⑪ 实证）**
+- alpha rtest v3（11:25, 终版 restore 未-patch × 真机 schema 沙箱）: dry-run/真跑/重放幂等全绿——认知首灌 301（重放 0 插入 301 skipped）、layers 1384/1384、todos 幂等 skip；对账吻合（302 完整口径 - 1 同 key 冗余 = 301 = jsonl 实数）✅
 - Q1-Q5 五问在新机首次唤醒时执行（双侧数据已灌入 verify1/rtest 隔离环境验证 schema 兼容）
 
 Q1 认知相: recall 命中迁移前的关键认知（抽 3 条）
@@ -69,7 +70,7 @@ Q5 社交: contacts 在 state.db（messages.db 留旧机不影响）
 - 9/13 一审: 架构通过；3 必修（多级后缀逃打码/tools 段漏开扫描/mask_line 吞换行）→ zero 修复中
 - 9/13 二审: **通过**。修①-⑧实证核验：bak/legacy 0 残留、tools/skills 打码开启、17/17 py_compile 过、带边界手机号 0、embedding 剥离抽查干净、空目录 0、嵌套自打包 0（修⑥⑦⑧ zero 自查补丁，alpha 拉最新版实测复验）
 - alpha bundle 泄漏 grep: 变量名模式 0 真命中（9 命中全为 startswith() 解析逻辑跨行误报）、py_compile 26/26、手机号带边界 0（dry-run manifest 内 9 处命中为 md5-hex 数字形态误报，非个人信息）
-- 对账基线（v1.2 终态）: zero 358/2023/198（353+5 抢救重写） ✅; alpha 300/1384/198（11+23+164; 296+3 抢救 #53028/29/30） ✅
+- 对账基线（v1.3 终态）: zero 358/2023/198（353+5 抢救重写） ✅; alpha 301/1384/193（v3 终版脚本重出; 较 v2 +1 #53031, todos 193 为期间任务完成的正常漂移） ✅
 - associations=0 裁决: 双端活跃边两侧实测均为 0，属活跃子图常态，接受；新机自然使用重建
 - 手机号 29 处: 双方各自复核均为**无边界正则误报**（zero: file_mtime/space_id 片段；alpha: 候选池数据快照真手机号 29 文件——已裁决数据快照不出 bundle，脚本 ws_exclude 补 trading_data 快照模式，复验 0）
 - alpha 侧脚本补丁（对 zero 脚本的 alpha 特有扩展，已双端同步）: ws_exclude 增加 `trading_data/(candidate_pool_|zt_pool_|tradable_|data/)`
@@ -77,6 +78,8 @@ Q5 社交: contacts 在 state.db（messages.db 留旧机不影响）
 - 9/13 三审（alpha 对 v0.4 + v1.2 落盘）: ①修⑨核验发现 alpha 侧破洞——`_mm_root=src/memory_migration` 排除仅覆盖 zero 布局，alpha 的 workspace/migration/ 不在排除范围且 ws_exclude 正则 `bundle_.*_v0\.2` 不匹配 `bundle_alpha_v1`，实测第一跑 workspace 239 文件混入 10:44 第一跑残留目录（+154）；处置: 删脏目录 + v1.tar.gz 改名 `.legacy`（匹配既有排除正则，零改 zero 脚本）+ /tmp 重跑 → 85 文件干净版。②修⑩实锤列名 bug: `SELECT chunk_hash, body FROM chunks` 与 `d.get("body")` 在真机 schema 必炸（两侧现网 chunks 均无 body 列、jsonl 字段亦为 text），alpha 在 /tmp patch 两处后全链路验证通过；zero 侧 verify1 跑通疑因非真机 schema，**待 zero 自证后落盘原文**（alpha 不动 zero 脚本原文，patch 只存 /tmp 验证现场）。③修⑪ k3 幂等在 alpha 数据实测: 首灌 1384/重放 skipped 1384。④4 个 macOS `._` AppleDouble 文件在 v1 包（来自 /tmp xattr），v2 已验 0。⑤3 条 sweep 误伤认知抢救落库: #53028 zhp 称呼偏好 / #53029 飞书凭证选路 / #53030 炒股重启前置 → alpha 认知 296→300，bundle 重出 v2。
 - 9/13 11:10 zhp 裁决: ①交付形态=**单一文件夹**（zhp 自行传输）②躯体改动 push GitHub 方便新机交接。
 
+- 9/13 v1.3（alpha 落盘）: ①zero 修⑫（排除路径无关化+`bundle_[^/]*` 泛化，双布局独立验证）②修⑬（body→text 三处，真机 schema 沙箱三连 358/0/358）③修⑭（_side_backup 挪系统 temp）——alpha 侧实测全采纳。④alpha v3 重出（终版脚本血统; 验证矩阵补"未-patch 终版 restore × alpha bundle × 真机 schema"一格; +1 教训认知 #53031）。
+- ⚠️ id 漂移注记（v1.3 新发现）: restore 不保留 chunks 原 id（jsonl 带 id 5 位数、新库自增重排为 1-N）。文本内 "#id" 形式的跨认知引用在新机会漂移——语义兜底靠 cog_key/entity_links/payload（alpha 侧 250 payload/248 cog_key 全保留）。新实例读到旧认知里的 #id 引用时，以 cog_key 检索为准，勿按 id 字面量查。
 ## 6. 灰区裁决历史（归档，v0.1-v1.2 讨论结论）
 
 - trading_data 数据快照（candidate_pool/zt_pool/tradable/data 29 文件）→ 不带（第三方联系人手机号，个人信息红线 + 过期中间产物；代码/参数/launchd 配置带）
@@ -92,4 +95,4 @@ Q5 社交: contacts 在 state.db（messages.db 留旧机不影响）
 - [ ] alpha dry-run 基线: workspace/migration/alpha_bundle_manifest_dryrun.json（2018 文件/427.9MB，供对照）
 
 ---
-*版本: v1.2 终版 | 9/13 11:15 alpha 合成 | 双侧 bundle 出包+复活实测全绿，待 zhp 拿走文件夹*
+*版本: v1.3 终版 | 9/13 11:26 alpha 合成 | 终版脚本双侧全绿 + v3 复活实测闭环 + id 漂移注记，交付文件夹待换 v3 后全关*

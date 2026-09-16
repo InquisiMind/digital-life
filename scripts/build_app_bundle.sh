@@ -17,7 +17,11 @@ CONTENTS="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS/MacOS"
 
 # 找 python（和 digital-life 用同一个）
-PYTHON="$(command -v python3 || echo /usr/bin/python3)"
+if [ -x "$REPO_ROOT/.venv/bin/python3" ]; then
+    PYTHON="$REPO_ROOT/.venv/bin/python3"   # 新机器：仓库内 venv（python 3.12，带依赖）
+else
+    PYTHON="$(command -v python3 || echo /usr/bin/python3)"
+fi
 
 echo "构建 DigitalLife.app bundle..."
 echo "  python: $PYTHON"

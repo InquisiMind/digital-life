@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import sqlite3
+import uuid
 import sys
 from pathlib import Path
 
@@ -76,7 +77,11 @@ def _migrate_instance_todos(gdb, rows, instance_id):
         project_id = ""
         if source.startswith("project:"):
             project_id = source.split(":", 1)[1]
-        # 写入
+        # 写入 (源行 id 为 NULL 时现生成 8-hex id——迁移自 NULL 主键的老库)
+        if not r.get("id"):
+            r["id"] = uuid.uuid4().hex[:8]
+        if not r.get("id"):
+            r["id"] = uuid.uuid4().hex[:8]
         existing = gdb.execute(
             "SELECT id FROM todos WHERE id = ?", (r["id"],),
         ).fetchone()

@@ -34,7 +34,11 @@ capabilities = [
     "pyttsx3>=2.90",
     "SpeechRecognition>=3.10",
     # 感知/语音：快捷键触发录屏录音 + 视觉理解 + ASR 转写
-    "sounddevice>=0.4",      # 麦克风采集（/usr/bin/python3 子进程，Apple 签名 + TCC 麦克风授权）
+    "sounddevice>=0.4",      # 麦克风采集
+    # ⚠️ 钉死：pyobjc-framework-AVFoundation 12.x 在本机为坏包（import 报"不可用"，
+    # force-reinstall 无效）；10.3.2 实测可用。混装 core 12.2.2 兼容。任何 pip 动作
+    # 都可能把它拉回 12.x 静默回坏态——不要解开这个钉子。(9/15 zero 排雷 + alpha 落档)
+    "pyobjc-framework-AVFoundation==10.3.2",  # TCC 麦克风权限请求（12.x 坏包勿升）
     "edge-tts>=6.1",         # 神经 TTS（云端，云希男声）
     # 实时语音会话 VAD：silero-vad 自带 ONNX 模型（data/silero_vad.onnx），
     # 我们直接用 onnxruntime 加载，避免拉 torch（沙箱无网/体积大）。

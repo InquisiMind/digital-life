@@ -165,6 +165,7 @@ const socialRevoking = ref(false)
 const wechatTakeover = ref({ status: 'idle', qr_base64: '', my_nickname: '', error: '' })
 const wechatTakeoverLoading = ref(false)
 let wechatTakeoverPollTimer = null
+const wechatLoading = ref(false)
 const qrStatus = ref('')
 const allSections = ref([])
 const draft = ref({})

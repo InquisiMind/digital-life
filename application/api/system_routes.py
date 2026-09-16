@@ -47,7 +47,21 @@ def add_system_routes(app: web.Application) -> None:
     app.router.add_post(f"{SYSTEM_API_PREFIX}/instances", _handle_create_instance)
     app.router.add_patch(f"{SYSTEM_API_PREFIX}/instances/{{iid}}", _handle_update_instance)
     app.router.add_delete(f"{SYSTEM_API_PREFIX}/instances/{{iid}}", _handle_delete_instance)    # 后端代理 ClawBot 二维码页面（绕过 X-Frame-Options: DENY）
-    # V6 微信全接管 (itchat Web 协议, 以用户身份拉全量消息)    app.router.add_get(f"{SYSTEM_API_PREFIX}/projects", _handle_projects)
+    app.router.add_post(
+        f"{SYSTEM_API_PREFIX}/instances/{{iid}}/wechat-login/qrcode",
+        _handle_wechat_qrcode,
+    )
+    app.router.add_get(
+        f"{SYSTEM_API_PREFIX}/instances/{{iid}}/wechat-login/status",
+        _handle_wechat_login_status,
+    )
+    # 后端代理 ClawBot 二维码页面（绕过 X-Frame-Options: DENY）
+    app.router.add_get(
+        f"{SYSTEM_API_PREFIX}/instances/{{iid}}/wechat-login/qr-page",
+        _handle_wechat_qr_page,
+    )
+    # V6 微信全接管 (itchat Web 协议, 以用户身份拉全量消息)
+    app.router.add_get(f"{SYSTEM_API_PREFIX}/projects", _handle_projects)
     app.router.add_post(f"{SYSTEM_API_PREFIX}/projects", _handle_create_project)
     app.router.add_delete(f"{SYSTEM_API_PREFIX}/projects/{{pid}}", _handle_delete_project)
     app.router.add_get(f"{SYSTEM_API_PREFIX}/projects/{{pid}}", _handle_project_detail)
@@ -696,7 +710,149 @@ async def _handle_update_instance(request: web.Request) -> web.Response:
     )
 
 
+
+
 _wechat_login_state: dict[str, Any] = {}
+
+
+async def _handle_wechat_qrcode(request: web.Request) -> web.Response:
+    """POST /api/system/instances/{iid}/wechat-login/qrcode —— 获取二维码。
+
+    ClawBot API 格式（来自 npm 包 @tencent-weixin/openclaw-weixin 2.4.4 源码）：
+      POST /ilink/bot/get_bot_qrcode?bot_type=3  body={"local_token_list":[]}
+      返回 {qrcode: "token", qrcode_img_content: "https://...", ret: 0}
+    """
+    iid = request.match_info["iid"]
+    if iid not in (_load_registry() or {}):
+        return web.json_response({"error": f"unknown instance: {iid}"}, status=404)
+
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                "https://ilinkai.weixin.qq.com/ilink/bot/get_bot_qrcode?bot_type=3",
+                json={"local_token_list": []},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        logger.exception("wechat qrcode fetch failed")
+        return web.json_response({"error": f"获取二维码失败: {exc}"}, status=502)
+
+    if data.get("ret") not in (0, None):
+        return web.json_response(
+            {"error": f"ClawBot 返回错误: {data.get('err_msg', data.get('ret'))}"}, status=502
+        )
+
+    qrcode_token = data.get("qrcode") or ""
+    qrcode_url = data.get("qrcode_img_content") or ""
+
+    if not qrcode_token or not qrcode_url:
+        return web.json_response(
+            {"error": f"ClawBot 未返回二维码数据, response: {data}"}, status=502
+        )
+
+    _wechat_login_state[iid] = {"qrcode_token": qrcode_token, "status": "pending"}
+
+    return web.json_response({"qrcode_url": qrcode_url, "qrcode_token": qrcode_token})
+
+
+async def _handle_wechat_login_status(request: web.Request) -> web.Response:
+    """GET /api/system/instances/{iid}/wechat-login/status —— 轮询扫码状态。
+
+    ClawBot API 格式：
+      GET /ilink/bot/get_qrcode_status?qrcode=xxx  (长轮询 hold 35s)
+      返回 status: wait | scaned | need_verifycode | confirmed | expired
+
+    confirmed 时返回 ilink_bot_id + bot_token。
+    """
+    iid = request.match_info["iid"]
+    state = _wechat_login_state.get(iid)
+    if not state:
+        return web.json_response({"status": "pending"})
+
+    if state.get("status") == "confirmed":
+        return web.json_response({
+            "status": "confirmed",
+            "bot_id": state.get("bot_id", ""),
+            "token_written": state.get("token_written", False),
+        })
+
+    qrcode_token = state.get("qrcode_token", "")
+    if not qrcode_token:
+        return web.json_response({"status": "pending"})
+
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=40) as client:
+            resp = await client.get(
+                f"https://ilinkai.weixin.qq.com/ilink/bot/get_qrcode_status?qrcode={qrcode_token}",
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception:
+        return web.json_response({"status": "pending"})
+
+    status = data.get("status", "")
+    # 映射状态给前端理解
+    if status == "confirmed":
+        bot_token = data.get("bot_token") or ""
+        bot_id = data.get("ilink_bot_id") or data.get("bot_id") or ""
+        if bot_token:
+            _write_env_secret(iid, "WECHAT_BOT_TOKEN", bot_token)
+            try:
+                _patch_instance_app_yaml(iid, {
+                    "channels": {
+                        "wechat": {
+                            "type": "wechat_clawbot",
+                            "domain": "https://ilinkai.weixin.qq.com",
+                            "bot_id": bot_id,
+                        }
+                    }
+                })
+            except Exception:
+                pass
+            _wechat_login_state[iid] = {"status": "confirmed", "bot_id": bot_id, "token_written": True}
+            return web.json_response({
+                "status": "confirmed",
+                "bot_id": bot_id,
+                "token_written": True,
+            })
+    elif status == "scaned":
+        return web.json_response({"status": "scaned", "message": "已扫码，等待确认…"})
+    elif status == "need_verifycode":
+        return web.json_response({"status": "need_verifycode", "message": "请在手机上输入验证码"})
+    elif status == "expired":
+        return web.json_response({"status": "expired", "message": "二维码已过期，请重新获取"})
+
+    return web.json_response({"status": "wait"})
+
+
+async def _handle_wechat_qr_page(request: web.Request) -> web.Response:
+    """GET /api/system/instances/{iid}/wechat-login/qr-page?qrcode_url=xxx
+
+    后端用 Python qrcode 库把 ClawBot 返回的 URL 编码成 PNG 图片。
+    微信原始页面是 JS 渲染的 + X-Frame-Options: DENY——不能直接 iframe。
+    """
+    qr_url = request.query.get("qrcode_url") or ""
+    if not qr_url:
+        return web.Response(text="missing qrcode_url", status=400)
+
+    import io
+    import qrcode
+
+    qr = qrcode.QRCode(version=1, box_size=8, border=2)
+    qr.add_data(qr_url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+
+    return web.Response(body=buf.getvalue(), content_type="image/png")
+
 
 
 def _write_env_secret(iid: str, key: str, value: str) -> None:

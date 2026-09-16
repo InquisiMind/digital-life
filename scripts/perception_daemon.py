@@ -93,9 +93,9 @@ class Recorder:
             self._audio_path = None
             self._stop_event.clear()
             logger.info("recording STARTED")
-            self._screen_thread = threading.Thread(target=self._screen_loop, daemon=True)
+            # 纯音频模式（zhp 2026-09-16：语音链路不用视觉，截图链路太慢）：
+            # 不再启动 _screen_thread，frames 恒为空；超时自动停止改由 _audio_loop 触发。
             self._audio_thread = threading.Thread(target=self._audio_loop, daemon=True)
-            self._screen_thread.start()
             self._audio_thread.start()
 
     def stop(self) -> dict:
@@ -180,6 +180,10 @@ class Recorder:
                     chunk, _ = stream.read(block)
                     wf.writeframes(chunk.tobytes())
                     recorded += len(chunk)
+                if not self._stop_event.is_set() and recorded >= max_frames:
+                    logger.info("reached max_capture_seconds, auto-stop")
+                    if self.on_auto_stop:
+                        threading.Thread(target=self.on_auto_stop, daemon=True).start()
             finally:
                 stream.stop()
                 stream.close()
@@ -320,7 +324,7 @@ def report_capture(
         ok = result.get("perception_ok", result.get("ok", False))
         feedback("done" if ok else "fail",
                  message=f"zero 已收到（{summary_head}{'...' if summary_head else ''})"
-                         if ok else "视觉/处理未成功，事件已留队列",
+                         if ok else "处理未成功，事件已留队列",
                  cli=cli)
         return result
     except Exception as exc:

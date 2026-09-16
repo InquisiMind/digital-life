@@ -236,6 +236,7 @@ class _Recorder:
             self._audio_proc = subprocess.Popen(
                 ["/usr/bin/python3", str(script_file)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=_clean_mic_env(),
             )
 
             self._stop_event.wait()
@@ -272,6 +273,19 @@ class _Recorder:
             logger.warning("audio loop error: %s", exc)
             self._audio_path = None
 
+
+
+def _clean_mic_env() -> dict:
+    """录音子进程用干净环境变量。
+
+    PITFALL (9/16 实证)：继承 gateway 的完整环境跑 /usr/bin/python3 录音 →
+    SILENT 全零；只留必需变量 → 录音正常。环境变量影响 xpc_client 对
+    TCC 责任进程的判定（旧进程已发过音频请求 → 新子进程被记到 gateway/
+    Python.app 名下=无权限）。干净 env 让子进程算"非首发请求"，TCC
+    责任进程回溯到有权限的宿主 app。
+    """
+    keep = ("PATH", "HOME", "TMPDIR", "USER", "LOGNAME", "LANG")
+    return {k: os.environ[k] for k in keep if k in os.environ}
 
 # ── 上报 ─────────────────────────────────────────────────────────────────────
 

@@ -47,6 +47,19 @@ from infrastructure.perception.config import PerceptionConfig, load_config, medi
 
 logger = logging.getLogger(__name__)
 
+def _clean_mic_env() -> dict:
+    """录音子进程用干净环境变量。
+
+    PITFALL (9/16 实证)：继承 gateway 的完整环境跑 /usr/bin/python3 录音 →
+    SILENT 全零；只留必需变量 → 录音正常。环境变量影响 xpc_client 对
+    TCC 责任进程的判定（旧进程已发过音频请求 → 新子进程被记到 gateway/
+    Python.app 名下=无权限）。干净 env 让子进程算"非首发请求"，TCC
+    责任进程回溯到有权限的宿主 app。
+    """
+    keep = ("PATH", "HOME", "TMPDIR", "USER", "LOGNAME", "LANG")
+    return {k: os.environ[k] for k in keep if k in os.environ}
+
+
 # ── Silero VAD 常量（模型固定约束）──────────────────────────────────────────
 # Silero VAD v4/v5 只接受 16kHz 单声道；每帧 512 样本（32ms）。
 VAD_SAMPLE_RATE = 16000
@@ -427,6 +440,7 @@ class VoiceSession:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             bufsize=0,  # 不缓冲：PCM 要实时读
+            env=_clean_mic_env(),
         )
         logger.info("voice session started: %s (pid=%d)", self.session_id, self._proc.pid)
 

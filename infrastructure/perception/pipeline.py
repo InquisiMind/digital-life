@@ -120,8 +120,9 @@ def run_pipeline(
         if not asr_out.get("ok"):
             logger.info("pipeline asr degraded: %s", asr_out.get("error"))
 
-    # 3. 视觉理解（spec FR-007）—— 需要图片或转写至少一路可用
-    if image_uris or result.transcript:
+    # 3. 理解层——有画面帧走视觉理解；纯音频走 ASR-only（转写即摘要，
+    #    spec FR-006 降级：不依赖视觉模型可用性）。视觉失败但有转写时同样兜底。
+    if image_uris:
         history = build_slim_context(
             instance_id,
             session_id=session_id,
@@ -157,7 +158,13 @@ def run_pipeline(
             result.summary = (vis.get("raw") or "")[:200]
 
         if not vis.get("ok"):
-            result.error = result.error or vis.get("error", "视觉调用失败")
+            if result.transcript:
+                # 视觉不可用 → 转写兜底，ASR 链路不受视觉模型余额影响
+                result.summary = result.summary or result.transcript
+            else:
+                result.error = result.error or vis.get("error", "视觉调用失败")
+    elif result.transcript:
+        result.summary = result.transcript
     else:
         result.error = result.error or "无图片帧且无音频可用"
 

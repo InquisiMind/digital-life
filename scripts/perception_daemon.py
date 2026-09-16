@@ -38,6 +38,16 @@ import time
 import wave
 from pathlib import Path
 
+# ── 入口环境净化（必须在任何网络/音频库 import 前）───────────────────────────
+# PITFALL (9/16 14:04 实证)：app bundle wrapper 写入的 SSL_CERT_FILE/REQUESTS_CA_BUNDLE
+# 是 mojibake 坏路径 → httpx.Client() 构造即 FileNotFoundError(Errno 2) →
+# report_capture 必败（录音成功但永远上报不到 gateway）。endpoint 是 localhost
+# http，不需要自定义 CA；DYLD_* 对本进程同样有害（同族教训 15394c2）。
+for _k in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+           "DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES",
+           "DYLD_FRAMEWORK_PATH", "DYLD_FALLBACK_LIBRARY_PATH"):
+    os.environ.pop(_k, None)
+
 # 允许 import 项目模块（daemon 独立运行）
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:

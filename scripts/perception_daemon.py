@@ -406,16 +406,14 @@ def _run_hotkey_loop(hotkey: str, toggle) -> None:
 
     # 解析 "cmd+shift+p" → [Key.cmd, Key.shift, 'p']
     parts = [p.strip().lower() for p in hotkey.split("+") if p.strip()]
+    # pynput 新版本移除了 Key.fn 等个别键，逐个 getattr 兜底（9/15 新机 pynput 兼容）
     mods_map = {
-        "cmd": keyboard.Key.cmd,
-        "cmd_l": keyboard.Key.cmd_l,
-        "cmd_r": keyboard.Key.cmd_r,
-        "ctrl": keyboard.Key.ctrl,
-        "shift": keyboard.Key.shift,
-        "alt": keyboard.Key.alt,
-        "option": keyboard.Key.alt,
-        "fn": keyboard.Key.fn,
+        k: getattr(keyboard.Key, k if k != "option" else "alt")
+        for k in ("cmd", "cmd_l", "cmd_r", "ctrl", "shift", "alt", "fn")
+        if hasattr(keyboard.Key, k if k != "option" else "alt")
     }
+    if "alt" in mods_map:
+        mods_map["option"] = mods_map["alt"]
     expected_mods = set()
     expected_key: str | None = None
     for p in parts:

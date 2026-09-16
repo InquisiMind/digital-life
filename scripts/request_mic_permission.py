@@ -28,6 +28,17 @@ def check_and_request_mic() -> int:
         print("PyObjC AVFoundation 不可用，无法请求麦克风权限")
         return 1
 
+    # macOS 15：TCC 弹窗需要激活的 GUI 应用上下文，纯 CLI 进程会被秒拒。
+    # 把本进程升级为 Regular GUI app（bundle 内运行时有效）。
+    try:
+        from AppKit import NSApplication, NSApplicationActivationPolicyRegular
+        nsapp = NSApplication.sharedApplication()
+        nsapp.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+        nsapp.activateIgnoringOtherApps_(True)
+        print("AppKit GUI 上下文已激活（弹窗前置条件）")
+    except Exception as e:
+        print(f"AppKit 激活失败（状态检查不受影响）: {e}")
+
     status = AVF.AVCaptureDevice.authorizationStatusForMediaType_(AVF.AVMediaTypeAudio)
     # 0 = notDetermined, 1 = restricted, 2 = authorized, 3 = denied
     status_names = {0: "未决定（应弹窗）", 1: "受限", 2: "已授权 ✓", 3: "已拒绝 ✗"}
@@ -52,11 +63,21 @@ def check_and_request_mic() -> int:
     AVF.AVCaptureDevice.requestAccessForMediaType_completionHandler_(
         AVF.AVMediaTypeAudio, handler
     )
-    # 等待异步回调（用户可能要几秒才点）
-    for _ in range(30):
-        if result["granted"] is not None:
-            break
-        time.sleep(0.5)
+    # 等待异步回调：必须泵 runloop——弹窗渲染与 completion 回调都经主 runloop 分发。
+    # time.sleep 会饿死 runloop，弹窗永远不出现（macOS 15 实测）。
+    try:
+        from Foundation import NSRunLoop, NSDefaultRunLoopMode, NSDate
+        runloop = NSRunLoop.currentRunLoop()
+        deadline = time.time() + 45
+        while result["granted"] is None and time.time() < deadline:
+            runloop.runMode_beforeDate_(
+                NSDefaultRunLoopMode, NSDate.dateWithTimeIntervalSinceNow_(0.5)
+            )
+    except ImportError:
+        for _ in range(30):
+            if result["granted"] is not None:
+                break
+            time.sleep(0.5)
 
     if result["granted"] is None:
         print("请求超时（30s 无响应）——可能没弹窗（非 bundle 运行）")

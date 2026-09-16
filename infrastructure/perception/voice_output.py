@@ -34,8 +34,8 @@ DEFAULT_EDGE_VOICE = "zh-CN-YunxiNeural"
 
 DEFAULT_KOKORO_VOICE = "zf_017:0.83,zm_014:0.17"
 KOKORO_SERVER_URL = os.getenv("KOKORO_SERVER_URL", "http://127.0.0.1:8300")
-KOKORO_VENV_PYTHON = "/Users/zhanghaopu/Downloads/models/.venv/bin/python3"
-KOKORO_SERVER_SCRIPT = "/Users/zhanghaopu/Downloads/models/server.py"
+KOKORO_VENV_PYTHON = "/Users/zhanghaopu/Documents/探索项目/digital-life/.venv/bin/python"
+KOKORO_SERVER_SCRIPT = "/Users/zhanghaopu/Documents/探索项目/digital-life/scripts/kokoro_tts_server.py"
 
 # 是否启用 TTS（环境变量 / 实例配置控制）
 DEFAULT_ENABLED = os.getenv("DIGITAL_LIFE_TTS", "0") == "1"
@@ -315,7 +315,7 @@ def _ensure_kokoro_server() -> bool:
             [KOKORO_VENV_PYTHON, KOKORO_SERVER_SCRIPT],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            cwd="/Users/zhanghaopu/Downloads/models",
+            cwd="/Users/zhanghaopu/Documents/探索项目/digital-life",
         )
     except Exception as exc:
         logger.warning("Failed to start Kokoro server: %s", exc)

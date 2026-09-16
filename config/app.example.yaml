@@ -42,3 +42,15 @@ skills:
   - entity_curation
   - todo_execution
   - todo_planning
+
+# ── perception：本地录音 + ASR（Cmd+Shift+P/H 快捷键链路）──
+# asr_provider: iflytek（讯飞 IAT，每日 500 次免费额度）｜ glm（备选，账户需有余额）
+# 凭据来源：console.xfyun.cn → 我的应用 → appid 详情页复制三件套
+perception:
+  enabled: true
+  asr_provider: iflytek
+  iflytek:
+    app_id: "your_xfyun_app_id"
+    api_key: "your_xfyun_api_key"
+    api_secret: "your_xfyun_api_secret"
+  hotkey: cmd+shift+h   # 语音备忘键；另有 cmd+shift+p 视觉+语音「看看这个」键

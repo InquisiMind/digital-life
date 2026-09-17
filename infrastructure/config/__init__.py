@@ -22,8 +22,10 @@
 from __future__ import annotations
 
 import contextvars
+import logging
 import os
 import re
+import tempfile
 import uuid as _uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -343,6 +345,98 @@ def get_instance_config_dir(instance_id: str | None = None) -> Path:
     return get_instance_dir(instance_id) / "config"
 
 
+# ── Workspace resolution (shallow mode, 设计书 workspace浅层配置设计_v0.2) ──
+
+
+def _load_yaml_if_exists(path: Path) -> dict:
+    """安全读 yaml；不存在/解析失败返回空 dict（调用方按未配置处理）。"""
+    try:
+        if not path.is_file():
+            return {}
+        with open(path, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _workspace_global_cfg() -> dict:
+    """全局 default.yaml 的 workspace 段（缺省容错）。"""
+    import yaml as _yaml  # noqa: F401  (顶部已 import，此处保可读)
+    ws = _load_yaml_if_exists(get_global_default_config_path()).get("workspace")
+    return ws if isinstance(ws, dict) else {}
+
+
+def _workspace_fallback_dir(iid: str, policy: str):
+    """未注册实例的降级落点（设计书第七节）。返回目录或 raise（reject）。"""
+    log = logging.getLogger("digital_life.config")
+    if policy == "tmp":
+        log.warning("workspace: unregistered id %s -> tmp (policy=tmp)", iid)
+        return Path(tempfile.gettempdir()) / "digital_life_workspace" / iid
+    if policy == "reject":
+        log.warning("workspace: unregistered id %s rejected (policy=reject)", iid)
+        raise ValueError(
+            f"workspace: instance {iid!r} not registered (policy=reject)"
+        )
+    # 默认 warn_repo_root：与 9/17 影子目录补丁（d88811d）行为一致
+    log.warning(
+        "workspace: unregistered id %s -> repo root (policy=warn_repo_root)", iid
+    )
+    return get_project_root()
+
+
+def get_workspace_dir(instance_id: str | None = None) -> Path:
+    """实例默认工作空间（设计书：workspace浅层配置设计_v0.2）。
+
+    解析优先级：实例 app.yaml ``workspace_root`` > 全局
+    ``workspace.root_template`` × {display_name} > legacy ``apps/<iid>/workspace``。
+    首次访问 mkdir(parents=True)；创建失败 WARNING + 回落 legacy（实例不死）。
+    沿用注册实例 guard：未注册 id 不创建任何新路径，按全局
+    ``workspace.unregistered_fallback``（warn_repo_root|tmp|reject）降级。
+    """
+    log = logging.getLogger("digital_life.config")
+    iid = get_app_instance_id(instance_id)
+
+    if not is_registered_instance(iid):
+        policy = str(
+            _workspace_global_cfg().get("unregistered_fallback") or "warn_repo_root"
+        )
+        return _workspace_fallback_dir(iid, policy)
+
+    legacy_ws = get_instance_dir(iid) / "workspace"
+    gcfg = _workspace_global_cfg()
+    if str(gcfg.get("mode") or "shallow") == "legacy":
+        return legacy_ws
+
+    # 1) 实例显式配置（zhp 9/17 拍板"默认给一个"：创建时写入，维护改这一行）
+    app_cfg = _load_yaml_if_exists(get_instance_config_path(iid))
+    raw = app_cfg.get("workspace_root")
+    if isinstance(raw, str) and raw.strip():
+        ws = Path(raw.strip()).expanduser()
+    else:
+        # 2) 全局模板渲染；display_name 缺席用 uuid 前 8 位，目录名永远人可读
+        template = gcfg.get("root_template")
+        if not isinstance(template, str) or not template.strip():
+            return legacy_ws
+        name = get_instance_display_name(iid)
+        if _looks_like_uuid(name):
+            name = name[:8]
+        ws = Path(template.strip().format(instance_name=name)).expanduser()
+
+    # 3) mkdir 失败回落 legacy——浅层是优化不是依赖，实例永不停摆
+    try:
+        ws.mkdir(parents=True, exist_ok=True)
+        return ws
+    except OSError as exc:
+        log.warning(
+            "workspace: shallow dir %s unusable (%s); fallback to legacy %s",
+            ws,
+            exc,
+            legacy_ws,
+        )
+        return legacy_ws
+
+
 def get_instance_state_db_path(instance_id: str | None = None) -> Path:
     """Return the state DB path: apps/{uuid}/data/state.db"""
     return get_instance_data_dir(instance_id) / "state.db"
@@ -396,6 +490,96 @@ def get_instance_env_path(instance_id: str | None = None) -> Path:
     if iid:
         return apps_root / iid / "config" / "secrets.env"
     return apps_root / "default" / "config" / "secrets.env"
+
+
+# ── Workspace (workspace 浅层配置 v0.2, 2026-09-17) ────────────────────
+
+
+class WorkspaceRefusedError(ValueError):
+    """workspace.unregistered_fallback=reject 时抛出：实例未注册，拒绝解析工作区。"""
+
+
+def _load_workspace_defaults() -> dict:
+    """读 config/default.yaml 的 workspace 段（文件/段缺失 → 空 dict，不抛）。"""
+    import warnings as _w
+
+    cfg_path = get_global_default_config_path()
+    try:
+        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    except FileNotFoundError:
+        return {}
+    except Exception as e:  # yaml 损坏不该让 workspace 解析挂掉
+        _w.warn(f"workspace: default.yaml 解析失败({e})，按内置默认处理")
+        return {}
+    ws = data.get("workspace") or {}
+    return ws if isinstance(ws, dict) else {}
+
+
+def get_workspace_dir(instance_id: str | None = None, *, only_probe: bool = False) -> Path:
+    """Return the instance workspace dir（保证已存在；only_probe=True 时只解析无副作用）.
+
+    解析链（设计说明书 工作区/zero/engineering/workspace浅层配置设计_v0.2.md §8.1）:
+      1. 注册实例 → apps/{iid}/config/app.yaml 的 workspace_root
+         （无则按全局 workspace.root_template 解析并回写 app.yaml；
+          模板缺失 → 内置默认 ~/Documents/探索项目/工作区/{实例名}）
+      2. 未注册 id → workspace.unregistered_fallback 三档:
+         warn_repo_root（默认: 告警+落 repo 根）/ tmp / reject（抛 WorkspaceRefusedError）
+
+    only_probe=True：只算路径，不 mkdir、不回写——供 wake 注入等只读展示场景，
+    防止抢跑创建目录。
+    """
+    import warnings as _w
+
+    iid = get_app_instance_id(instance_id)
+    root = get_project_root()
+    app_yaml = root / "apps" / iid / "config" / "app.yaml"
+
+    if not app_yaml.exists():
+        # 未注册实例：不进 apps/ 下任何路径，按 fallback 三档处理
+        mode = str(_load_workspace_defaults().get("unregistered_fallback", "warn_repo_root"))
+        if mode == "reject":
+            raise WorkspaceRefusedError(
+                f"workspace: 实例 '{iid}' 未注册(apps/{iid}/config/app.yaml 不存在)，"
+                f"unregistered_fallback=reject，拒绝解析工作区"
+            )
+        if mode == "tmp":
+            import tempfile as _t
+
+            return Path(_t.gettempdir()) / "digital-life-workspace"
+        _w.warn(
+            f"workspace: 实例 '{iid}' 未注册，回落 repo 根。若非有意(如测试)，"
+            f"请注册实例或调整 config/default.yaml 的 workspace.unregistered_fallback。",
+            stacklevel=2,
+        )
+        return root
+
+    cfg = yaml.safe_load(app_yaml.read_text(encoding="utf-8")) or {}
+    ws_raw = str(cfg.get("workspace_root") or "").strip()
+    if ws_raw:
+        ws = Path(os.path.expanduser(ws_raw))
+    else:
+        # 按全局模板解析（模板缺失 → 内置默认），非 probe 时回写固化
+        template = str(
+            _load_workspace_defaults().get("root_template")
+            or "~/Documents/探索项目/工作区/{instance_name}"
+        )
+        display_name = str(cfg.get("display_name") or iid[:8])
+        ws = Path(
+            os.path.expanduser(
+                template.format(
+                    instance_name=display_name, 实例名=display_name, name=display_name
+                )
+            )
+        )
+        if not only_probe:
+            cfg["workspace_root"] = str(ws)
+            app_yaml.write_text(
+                yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False), encoding="utf-8"
+            )
+
+    if not only_probe:
+        ws.mkdir(parents=True, exist_ok=True)
+    return ws
 
 
 # ── Global config paths ───────────────────────────────────────────────

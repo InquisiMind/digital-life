@@ -27,3 +27,9 @@ vitals:
 # ── 事件 ──
 events:
   packages_dir: event-packages
+
+# ── 工作空间（workspace浅层配置设计_v0.2）──
+workspace:
+  mode: shallow                                    # shallow=工作区/<实例名> | legacy=apps/<iid>/workspace
+  root_template: ~/Documents/探索项目/工作区/{instance_name}   # {instance_name} 渲染 display_name（无则 uuid 前 8 位）
+  unregistered_fallback: warn_repo_root            # 未注册 id 降级：warn_repo_root | tmp | reject

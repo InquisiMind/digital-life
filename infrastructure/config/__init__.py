@@ -374,13 +374,24 @@ def _workspace_global_cfg() -> dict:
     return ws if isinstance(ws, dict) else {}
 
 
-def _workspace_fallback_dir(iid: str, policy: str):
-    """未注册实例的降级落点（设计书第七节）。返回目录或 raise（reject）。"""
+def _workspace_fallback_dir(iid: str, policy: str, *, probe: bool = False):
+    """未注册实例的降级落点（设计书第七节）。
+
+    probe=True（只读展示，如 scheduler wake 注入）时永不 raise：reject 也降级为
+    repo root + WARNING——wake 注入炸掉比展示一个降级路径伤害大得多。
+    返回目录；非 probe 的 reject 才 raise。
+    """
     log = logging.getLogger("digital_life.config")
     if policy == "tmp":
         log.warning("workspace: unregistered id %s -> tmp (policy=tmp)", iid)
         return Path(tempfile.gettempdir()) / "digital_life_workspace" / iid
     if policy == "reject":
+        if probe:
+            log.warning(
+                "workspace: probe of unregistered id %s under reject -> repo root "
+                "(display-only, no raise)", iid,
+            )
+            return get_project_root()
         log.warning("workspace: unregistered id %s rejected (policy=reject)", iid)
         raise WorkspaceRefusedError(
             f"workspace: instance {iid!r} not registered (policy=reject)"
@@ -408,7 +419,7 @@ def get_workspace_dir(instance_id: str | None = None, *, only_probe: bool = Fals
         policy = str(
             _workspace_global_cfg().get("unregistered_fallback") or "warn_repo_root"
         )
-        return _workspace_fallback_dir(iid, policy)
+        return _workspace_fallback_dir(iid, policy, probe=only_probe)
 
     legacy_ws = get_instance_dir(iid) / "workspace"
     gcfg = _workspace_global_cfg()

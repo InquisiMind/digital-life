@@ -193,3 +193,40 @@ def test_no_off_by_one_parents_regression():
     ce_src = Path(ce_module.__file__).read_text(encoding="utf-8")
     assert "parents[3]" not in tt_src, "terminal_tool 不应出现 parents[3] (off-by-one)"
     assert "parents[3]" not in ce_src, "code_execution_tool 不应出现 parents[3]"
+
+def test_probe_never_raises_under_reject(monkeypatch):
+    """回归（0d0ad3f→patch）：only_probe=True + reject 档 + 未注册 id 不得 raise。
+
+    场景：scheduler wake 注入走 only_probe 只读展示，若 reject 抛
+    WorkspaceRefusedError 且 scheduler 无兜底，wake 注入直接炸。
+    probe 语义 = 展示用降级路径即可，永不 raise。
+    """
+    from infrastructure.config import get_workspace_dir, WorkspaceRefusedError, get_project_root
+    import infrastructure.config as ic
+
+    monkeypatch.setattr(
+        ic, "_workspace_global_cfg",
+        lambda: {"mode": "shallow", "unregistered_fallback": "reject"},
+    )
+    # probe：返回 repo root，不 raise
+    p = get_workspace_dir("ghost-probe-iid", only_probe=True)
+    assert p == get_project_root()
+    # 非 probe：照常 raise（穿透语义给 tool 层转译）
+    try:
+        get_workspace_dir("ghost-probe-iid")
+        raise AssertionError("expected WorkspaceRefusedError")
+    except WorkspaceRefusedError:
+        pass
+
+
+def test_probe_tmp_policy_returns_tmp(monkeypatch):
+    """probe + tmp 档：返回 tmp 路径不 mkdir（无副作用）。"""
+    from infrastructure.config import get_workspace_dir
+    import infrastructure.config as ic
+
+    monkeypatch.setattr(
+        ic, "_workspace_global_cfg",
+        lambda: {"mode": "shallow", "unregistered_fallback": "tmp"},
+    )
+    p = get_workspace_dir("ghost-probe-tmp", only_probe=True)
+    assert p.name == "ghost-probe-tmp" and not p.exists()

@@ -780,10 +780,23 @@ def _ensure_default_project() -> None:
     新人 clone + 跑起来就有一个完整 demo 场景可看：
     zero + alpha 协作执行量化策略（trader/strategist/architect 岗位分工）。
     项目已存在同名 id 时不覆盖（用户自定义的修改保留）。
+
+    已删过 demo 的本机可在 config/local.yaml 写 bootstrap.seed_demo_project: false
+    关闭——否则每次 master 重启（含 launchd/systemd KeepAlive 拉起）都会复活。
     """
     import yaml
 
     from infrastructure.config import get_project_root, _load_registry  # type: ignore[attr-defined]
+
+    # 本机显式关闭则不 seed（config/local.yaml 不入 git，属机器级偏好）
+    try:
+        local_cfg = get_project_root() / "config" / "local.yaml"
+        if local_cfg.exists():
+            raw = yaml.safe_load(local_cfg.read_text(encoding="utf-8")) or {}
+            if (raw.get("bootstrap") or {}).get("seed_demo_project") is False:
+                return
+    except Exception:
+        pass
 
     projects_dir = get_project_root() / "projects"
     projects_dir.mkdir(parents=True, exist_ok=True)

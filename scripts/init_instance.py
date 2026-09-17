@@ -111,7 +111,7 @@ display_name: {display_name}
 model:
   name: {model}
   provider: glm
-  base_url: https://open.bigmodel.cn/api/paas/v4
+  base_url: https://open.bigmodel.cn/api/coding/paas/v4
   # api_key 从 config/secrets.env 的 LLM_API_KEY 读取（旧名 GLM_API_KEY 也兼容）
 
 # ── 消息通道（多通道并列）──

@@ -11,7 +11,7 @@ display_name: zero                         # 实例显示名
 model:
   name: glm-5.2                            # 模型名称
   provider: glm                             # 提供方
-  base_url: https://open.bigmodel.cn/api/paas/v4   # API 地址
+  base_url: https://open.bigmodel.cn/api/coding/paas/v4   # API 地址
   # api_key 从实例 secrets.env 的 LLM_API_KEY 读取（旧名 GLM_API_KEY 也兼容）
 
 # ── 消息通道（多通道并列）──

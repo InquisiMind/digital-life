@@ -192,7 +192,7 @@ def _get_task_workspace_for_tool() -> tuple[str | None, str | None]:
         from infrastructure.config import (
             get_instance_dir,
             get_app_instance_id,
-            get_project_root,
+            is_registered_instance,
         )
         iid = get_app_instance_id()
         if iid:
@@ -200,7 +200,7 @@ def _get_task_workspace_for_tool() -> tuple[str | None, str | None]:
             # env/ContextVar 里 id 一旦截断/去横杠，这里会凭空建出 apps/<怪名>/ 目录
             # （历史上已出生 6 个影子目录）。只有注册实例（config/app.yaml 存在）
             # 才允许创建 workspace，否则 WARNING 并降级到分支 3。
-            if (get_project_root() / "apps" / iid / "config" / "app.yaml").exists():
+            if is_registered_instance(iid):
                 ws = get_instance_dir(iid) / "workspace"
                 ws.mkdir(parents=True, exist_ok=True)
                 return None, str(ws)

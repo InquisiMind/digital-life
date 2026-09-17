@@ -1,62 +1,79 @@
-"""默认 workdir 修复回归测试。
+"""默认 workdir 回归测试（workspace 浅层配置 v0.2 消费层版）。
 
-历史 bug（7/5 贝塔事件）：terminal/execute_code 在"无 active todo"时回退到
-项目根（且 terminal_tool 的代码里还有 parents[3] 的 off-by-one → 实际是
-探索项目/ 数字生命/ 的上一层），让 agent ad-hoc 写盘时越界把文章写到
-项目根 articles/。
-
-修复：默认 cwd 改为 ``apps/<instance_id>/workspace/``，让 agent 天然在
-自己的 sandbox 里。仅 ContextVar 未设时才最后降级到项目根。
+历史 bug（7/5 贝塔事件 + 9/17 影子目录事件）→ 现在统一走引擎
+``get_workspace_dir``（infrastructure/config，commit 0d0ad3f）：
+- 有 active todo → todo workspace（工具层分支 1，保留不动）
+- 注册实例 → app.yaml workspace_root / 全局 root_template（引擎分支 A/B）
+- 未注册实例 → unregistered_fallback 三档（warn_repo_root / tmp / reject）
+- ContextVar/env 全失效 → 工具层最后降级 repo 根
 """
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 
-def test_default_workdir_is_instance_workspace(tmp_path: Path, monkeypatch):
-    """无 active todo + ContextVar 已设 → 默认 cwd 落到 apps/<iid>/workspace/。"""
-    from infrastructure.config import set_current_instance_id, reset_current_instance_id, get_project_root
+
+def _mk_fake_registered(iid: str, *, with_root: Path | None) -> Path:
+    """在 apps/<iid>/config/app.yaml 造一个 mock 注册实例。
+
+    with_root=None 模拟「无显式 workspace_root」→ 走全局模板分支。
+    """
+    inst = Path("apps") / iid
+    cfg_dir = inst / "config"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    lines = ["active: true", f"display_name: {iid}"]
+    if with_root is not None:
+        lines.append(f"workspace_root: {with_root}")
+    (cfg_dir / "app.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return inst
+
+
+def test_default_workdir_registered_instance(tmp_path: Path):
+    """注册实例（显式 workspace_root）→ 默认 cwd 落到该 root。"""
+    from infrastructure.config import set_current_instance_id, reset_current_instance_id
     from interfaces.tools.terminal_tool import _get_task_workspace_for_tool
 
-    # 准备一个 fake apps/<iid>/ 目录
-    iid = "test-iid-default-ws"
-    project_root = get_project_root()
-    fake_apps = project_root / "apps" / iid
-    fake_apps.mkdir(parents=True, exist_ok=True)
+    iid = "test-iid-reg-ws"
+    root = tmp_path / "ws-reg"
+    inst = _mk_fake_registered(iid, with_root=root)
     try:
         token = set_current_instance_id(iid)
         try:
-            # 模拟无 active todo
             with patch(
                 "domain.todos._infra.get_active_task_workspace",
                 return_value=(None, None),
             ):
                 task_id, workdir = _get_task_workspace_for_tool()
             assert task_id is None
-            # workdir 应是 apps/<iid>/workspace/
-            assert workdir and workdir.endswith(f"apps/{iid}/workspace"), (
-                f"实际 workdir={workdir}"
-            )
-            # 目录必须被自动创建
-            assert Path(workdir).is_dir(), f"workspace 应自动创建: {workdir}"
+            assert workdir == str(root), f"实际 workdir={workdir}"
+            assert root.is_dir(), f"workspace 应自动创建: {root}"
         finally:
             reset_current_instance_id(token)
     finally:
-        # 清理：删 test-iid-default-ws 目录
-        import shutil
-        shutil.rmtree(fake_apps, ignore_errors=True)
+        shutil.rmtree(inst, ignore_errors=True)
 
 
-def test_default_workdir_for_code_execution_tool(tmp_path: Path, monkeypatch):
-    """同上，对 execute_code 路径。"""
-    from infrastructure.config import set_current_instance_id, reset_current_instance_id, get_project_root
+def test_default_workdir_template_branch(tmp_path: Path, monkeypatch):
+    """注册但无显式 workspace_root → 全局 root_template 分支（交接点①回归）。"""
+    import infrastructure.config as ic
+    from infrastructure.config import set_current_instance_id, reset_current_instance_id
     from interfaces.tools.code_execution_tool import _get_task_workspace_for_tool
 
-    iid = "test-iid-codeexec-ws"
-    project_root = get_project_root()
-    fake_apps = project_root / "apps" / iid
-    fake_apps.mkdir(parents=True, exist_ok=True)
+    tpl_root = tmp_path / "工作区"
+    monkeypatch.setattr(
+        ic, "_workspace_global_cfg",
+        lambda: {
+            "mode": "shallow",
+            "root_template": str(tpl_root / "{instance_name}"),
+            "unregistered_fallback": "warn_repo_root",
+        },
+    )
+
+    iid = "test-iid-tpl-ws"
+    inst = _mk_fake_registered(iid, with_root=None)
     try:
         token = set_current_instance_id(iid)
         try:
@@ -66,19 +83,70 @@ def test_default_workdir_for_code_execution_tool(tmp_path: Path, monkeypatch):
             ):
                 task_id, workdir = _get_task_workspace_for_tool()
             assert task_id is None
-            assert workdir and workdir.endswith(f"apps/{iid}/workspace"), (
-                f"实际 workdir={workdir}"
-            )
-            assert Path(workdir).is_dir()
+            assert workdir == str(tpl_root / iid), f"模板分支落点错: {workdir}"
+            assert (tpl_root / iid).is_dir()
         finally:
             reset_current_instance_id(token)
     finally:
-        import shutil
-        shutil.rmtree(fake_apps, ignore_errors=True)
+        shutil.rmtree(inst, ignore_errors=True)
+
+
+def test_unregistered_instance_falls_back_to_repo_root():
+    """未注册实例（无 config/app.yaml）→ warn_repo_root 档：repo 根，且不在
+    apps/ 下出生任何影子目录（d88811d 影子目录防护语义延续）。"""
+    from infrastructure.config import (
+        set_current_instance_id, reset_current_instance_id, get_project_root,
+    )
+    from interfaces.tools.terminal_tool import _get_task_workspace_for_tool
+
+    iid = "test-iid-ghost-ws"
+    ghost = Path("apps") / iid
+    assert not ghost.exists(), "前置：apps/ 下不能预置该 id"
+    try:
+        token = set_current_instance_id(iid)
+        try:
+            with patch(
+                "domain.todos._infra.get_active_task_workspace",
+                return_value=(None, None),
+            ):
+                task_id, workdir = _get_task_workspace_for_tool()
+            assert task_id is None
+            assert workdir == str(get_project_root()), (
+                f"未注册应回落 repo 根，实际={workdir}"
+            )
+            assert not ghost.exists(), "未注册实例不得在 apps/ 出生影子目录"
+        finally:
+            reset_current_instance_id(token)
+    finally:
+        shutil.rmtree(ghost, ignore_errors=True)
+
+
+def test_reject_policy_raises_clear_error(tmp_path: Path, monkeypatch):
+    """unregistered_fallback=reject → WorkspaceRefusedError 被工具层转译为
+    明确 RuntimeError，不静默降级。"""
+    import infrastructure.config as ic
+    from infrastructure.config import set_current_instance_id, reset_current_instance_id
+    from interfaces.tools.terminal_tool import _get_task_workspace_for_tool
+
+    monkeypatch.setattr(
+        ic, "_workspace_global_cfg",
+        lambda: {"mode": "shallow", "unregistered_fallback": "reject"},
+    )
+    iid = "test-iid-reject-ws"
+    assert not (Path("apps") / iid).exists()
+    token = set_current_instance_id(iid)
+    try:
+        with patch(
+            "domain.todos._infra.get_active_task_workspace", return_value=(None, None)
+        ):
+            with pytest.raises(RuntimeError, match="reject"):
+                _get_task_workspace_for_tool()
+    finally:
+        reset_current_instance_id(token)
 
 
 def test_active_todo_workdir_takes_priority(monkeypatch):
-    """有 active todo 时，task workspace 优先于 instance workspace。"""
+    """有 active todo 时，task workspace 优先（工具层分支 1 保留）。"""
     from interfaces.tools.terminal_tool import _get_task_workspace_for_tool
 
     fake_task_ws = "/tmp/fake-task-workspace-12345"
@@ -91,16 +159,11 @@ def test_active_todo_workdir_takes_priority(monkeypatch):
     assert workdir == fake_task_ws
 
 
-def test_fallback_to_repo_root_when_contextvar_missing(tmp_path: Path, monkeypatch):
-    """ContextVar 未设 + 无 todo → 降级到项目根（不阻断工具调用）。
-
-    这是防御性降级：不抛异常，避免让 agent 在边界场景下完全无手可用。
-    正常运行场景下 ContextVar 总是被 middleware 设置。
-    """
+def test_fallback_to_repo_root_when_contextvar_missing(monkeypatch):
+    """ContextVar/env 全失效 → 工具层最后降级（不阻断工具调用）。"""
     from interfaces.tools.terminal_tool import _get_task_workspace_for_tool
     from infrastructure.config import get_project_root
 
-    # 既无 task，又调用 get_app_instance_id 抛异常 → 落到最后降级
     with patch(
         "domain.todos._infra.get_active_task_workspace", return_value=(None, None)
     ), patch(
@@ -108,32 +171,25 @@ def test_fallback_to_repo_root_when_contextvar_missing(tmp_path: Path, monkeypat
     ):
         task_id, workdir = _get_task_workspace_for_tool()
     assert task_id is None
-    # 应是项目根
-    project_root = str(get_project_root())
-    assert workdir == project_root, f"降级 workdir 应是项目根，实际={workdir}"
+    assert workdir == str(get_project_root()), f"降级 workdir 应是项目根，实际={workdir}"
 
 
-def test_terminal_tool_repo_root_uses_correct_parents_level():
-    """历史 off-by-one bug 防御：terminal_tool.__file__ 在 interfaces/tools/，
-    parents[2] = 项目根，parents[3] = 探索项目/（项目根的上一层）。
-    本测试锁定降级路径用的是 parents[2]。
-    """
-    from pathlib import Path
+def test_scheduler_probe_does_not_mkdir(tmp_path: Path, monkeypatch):
+    """scheduler 只读展示（§8.3）：probe 解析不建目录、不因未注册抛错。"""
+    from domain.lifecycle import scheduler
+
+    intro = scheduler._render_workspace_intro("ghost-id-no-such")
+    assert "工作空间" in intro or "workspace" in intro.lower()
+    # 未注册 id：不出生影子目录
+    assert not (Path("apps") / "ghost-id-no-such").exists()
+
+
+def test_no_off_by_one_parents_regression():
+    """历史 off-by-one 防御：工具源码降级路径只允许 parents[2]（项目根）。"""
     import interfaces.tools.terminal_tool as tt_module
     import interfaces.tools.code_execution_tool as ce_module
 
-    project_root_parents_2 = Path(tt_module.__file__).resolve().parents[2].name
-    project_root_parents_3 = Path(tt_module.__file__).resolve().parents[3].name
-    assert project_root_parents_2 == "数字生命", (
-        f"parents[2] 应是 '数字生命'，实际={project_root_parents_2}"
-    )
-    # parents[3] 应是上一层（探索项目），不是项目根本身
-    assert project_root_parents_3 != "数字生命", "off-by-one bug: parents[3] 不是项目根本身"
-
-    # 两个工具源码里降级路径都用 parents[2]
     tt_src = Path(tt_module.__file__).read_text(encoding="utf-8")
     ce_src = Path(ce_module.__file__).read_text(encoding="utf-8")
-    assert "parents[2]" in tt_src, "terminal_tool 应使用 parents[2]"
-    assert "parents[2]" in ce_src, "code_execution_tool 应使用 parents[2]"
-    assert "parents[3]" not in tt_src, "terminal_tool 不应再有 parents[3] (off-by-one)"
-    assert "parents[3]" not in ce_src, "code_execution_tool 不应再有 parents[3] (off-by-one)"
+    assert "parents[3]" not in tt_src, "terminal_tool 不应出现 parents[3] (off-by-one)"
+    assert "parents[3]" not in ce_src, "code_execution_tool 不应出现 parents[3]"

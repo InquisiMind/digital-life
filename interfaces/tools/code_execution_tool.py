@@ -187,33 +187,25 @@ def _get_task_workspace_for_tool() -> tuple[str | None, str | None]:
             return task_id, str(ws)
     except Exception:
         pass
-    # 2. 默认：当前实例的 workspace 目录 apps/<iid>/workspace/
+    # 2. 默认：引擎统一解析（设计书 v0.2 §8.2）：注册实例 → app.yaml
+    # workspace_root / 全局模板；未注册 → unregistered_fallback 三档（默认
+    # warn_repo_root，行为与 9/17 影子目录补丁 d88811d 一致）。
+    # reject 档必须穿透：绝不允许被"最后降级"兜底吞掉静默落到项目根，
+    # 否则防护形同虚设（9/17 回归测试实测咬过一次）。
+    from infrastructure.config import get_workspace_dir
+    from infrastructure.config import WorkspaceRefusedError
     try:
-        from infrastructure.config import (
-            get_instance_dir,
-            get_app_instance_id,
-            is_registered_instance,
-        )
-        iid = get_app_instance_id()
-        if iid:
-            # 影子目录防护（9/17）：resolve_instance_id 对不认识的串原样返回，
-            # env/ContextVar 里 id 一旦截断/去横杠，这里会凭空建出 apps/<怪名>/ 目录
-            # （历史上已出生 6 个影子目录）。只有注册实例（config/app.yaml 存在）
-            # 才允许创建 workspace，否则 WARNING 并降级到分支 3。
-            if is_registered_instance(iid):
-                ws = get_instance_dir(iid) / "workspace"
-                ws.mkdir(parents=True, exist_ok=True)
-                return None, str(ws)
-            logger.warning(
-                "[workspace-guard] instance_id=%r 非注册实例（apps/%s/config/app.yaml "
-                "不存在），拒绝创建 workspace，降级到 repo 级目录。"
-                "请检查 ContextVar / DIGITAL_LIFE_INSTANCE_ID / L4_AGENT_ID "
-                "是否被写入了变形 id。",
-                iid,
-                iid,
-            )
+        ws = get_workspace_dir()
+    except WorkspaceRefusedError as e:
+        # 抛错让工具层把明确原因返回给模型，agent 可自查 env/注册态。
+        raise RuntimeError(
+            f"reject 模式：实例未注册，拒绝解析工作区（{e}）。"
+            "请检查 DIGITAL_LIFE_INSTANCE_ID / L4_AGENT_ID / app.yaml。"
+        ) from e
     except Exception:
         pass
+    else:
+        return None, str(ws)
     # 3. 最后降级：项目根 tmp/（ContextVar 未设或异常时）
     from pathlib import Path
     repo_root = Path(__file__).resolve().parents[2]

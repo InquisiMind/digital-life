@@ -98,6 +98,23 @@ def _gen_config(inst_dir: Path, display_name: str, *,
                 model: str, glm_api_key: str,
                 feishu_app_id: str, feishu_app_secret: str) -> None:
     """生成 config/app.yaml + config/secrets.env。"""
+    # workspace_root 按全局模板渲染（config/default.yaml workspace.root_template，
+    # 缺省 ~/Documents/探索项目/工作区/{instance_name}）。与引擎 get_workspace_dir
+    # 同源；mode=legacy 时此键被引擎忽略，写上也无害（切 shallow 即生效）。
+    try:
+        import yaml as _yaml
+        _gcfg_p = Path(__file__).resolve().parents[2] / "config" / "default.yaml"
+        _gcfg = (_yaml.safe_load(_gcfg_p.read_text(encoding="utf-8")) or {}).get(
+            "workspace", {}
+        ) if _gcfg_p.exists() else {}
+        _tpl = _gcfg.get("root_template") or "~/Documents/探索项目/工作区/{instance_name}"
+        if _gcfg.get("mode", "shallow") == "legacy":
+            workspace_root = inst_dir / "workspace"
+        else:
+            workspace_root = Path(_tpl.format(instance_name=display_name)).expanduser()
+    except Exception:
+        workspace_root = inst_dir / "workspace"
+
     config_dir = inst_dir / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
 
@@ -117,6 +134,9 @@ def _gen_config(inst_dir: Path, display_name: str, *,
 # 由 init_instance.py 生成，可手动修改。修改后 digital-life restart 生效。
 
 active: true
+
+# ── 工作区（设计书 v0.2 §五：实例创建时按全局模板写入；后续维护直接改这一行）──
+workspace_root: {workspace_root}
 
 # ── 实例信息 ──
 display_name: {display_name}

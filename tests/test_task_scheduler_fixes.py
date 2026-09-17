@@ -163,6 +163,6 @@ def test_workspace_intro_contains_absolute_path():
 
     intro = _render_workspace_intro("test_instance")
     # 应该包含绝对路径标记和项目根
-    assert "项目根目录" in intro or "绝对路径" in intro, "应注明绝对路径"
+    assert "项目根" in intro or "绝对路径" in intro, "应注明绝对路径"
     # 应该包含 /Users/ 或类似绝对路径前缀
     assert "/" in intro and "apps/" in intro

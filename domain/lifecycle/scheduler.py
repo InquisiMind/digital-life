@@ -965,18 +965,24 @@ def _render_workspace_intro(instance_id: str, my_projects: list | None = None) -
         if not proj_lines:
             proj_lines = "（你还没参与任何 active 项目）"
 
+        # 只读展示（设计书 v0.2 §8.3）：only_probe=True 只解析不 mkdir，
+        # wake 注入不应有文件系统副作用，也不能抢跑 tool 层建目录。
+        from infrastructure.config import get_workspace_dir
+        _ws = get_workspace_dir(instance_id, only_probe=True)
+        ws_display, ws_parent = str(_ws), str(_ws.parent)
+
         return (
             "### 你的工作空间\n\n"
             f"**项目根**：`{_repo_root}`\n"
-            f"**默认工作目录**：`apps/{instance_id[:8]}…/workspace/`"
+            f"**默认工作目录**：`{ws_display}`"
             "（terminal/execute_code 默认 cwd；写文件、跑脚本请基于此，"
             "你的产出物应在这里）\n\n"
             "**三层空间**（动手前想「该放哪一层」）：\n"
-            f"- 个人：`apps/{instance_id[:8]}…/` (workspace/tools/skills/)\n"
+            f"- 个人：`{ws_parent}`（默认工作目录）+ `apps/{instance_id[:8]}…/`（tools/skills/）\n"
             "- 项目：写到这里对应的 `projects/<pid>/`（拆成 code/docs/memory/skills）\n"
             "- 共享：`shared/` (capabilities/tools/skills 跨项目通用)\n\n"
             f"**你参与的项目**：\n{proj_lines}\n\n"
-            "**约束**：写出每个产出物前先问「它在 apps/<iid>/workspace 里吗？」"
+            f"**约束**：写出每个产出物前先问「它在 `{ws_display}` 里吗？」"
             "——你的产出物应留在 sandbox 内。"
             "注册新工具/技能走 `register_tool`/`register_skill`；"
             "不要新建顶层目录、不要写 domain/infrastructure/config/ 源码。"

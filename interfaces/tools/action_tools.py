@@ -1150,7 +1150,6 @@ def _express_one(args: Dict[str, Any], channel: str, **context) -> str:
             note = f"已送达（channel={channel}）。"
     else:
         note = f"未送达（channel={channel}, error={err}）。"
-    note += " 沉默是你的默认状态 — 没必要每件事都发言。"
 
     return _j({
         "sent": sent,
@@ -3180,7 +3179,6 @@ def _send_voice_local(
     note = "已通过语音播放。" if sent else f"语音播放失败（{err}）。"
     if sent:
         note += " 这是语音通道——用户在听你说，不是在读。URL、文件路径、代码等技术细节不适合语音，如需发送请另用飞书。"
-    note += " 沉默是你的默认状态 — 没必要每件事都发言。"
 
     return _j({
         "sent": sent,

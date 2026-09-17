@@ -579,6 +579,7 @@ class AIAgent:
 
     def _chat(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         consumed_normal = self._inject_signalled_events(messages)
+        consumed_normal = self._inject_due_db_events(messages) or consumed_normal
         self._inject_entity_recall(messages)
         # 孤儿 recall 裁剪：每次调用前跑（不等 inject 触发）。
         # 接续回灌的孤儿在 inject 首次触发前会随每次调用重复计费
@@ -1897,6 +1898,67 @@ class AIAgent:
         except Exception as exc:
             logger.warning("revoke_rest: failed (keeping rest as-is): %s", exc)
             return False
+
+    def _inject_due_db_events(self, messages: list[dict[str, Any]]) -> bool:
+        """跨进程兜底：每次 _chat 开头直扫 DB events 表，取本实例到期的人类消息。
+
+        背景（2026-09-16 伽马案例）：mid-session 信号池
+        （session_events._pending_inject）是进程内存。多进程部署下消息入站跑在
+        实例子进程，而 agent 可能跑在 master——内存池跨进程不可见，
+        _inject_signalled_events 永远捞不到；原有的 DB 扫描兜底只在"模型整轮
+        不调工具收尾"时触发，长工具链 wake 里人类消息会滞留数十分钟。
+
+        这里在每次 _chat 开头补一路 DB 读取（pop_due_events 只读不消费），
+        命中到期 message/group_message 就直接走 _consume_human_events
+        （show = consume），不依赖内存池。
+        """
+        if not self.instance_id:
+            return False
+        try:
+            from domain.lifecycle.events import _event_bus
+            due = _event_bus.pop_due_events(
+                limit=10, channel_prefix=f"instance:{self.instance_id}"
+            )
+        except Exception:
+            logger.debug("_inject_due_db_events scan failed", exc_info=True)
+            return False
+
+        new_events = [
+            e for e in due
+            if e.get("kind") in _AUTO_CONSUME_SIGNAL_KINDS
+            and e.get("event_id") not in self._injected_signal_event_ids
+        ]
+        if not new_events:
+            return False
+
+        from domain.lifecycle.event_registry import get_event_type
+        summaries = []
+        for ev in new_events:
+            kind = ev.get("kind", "")
+            td = get_event_type(kind)
+            summaries.append({
+                "event_id": ev.get("event_id"),
+                "kind": kind,
+                "display_name": td.display_name if td else kind,
+                "description": td.description if td else "",
+                "payload": ev.get("payload", {}),
+            })
+        self._injected_signal_event_ids.update(s["event_id"] for s in summaries)
+        self._consume_human_events(summaries, messages)
+        # 与 _inject_signalled_events 一致：登记 viewed，避免回复被关卡二拦一轮
+        for ev in summaries:
+            try:
+                cid = str((ev.get("payload") or {}).get("chat_id") or "")
+                if cid:
+                    from domain.lifecycle.channel_views import mark_channel_viewed
+                    mark_channel_viewed(cid)
+            except Exception:
+                pass
+        logger.info(
+            "DB-scan mid-session pickup: injected %d message event(s) to instance=%s session=%s",
+            len(summaries), self.instance_id, self.session_id,
+        )
+        return True
 
     def _inject_signalled_events(self, messages: list[dict[str, Any]]) -> None:
         """Notify the model when new events arrive mid-session (RUNNING state).

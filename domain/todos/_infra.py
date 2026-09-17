@@ -288,6 +288,16 @@ def get_active_task_workspace() -> tuple[str | None, Path | None]:
         if not row:
             return None, None
         task_id = row["id"]
+        # 影子目录防护（9/17）：变形 instance_id 不允许凭空建 data/todos/<id>，
+        # 返回 ws=None 让工具层降级到 repo 级目录。
+        from infrastructure.config import get_app_instance_id, is_registered_instance
+        iid = get_app_instance_id()
+        if not is_registered_instance(iid):
+            logger.warning(
+                "[workspace-guard] instance_id=%r 非注册实例，拒绝创建 todo workspace，"
+                "降级到 repo 级目录。", iid,
+            )
+            return task_id, None
         ws = tasks_dir() / task_id
         ws.mkdir(parents=True, exist_ok=True)
         return task_id, ws

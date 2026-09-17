@@ -239,12 +239,29 @@ def _get_task_workspace_for_tool() -> tuple[str | None, str | None]:
         pass
     # 2. 默认：当前实例的 workspace 目录 apps/<iid>/workspace/
     try:
-        from infrastructure.config import get_instance_dir, get_app_instance_id
+        from infrastructure.config import (
+            get_instance_dir,
+            get_app_instance_id,
+            get_project_root,
+        )
         iid = get_app_instance_id()
         if iid:
-            ws = get_instance_dir(iid) / "workspace"
-            ws.mkdir(parents=True, exist_ok=True)
-            return None, str(ws)
+            # 影子目录防护（9/17）：resolve_instance_id 对不认识的串原样返回，
+            # env/ContextVar 里 id 一旦截断/去横杠，这里会凭空建出 apps/<怪名>/ 目录
+            # （历史上已出生 6 个影子目录）。只有注册实例（config/app.yaml 存在）
+            # 才允许创建 workspace，否则 WARNING 并降级到分支 3。
+            if (get_project_root() / "apps" / iid / "config" / "app.yaml").exists():
+                ws = get_instance_dir(iid) / "workspace"
+                ws.mkdir(parents=True, exist_ok=True)
+                return None, str(ws)
+            logger.warning(
+                "[workspace-guard] instance_id=%r 非注册实例（apps/%s/config/app.yaml "
+                "不存在），拒绝创建 workspace，降级到 repo 级目录。"
+                "请检查 ContextVar / DIGITAL_LIFE_INSTANCE_ID / L4_AGENT_ID "
+                "是否被写入了变形 id。",
+                iid,
+                iid,
+            )
     except Exception:
         pass
     # 3. 最后降级：项目根（ContextVar 未设或异常时）

@@ -178,6 +178,19 @@ def _default_instance_id() -> str:
     return "zero"
 
 
+def is_registered_instance(iid: str | None) -> bool:
+    """是否为注册实例（apps/<iid>/config/app.yaml 存在）。
+
+    9/17 影子目录防护的共享校验函数：resolve_instance_id 对不认识的串原样返回，
+    env/ContextVar 中的变形 id（截断/去横杠/前代化石）一旦流到 mkdir/DB 初始化，
+    就会凭空出生 apps/<怪名>/ 目录。所有会创建 apps/<iid>/ 子目录的代码
+    （workspace 兜底、todo workspace、InstanceDB）都必须先过这道闸。
+    """
+    if not iid:
+        return False
+    return (get_project_root() / "apps" / iid / "config" / "app.yaml").exists()
+
+
 def resolve_instance_id(raw: str) -> str:
     """Resolve a display name or UUID to the canonical instance UUID.
 

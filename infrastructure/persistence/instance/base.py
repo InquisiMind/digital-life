@@ -21,6 +21,21 @@ class InstanceDB:
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
+        # 影子目录防护（9/17）：位于 apps/ 树内的库文件，所属实例必须已注册
+        # （config/app.yaml 存在），否则拒绝 mkdir/建库——变形 instance_id 曾凭空
+        # 出生 data 型影子目录（四库 schema 建完即退出）。tests/tmp 路径不受影响。
+        _ap = db_path.resolve()
+        for _base in _ap.parents:
+            if _base.name == "apps" and _base.parent.name == "digital-life":
+                _iid = _ap.relative_to(_base).parts[0] if _ap != _base else ""
+                from infrastructure.config import is_registered_instance
+                if not is_registered_instance(_iid):
+                    raise ValueError(
+                        f"[db-guard] instance_id={_iid!r} 非注册实例"
+                        f"（apps/{_iid}/config/app.yaml 不存在），拒绝创建 {_ap}。"
+                        "请检查进程 env / ContextVar 中的实例 id 是否为变形值。"
+                    )
+                break
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(

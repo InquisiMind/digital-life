@@ -454,6 +454,46 @@ def _read_instance_feishu_secret() -> str:
     return ""
 
 
+def _resolve_secret_for_env_app_id(app_id: str) -> str:
+    """env 兜底配对读取（B根治 #3627, 2026-09-18）。
+
+    共享 os.environ 里 FEISHU_APP_SECRET 被 FORCED_ENV_KEYS 末写者覆盖、
+    FEISHU_APP_ID 却是 setdefault 首写者粘住——两个 key 可能来自不同实例，
+    直接拼凑即 app_id(A)+secret(B) 错配（飞书 40013）。
+    这里按 env 里的 app_id 反查归属实例（apps/*/config/app.yaml），从该实例
+    secrets.env 读 secret，保证身份配对。查不到归属/读不到 → ""（调用方
+    落回旧 env 行为，单实例部署语义不变）。
+    """
+    if not app_id:
+        return ""
+    try:
+        import yaml as _yaml
+        from infrastructure.config import get_project_root
+        apps_dir = get_project_root() / "apps"
+        if not apps_dir.is_dir():
+            return ""
+        for app_cfg in apps_dir.glob("*/config/app.yaml"):
+            try:
+                cfg = _yaml.safe_load(app_cfg.read_text(encoding="utf-8")) or {}
+                channels = cfg.get("channels") or {}
+                feishu = channels.get("feishu") or {} if isinstance(channels, dict) else {}
+                owner_app_id = (feishu.get("app_id") or "").strip() if isinstance(feishu, dict) else ""
+                if owner_app_id != app_id:
+                    continue
+                secrets_path = app_cfg.parent / "secrets.env"
+                if not secrets_path.exists():
+                    continue
+                for line in secrets_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                    s = line.strip()
+                    if s.startswith("FEISHU_APP_SECRET="):
+                        return s.split("=", 1)[1].strip().strip('"').strip("'")
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return ""
+
+
 def _express_one(args: Dict[str, Any], channel: str, **context) -> str:
     """单通道发送（原 _handle_express_to_human 主体）。"""
     logger.info("express_to_human CALLED: text=%s, channel=%s, chat_id=%s, mentions=%s",
@@ -717,11 +757,18 @@ def _express_one(args: Dict[str, Any], channel: str, **context) -> str:
                     app_secret = _read_instance_feishu_secret() or ""
         except Exception:
             pass
-        # 兜底 env（单实例部署不受竞态影响，保持兼容）
+        # 兜底 env（单实例部署不受竞态影响，保持兼容）。
+        # B根治：env 里 app_id（首写者粘住）与 secret（FORCED 末写者覆盖）可能
+        # 来自不同实例——凭 app_id 反查归属实例文件读 secret，先配对再兜底。
         if not app_id:
             app_id = os.getenv("FEISHU_APP_ID") or os.getenv("LARK_APP_ID") or ""
         if not app_secret:
-            app_secret = os.getenv("FEISHU_APP_SECRET") or os.getenv("LARK_APP_SECRET") or ""
+            app_secret = (
+                _resolve_secret_for_env_app_id(app_id)
+                or os.getenv("FEISHU_APP_SECRET")
+                or os.getenv("LARK_APP_SECRET")
+                or ""
+            )
         if app_id and app_secret:
             logger.info("express_to_human: using feishu credentials app_id=%s (instance=%s)",
                         app_id[:12], _get_instance_id_for_context()[:8])

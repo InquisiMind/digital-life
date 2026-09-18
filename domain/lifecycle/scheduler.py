@@ -999,16 +999,11 @@ def _wake_digital_life_inner(
     instance_id: str = "",
     pending_events: Optional[List[Dict[str, Any]]] = None,
 ) -> dict:
-    # 确保环境变量已加载（后台线程可能晚于主进程加载）
-    try:
-        from infrastructure.config import get_runtime_env_path, get_runtime_home
-        from infrastructure.ai import load_runtime_dotenv
-
-        load_runtime_dotenv(runtime_home=get_runtime_home(), project_env=get_runtime_env_path())
-    except Exception:
-        pass
-
-    # 设置线程级实例上下文，防止 cron 循环切换 env var 时污染 agent 线程的 DB 路径
+    # 设置线程级实例上下文 FIRST（B根治 #3627 系列, 2026-09-18）：
+    # load_runtime_dotenv 的路径解析（_get_instance_secrets_path）依赖实例上下文。
+    # 旧顺序先加载后设上下文 → 每次唤醒都用"环境继承的旧实例"凭据 FORCE 覆写共享
+    # os.environ，多实例交错时 FEISHU_APP_SECRET（末写者赢）与 FEISHU_APP_ID
+    #（setdefault 首写者粘住）来源不同步 → app_id(A)+secret(B) 错配（40013）。
     _ctx_token = None
     if instance_id:
         try:
@@ -1016,6 +1011,16 @@ def _wake_digital_life_inner(
             _ctx_token = set_current_instance_id(instance_id)
         except Exception:
             pass
+
+    # 确保环境变量已加载（后台线程可能晚于主进程加载）。
+    # 必须在实例上下文设置之后：加载的才是"当前唤醒实例"自己的 secrets.env。
+    try:
+        from infrastructure.config import get_runtime_env_path, get_runtime_home
+        from infrastructure.ai import load_runtime_dotenv
+
+        load_runtime_dotenv(runtime_home=get_runtime_home(), project_env=get_runtime_env_path())
+    except Exception:
+        pass
 
     try:
         return _wake_digital_life_inner_safe(affair_id, reason, extra, pending_events, instance_id=instance_id)

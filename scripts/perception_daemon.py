@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import logging.handlers
 import os
 import subprocess
 import sys
@@ -71,11 +72,18 @@ class Recorder:
     结束后产出：图片帧路径列表 + 音频文件路径。
     """
 
-    def __init__(self, *, fps: float, max_seconds: int, out_dir: Path):
+    def __init__(self, *, fps: float, max_seconds: int, out_dir: Path,
+                 live_asr_factory=None):
         self.fps = fps
         self.max_seconds = max_seconds
         self.out_dir = out_dir
         self.out_dir.mkdir(parents=True, exist_ok=True)
+        # 流式 ASR（zhp 2026-09-16 拍板）：开录即连讯飞 IAT WS 边录边推，松手即得。
+        # factory 由 run_daemon 注入（读 cfg）；返回 None = 流式不可用 → 走文件整段兜底。
+        self.live_asr_factory = live_asr_factory
+        self._live_asr = None
+        self._live_transcript = ""
+        self._live_handoff_s = None
 
         self._recording = False
         self._start_ts = 0.0
@@ -101,6 +109,8 @@ class Recorder:
             self._start_ts = time.time()
             self._frames = []
             self._audio_path = None
+            self._live_transcript = ""
+            self._live_handoff_s = None
             self._stop_event.clear()
             logger.info("recording STARTED")
             # 纯音频模式（zhp 2026-09-16：语音链路不用视觉，截图链路太慢）：
@@ -119,12 +129,15 @@ class Recorder:
         if self._screen_thread:
             self._screen_thread.join(timeout=5)
         if self._audio_thread:
-            self._audio_thread.join(timeout=5)
+            # finish() 等 IAT 最终结果最多 ~5s，放宽到 8s 兜住
+            self._audio_thread.join(timeout=8)
         logger.info("recording STOPPED duration=%.1fs frames=%d", duration, len(self._frames))
         return {
             "frames": [str(p) for p in self._frames],
             "audio": str(self._audio_path) if self._audio_path else None,
             "duration": duration,
+            "live_transcript": self._live_transcript,
+            "live_handoff_s": self._live_handoff_s,
         }
 
     def _screen_loop(self) -> None:
@@ -175,6 +188,12 @@ class Recorder:
             max_frames = int(self.max_seconds * sample_rate)
             self._audio_path = audio_path
             audio_path.parent.mkdir(parents=True, exist_ok=True)
+            if self.live_asr_factory:
+                try:
+                    self._live_asr = self.live_asr_factory()
+                except Exception as exc:
+                    logger.warning("live ASR factory failed: %s", exc)
+                    self._live_asr = None
             wf = wave.open(str(audio_path), "wb")
             wf.setnchannels(1)
             wf.setsampwidth(2)
@@ -188,7 +207,10 @@ class Recorder:
             try:
                 while not self._stop_event.is_set() and recorded < max_frames:
                     chunk, _ = stream.read(block)
-                    wf.writeframes(chunk.tobytes())
+                    raw = chunk.tobytes()
+                    wf.writeframes(raw)
+                    if self._live_asr is not None and self._live_asr.ok:
+                        self._live_asr.feed(raw)
                     recorded += len(chunk)
                 if not self._stop_event.is_set() and recorded >= max_frames:
                     logger.info("reached max_capture_seconds, auto-stop")
@@ -198,6 +220,18 @@ class Recorder:
                 stream.stop()
                 stream.close()
                 wf.close()
+            # 松手（或超时自动停）→ 结束流式会话，拿最终文本。无论成败 wav 都在，
+            # transcript 为空时 report_capture 自动降级文件整段模式。
+            if self._live_asr is not None:
+                sess, self._live_asr = self._live_asr, None
+                t0 = time.time()
+                try:
+                    self._live_transcript = sess.finish()
+                except Exception as exc:
+                    logger.warning("live ASR finish failed: %s", exc)
+                self._live_handoff_s = round(time.time() - t0, 2)
+                logger.info("live ASR handoff=%.2fs transcript=%r",
+                            self._live_handoff_s, self._live_transcript[:60])
         except Exception as exc:
             logger.warning("audio loop error: %s", exc)
             self._audio_path = None
@@ -312,6 +346,28 @@ def report_capture(
 
     frames = capture.get("frames") or []
     audio = capture.get("audio")
+
+    # 流式直传：录音期间边录边推讯飞，松手即得全文 → 绕过 pipeline 整段转写，
+    # 松手→注入的延迟从「整段转写时长+」降到 handoff 亚秒级。
+    live = (capture.get("live_transcript") or "").strip()
+    if live:
+        body = {
+            "instance_id": instance_id,
+            "source": source,
+            "result": {
+                "ok": True,
+                "summary": live,
+                "transcript": live,
+                "details": {
+                    "asr": "iflytek_streaming",
+                    "handoff_s": capture.get("live_handoff_s"),
+                },
+            },
+            "media_path": audio or "",
+        }
+        _post_report(body, endpoint=endpoint, cli=cli)
+        return {"ok": True, "summary": live, "direct": True}
+
     audio_segs = []
     if audio:
         audio_segs = _split_audio_file(audio, segment_seconds=30.0)
@@ -324,12 +380,17 @@ def report_capture(
         "audio_segment_paths": audio_segs or None,
         "media_path": audio or (frames[0] if frames else ""),
     }
+    _post_report(body, endpoint=endpoint, cli=cli)
+
+
+def _post_report(body: dict, *, endpoint: str, cli: bool = False) -> dict:
+    """POST 到 gateway + 成功/失败反馈。直传与文件两模式共用。"""
+    import httpx
     try:
         with httpx.Client(timeout=300.0) as client:
             r = client.post(endpoint, json=body)
             r.raise_for_status()
             result = r.json()
-        # 上报成功反馈
         summary_head = (result.get("summary") or "")[:60]
         ok = result.get("perception_ok", result.get("ok", False))
         feedback("done" if ok else "fail",
@@ -355,9 +416,36 @@ def run_daemon(
     max_capture_seconds: int,
     fps: float,
 ) -> None:
-    cfg = load_config(instance_id or None)
+    # load_config 只认全 UUID（apps/<uuid>/config/app.yaml）；--instance zero 这类名字
+    # 必须先经 registry 规范化，否则拿到空默认 → 流式 factory 静默失效。
+    try:
+        from infrastructure.config import get_app_instance_id
+        cfg = load_config(get_app_instance_id(instance_id or None) or None)
+    except Exception as exc:
+        logger.warning("instance id normalize failed: %s", exc)
+        cfg = load_config(instance_id or None)
     out_dir = _REPO_ROOT / "var" / "perception_capture"
-    recorder = Recorder(fps=fps, max_seconds=max_capture_seconds, out_dir=out_dir)
+
+    def _make_live_asr():
+        """流式会话工厂：iflytek provider + 凭据齐 → 建会话；任何失败返回 None 走文件兜底。"""
+        if cfg.asr_provider != "iflytek" or not cfg.iflytek_app_id:
+            return None
+        try:
+            from infrastructure.perception.iflytek_asr import IflytekStreamingSession
+            sess = IflytekStreamingSession(
+                app_id=cfg.iflytek_app_id,
+                api_key=cfg.iflytek_api_key,
+                api_secret=cfg.iflytek_api_secret,
+                language=cfg.iflytek_language,
+                accent=cfg.iflytek_accent,
+            )
+            return sess if sess.start() else None
+        except Exception as exc:
+            logger.warning("live ASR unavailable: %s", exc)
+            return None
+
+    recorder = Recorder(fps=fps, max_seconds=max_capture_seconds, out_dir=out_dir,
+                        live_asr_factory=_make_live_asr)
     is_cli = mode == "cli"
 
     def finish_recording(auto: bool = False) -> None:
@@ -490,10 +578,18 @@ def main() -> int:
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
 
+    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "var", "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"perception-{args.instance}.log")
     logging.basicConfig(
         level=args.log_level,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            logging.handlers.RotatingFileHandler(log_file, maxBytes=10 * 1024 * 1024, backupCount=3),
+        ],
     )
+    logger.info("daemon logging to %s", log_file)
     run_daemon(
         endpoint=args.endpoint,
         instance_id=args.instance,

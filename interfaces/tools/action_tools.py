@@ -376,7 +376,6 @@ def _get_recent_group_chat_id() -> Optional[str]:
     return None
 
 
-
 def _handle_express_to_human(args: Dict[str, Any], **context) -> str:
     """向用户发送消息 — 数字生命唯一的对外表达通道（支持多通道扇出）。
 
@@ -430,6 +429,29 @@ def _handle_express_to_human(args: Dict[str, Any], **context) -> str:
             if ok else "全部通道发送失败"
         ),
     })
+
+
+def _read_instance_feishu_secret() -> str:
+    """从当前实例 apps/<iid>/config/secrets.env 解析 FEISHU_APP_SECRET（不经过 os.environ）。
+
+    修复 #3627：os.environ 是 master 进程级共享的，多实例交错唤醒时被 FORCED_ENV_KEYS
+    反复覆盖（最后唤醒者赢）。发送方与 app_id 必须同实例配对，直接读文件绕开共享 env。
+    """
+    try:
+        from infrastructure.config import get_project_root, get_app_instance_id
+        iid = get_app_instance_id()
+        if not iid:
+            return ""
+        secrets_path = get_project_root() / "apps" / iid / "config" / "secrets.env"
+        if not secrets_path.exists():
+            return ""
+        for line in secrets_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            s = line.strip()
+            if s.startswith("FEISHU_APP_SECRET="):
+                return s.split("=", 1)[1].strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return ""
 
 
 def _express_one(args: Dict[str, Any], channel: str, **context) -> str:
@@ -657,7 +679,8 @@ def _express_one(args: Dict[str, Any], channel: str, **context) -> str:
     if channel.startswith("voice:"):
         return _send_voice_local(channel, text, context, mention_user_ids)
 
-    # Send via feishu direct API (primary path)
+    
+# Send via feishu direct API (primary path)
     sent = False
     err = None
     # 分段发送统计（仅飞书工具直发路径会填；其它路径保持 None 兼容老契约）
@@ -687,11 +710,14 @@ def _express_one(args: Dict[str, Any], channel: str, **context) -> str:
                     channels = cfg.get("channels") or {}
                     feishu = channels.get("feishu") or {} if isinstance(channels, dict) else {}
                     app_id = (feishu.get("app_id") or "").strip() if isinstance(feishu, dict) else ""
-                    # app_secret 优先从实例 config/secrets.env 读取（已 load_runtime_dotenv 加载到 env）
-                    app_secret = os.getenv("FEISHU_APP_SECRET") or ""
+                    # app_secret 直接从本实例 config/secrets.env 文件解析（A档修复 9/18，zhp 拍板各自读取）。
+                    # 不再走 os.getenv：FORCED_ENV_KEYS 在 scheduler 每次唤醒时强制覆盖共享进程 env，
+                    # 多实例交错活跃时 env 里是"最后被唤醒实例"的 secret → 我的 app_id + 他的 secret = 凭证错配。
+                    # get_app_instance_id 走 ContextVar（asyncio 任务隔离），与 app_id 同源同实例，无竞态。
+                    app_secret = _read_instance_feishu_secret() or ""
         except Exception:
             pass
-        # 兜底 env
+        # 兜底 env（单实例部署不受竞态影响，保持兼容）
         if not app_id:
             app_id = os.getenv("FEISHU_APP_ID") or os.getenv("LARK_APP_ID") or ""
         if not app_secret:
@@ -1242,7 +1268,6 @@ registry.register(
 )
 
 
-
 # ──────────────────────────────── write_diary ────────────────────────────────
 
 def _handle_write_diary(args: Dict[str, Any], **_) -> str:
@@ -1463,7 +1488,6 @@ def _handle_remember_him(args: Dict[str, Any], **_) -> str:
     })
 
 
-
 # ──────────────────────────────── update_scratchpad ────────────────────────────────
 
 def _handle_update_scratchpad(args: Dict[str, Any], **_) -> str:
@@ -1577,7 +1601,6 @@ def _handle_manage_work(args: Dict[str, Any], **_) -> str:
                 "_note": f"此工具已统一为 todo(action='{_todo_action_map.get(action)}', todo_id=...)，请改用 todo"})
 
 
-
 # ──────────────────────────────── manage_goals ────────────────────────────────
 
 def _handle_manage_goals(args: Dict[str, Any], **_) -> str:
@@ -1632,7 +1655,6 @@ def _handle_manage_goals(args: Dict[str, Any], **_) -> str:
     return _j({"ok": ok, "todo_id": tid,
                 "_deprecated_hint": f"manage_goals 已退役, 改用 todo(action='{'done' if action=='complete' else 'cancel'}', todo_id=...)",
                 "energy": energy})
-
 
 
 # ──────────────────────────────── manage_plan ────────────────────────────────
@@ -1700,7 +1722,6 @@ def _handle_manage_plan(args: Dict[str, Any], **_) -> str:
                 "_deprecated_hint": "manage_plan 已退役,改用 todo_plan(action='skip')",
                 "energy": energy,
                 **skip_plan(pid)})
-
 
 
 def _create_plan_item_alarms(text: str) -> list[dict]:
@@ -1878,7 +1899,6 @@ def _handle_manage_daily(args: Dict[str, Any], **_) -> str:
     return _j({"ok": True, "tasks": items,
                 "_deprecated_hint": "manage_daily 已退役, check 改用 sense_todos(type='daily')",
                 "energy": energy})
-
 
 
 # ──────────────────────────────── update_rules ────────────────────────────────

@@ -129,9 +129,13 @@ class AIAgent:
             完成手头工作就 rest。
         """
         session_id = self.session_id or task_id or "adhoc"
-        # 语音快答计数器：本 wake 内的模型调用序号（0 = 第一次）。
-        # agent 每 wake 新建 → 计数器天然 wake 级，跨 wake 不残留。
-        self._wake_call_idx = 0
+        # think effort 状态机（2026-09-18 事件触发化）: 一次 wake 一个状态。
+        # 人类消息类 wake → 首轮 minimal 快答; 其余 wake → 配置档起手。
+        from infrastructure.ai import think_cycle
+        self._effort_state = think_cycle.new_state()
+        if wake_signal and wake_signal.get("type") in ("chat_stream", "group_message", "message"):
+            think_cycle.init_for_wake(self._effort_state, human_message=True)
+        self._wake_call_idx = 0  # 兼容保留: 旧快答计数器（think_cycle 接管后仅观测用）
         # 每个 wake 推进一次段号。设计语义：segment_index = wake 序号，单调递增。
         # 同一 wake 内的所有消息（system/user/assistant/tool/sys_tool 注入）共享同一段号。
         # 这是新段启始的唯一入口；append_message 自身不自增。
@@ -476,6 +480,18 @@ class AIAgent:
                             self._conditionally_revealed_tools.clear()
                 except Exception:
                     pass
+                # think_cycle: 工具结果喂给 effort 状态机——
+                # · 快答轮完成后结束 minimal (on_success)
+                # · 基础设施异常 (Tool execution failed) 计 stuck, 连续 3 次兜底升 high
+                # 业务失败语义 (工具正常返回 {"error": ...}) 不算 stuck——那是模型
+                # 该自己想办法的事, 不该偷懒换档。
+                try:
+                    from infrastructure.ai import think_cycle
+                    _st = getattr(self, "_effort_state", None)
+                    if _st is not None:
+                        think_cycle.on_tool_result(_st, name, result)
+                except Exception:
+                    logger.debug("think_cycle.on_tool_result failed", exc_info=True)
                 tool_calls_seen.append({"name": name, "arguments": arguments, "result": result})
                 messages.append({"role": "tool", "tool_call_id": call.get("id"), "name": name, "content": result})
                 self._append_message(session_id, "tool", result, tool_name=name, tool_call_id=call.get("id"))
@@ -607,21 +623,30 @@ class AIAgent:
         # 之前硬编码 `payload["reasoning_effort"] = effort` 被 cargo 推进来——对
         # o1 会 400 Bad Request，对 Claude/DSt 不识别但被静默忽略。
         reasoning_config = self.reasoning_config
-        # 语音快答策略：语音 wake 的第一次调用关 think（用户在等第一声回应），
-        # 同一 wake 后续调用（做事/汇报）自动恢复原 effort。非语音场景不干预。
+        # think effort 状态机（2026-09-18 事件触发化, 取代旧语音快答单点逻辑）:
+        #   A 人类消息事件→首轮 minimal 快答 | B think 工具升档(TTL) | C 卡住兜底 high
+        #   优先级 C > B > A > 配置档。旧 DIGITAL_LIFE_VOICE_FAST 开关保留为
+        #   A 入口总闸（默认开）。decide() 内部推进 call_idx/override 计数。
         try:
-            from infrastructure.ai.think_cycle import is_fast_first_call, FAST_EFFORT
-            from domain.lifecycle.runtime_context import get_current_event_platform
+            from infrastructure.ai import think_cycle
 
-            call_idx = getattr(self, "_wake_call_idx", 0)
-            self._wake_call_idx = call_idx + 1
-            if is_fast_first_call(
-                event_platform=get_current_event_platform() or "",
-                call_idx=call_idx,
-                enabled=os.getenv("DIGITAL_LIFE_VOICE_FAST", "1") == "1",
-            ):
-                reasoning_config = {"effort": FAST_EFFORT}
-                logger.info("voice fast-first: call#%d effort→%s (think off)", call_idx, FAST_EFFORT)
+            state = getattr(self, "_effort_state", None)
+            if state is None:  # 兜底: 未走 run_conversation 的裸 _chat 调用（测试等）
+                state = self._effort_state = think_cycle.new_state()
+            think_cycle.set_active_state(state)  # think 工具桥接: 每次 decide 前刷新活跃 state
+            fast_enabled = os.getenv("DIGITAL_LIFE_VOICE_FAST", "1") == "1"
+            effort, why = think_cycle.decide(
+                state,
+                config_effort=str(reasoning_config.get("effort", "medium")) if reasoning_config else "medium",
+            )
+            if why == "fast_first_reply" and not fast_enabled:
+                effort = str(reasoning_config.get("effort", "medium")) if reasoning_config else "medium"
+                why = "config(fast_disabled)"
+            if why != "config":
+                reasoning_config = (
+                    {**reasoning_config, "effort": effort} if reasoning_config else {"effort": effort}
+                )
+                logger.info("think_cycle: call#%d effort→%s (%s)", state["call_idx"], effort, why)
         except Exception:
             pass
         payload = self._provider.customize_payload(
@@ -2046,6 +2071,17 @@ class AIAgent:
         """
         # Auto-consume: mark in DB + clear from in-memory queue
         self._do_consume_events(events)
+
+        # think_cycle A 入口(mid-session): 人类消息打断当前任务 → 下一轮 LLM call
+        # 走 minimal 快答(用户在等), 快答后再恢复原 effort。新消息=新的快答意图,
+        # 多条合并消费时 on_human_message 天然幂等(每次都重置 pending)。
+        try:
+            from infrastructure.ai import think_cycle
+            state = getattr(self, "_effort_state", None)
+            if state is not None:
+                think_cycle.on_human_message(state)
+        except Exception:
+            logger.debug("think_cycle.on_human_message failed", exc_info=True)
 
         for ev in events:
             content = _render_signal_message(ev)

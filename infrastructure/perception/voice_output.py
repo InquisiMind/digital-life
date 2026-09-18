@@ -24,6 +24,18 @@ import threading
 import time
 from pathlib import Path
 
+# edge-tts 二进制解析：PATH 优先，绝对路径兜底（agent 子进程 PATH 常是极简版，
+# 找不到 edge-tts 会 FileNotFoundError 降级 say —— 9/16 云熙切换踩坑）
+_EDGE_TTS_FALLBACK = str(Path(__file__).resolve().parents[2] / ".venv" / "bin" / "edge-tts")
+
+def _edge_tts_exe() -> str | None:
+    import shutil
+    exe = shutil.which("edge-tts")
+    if not exe and os.access(_EDGE_TTS_FALLBACK, os.X_OK):
+        exe = _EDGE_TTS_FALLBACK
+    return exe
+
+
 logger = logging.getLogger(__name__)
 
 # 默认引擎：macOS Siri 神经语音（本地、稳定、快）；可选 "edge"（云端高音质）
@@ -223,8 +235,12 @@ def _bg_recover_voice(voice: str, rate: str, gen: int, pending_text: str) -> Non
                 try:
                     tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, dir="/tmp")
                     tmp.close()
+                    _exe_bg = _edge_tts_exe()
+                    if not _exe_bg:
+                        logger.warning("edge-tts binary not found in bg recovery (PATH=%s)", os.environ.get("PATH", ""))
+                        return
                     result = subprocess.run(
-                        ["edge-tts", "--voice", voice, "--rate", rate,
+                        [_exe_bg, "--voice", voice, "--rate", rate,
                          "--text", pending_text or "嗯", "--write-media", tmp.name],
                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                         timeout=20,
@@ -458,8 +474,12 @@ def _speak_one(text: str, voice: str, rate: str, gen: int) -> None:
             if gen != _generation:
                 return  # 合成等待期间被打断
             try:
+                _exe = _edge_tts_exe()
+                if not _exe:
+                    logger.warning("edge-tts binary not found (PATH=%s)", os.environ.get("PATH", ""))
+                    break
                 result = subprocess.run(
-                    ["edge-tts", "--voice", voice, "--rate", rate,
+                    [_exe, "--voice", voice, "--rate", rate,
                      "--text", text, "--write-media", tmp_mp3.name],
                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                     timeout=20,

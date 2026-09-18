@@ -798,8 +798,20 @@ def _express_one(args: Dict[str, Any], channel: str, **context) -> str:
 
                 async with httpx.AsyncClient(timeout=30) as c:
                     tr = await c.post(_token_url, json={"app_id": app_id, "app_secret": app_secret})
-                    token = tr.json().get("tenant_access_token", "")
+                    try:
+                        _tb = tr.json()
+                    except Exception:
+                        _tb = {}
+                    token = _tb.get("tenant_access_token", "")
                     if not token:
+                        # 诊断增强（无行为变更）：token 拿不到时把飞书返回的 code/msg
+                        # 打进日志——此前这里只留 "failed to get token"，响应体被
+                        # 整个丢弃（9/18 间歇故障排查因此多花一小时）。
+                        logger.warning(
+                            "express_to_human: token fetch failed app_id=%s (instance=%s) "
+                            "http_status=%s feishu_code=%s feishu_msg=%s",
+                            app_id[:12], _get_instance_id_for_context()[:8],
+                            tr.status_code, _tb.get("code"), _tb.get("msg"))
                         return False, "failed to get token", 0, 0
                     # 由 channel 决定发送目标（channel 前缀 feishu: 或历史遗留 lark: 均识别）：
                     #   - <pf>:group:<chat_id> 或 <pf>:<group_chat_id>（_GROUP_REPLY_CHAT_ID 命中）→ 群聊

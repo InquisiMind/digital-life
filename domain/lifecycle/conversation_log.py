@@ -148,3 +148,58 @@ def read_recent_sent_from_db(limit: int = 5) -> str:
         text = r["text"][:200]
         lines.append(f"{ts} | {text}")
     return "\n".join(lines)
+
+
+def read_window_context(
+    *,
+    conversation_id: str,
+    platform: str = "lark",
+    exclude_text: str = "",
+    limit: int = 5,
+    self_name: str = "我",
+    platform_default: str = "feishu",
+) -> str:
+    """渲染同窗口最近对话，供 mid-session 事件注入附带（指代消解用）。
+
+    背景（9/18 zhp 提议）：多线程对话时，mid-session 注入的新消息事件只有
+    当前消息原文，模型看不到同窗口上文，单字回复（"要"/"先重启think吧"）
+    容易被误读为另一话题的审批确认（9/18 10:56 群消息"要"被 11:21 误读）。
+
+    Args:
+        conversation_id: 同窗口 ID（oc_xxx）
+        platform: 平台，空串回退 feishu（写入侧 ingress pf=feishu）
+        exclude_text: 当前正在注入的消息文本（拉取侧已 log，需排除防重复）
+        limit: 附带条数
+        self_name: direction=out 时的显示名
+    Returns:
+        渲染好的多行文本；无记录返回 ""（调用方判空不拼接）
+    """
+    rows = read_conversation(platform=platform or platform_default, conversation_id=conversation_id, limit=limit + 2)
+    if not rows:
+        return ""
+    # 倒序 → 跳过当前消息（首个精确同文项，不限位置——拉取侧 log 与注入之间
+    # 可能已插入本实例的 out 记录）→ 截 limit 条 → 反转回正序
+    filtered: list[dict] = []
+    skipped = False
+    for r in rows:
+        if (
+            exclude_text
+            and not skipped
+            and r["text"].strip() == exclude_text.strip()
+        ):
+            skipped = True
+            continue
+        filtered.append(r)
+        if len(filtered) >= limit:
+            break
+    if not filtered:
+        return ""
+    filtered.reverse()
+    lines = []
+    for r in filtered:
+        ts = r["created_at"]
+        stamp = ts[5:16].replace("T", " ") if len(ts) >= 16 else ts  # MM-DD HH:MM，跨天不误导
+        who = self_name if r["direction"] == "out" else (r["sender_name"] or "对方")
+        text = r["text"][:100]
+        lines.append(f"[{stamp}] {who}：{text}")
+    return "\n".join(lines)

@@ -2090,6 +2090,27 @@ class AIAgent:
         for ev in events:
             content = _render_signal_message(ev)
 
+            # mid-session 注入附带同窗口最近对话（指代消解用）：
+            # RUNNING 中收到"重启呗，那就"，模型不知道"重启"指什么——
+            # 会话上下文里这段讨论发生在几分钟前的注入前窗口。5 条封顶、
+            # 当前消息按原文精确排除。失败静默（观察通道不得成为新故障源）。
+            try:
+                kind = ev.get("kind", "")
+                if kind in ("message", "group_message"):
+                    pd = ev.get("payload") or {}
+                    cid = str(pd.get("chat_id") or "")
+                    if cid:
+                        from domain.lifecycle.conversation_log import read_window_context
+                        ctx = read_window_context(
+                            conversation_id=cid,
+                            platform=str(pd.get("platform") or ""),
+                            exclude_text=str(pd.get("text") or ""),
+                        )
+                        if ctx:
+                            content = content + "\n\n[同窗口最近对话（注入前）]\n" + ctx
+            except Exception:
+                logger.debug("window-context attach failed", exc_info=True)
+
             assistant_msg, tool_msg = self._sys_tool_call("wake_signal", content)
             messages.append(assistant_msg)
             messages.append(tool_msg)

@@ -704,14 +704,16 @@ def _handle_sense_social_feed(args: Dict[str, Any], **_) -> str:
 
         if before:
             try:
+                _ts = _parse_time(before)  # 先解析后 append，解析失败不碰 where_parts
                 where_parts.append("message_ts < ?")
-                params_list.append(_parse_time(before))
+                params_list.append(_ts)
             except Exception:
                 pass
         if after:
             try:
+                _ts = _parse_time(after)
                 where_parts.append("message_ts > ?")
-                params_list.append(_parse_time(after))
+                params_list.append(_ts)
             except Exception:
                 pass
 

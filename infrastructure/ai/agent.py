@@ -116,6 +116,7 @@ class AIAgent:
         conversation_history: list[dict[str, Any]] | None = None,
         task_id: str | None = None,
         is_continuation: bool = False,
+        wake_reason: str | None = None,
     ) -> dict[str, Any]:
         """Run one wake's conversation.
 
@@ -131,9 +132,12 @@ class AIAgent:
         session_id = self.session_id or task_id or "adhoc"
         # think effort 状态机（2026-09-18 事件触发化）: 一次 wake 一个状态。
         # 人类消息类 wake → 首轮 minimal 快答; 其余 wake → 配置档起手。
+        # 判据用 scheduler 传入的 wake_reason（"message"/"group_message"）——
+        # 554b7a6 原版此处引用了不存在的局部变量 wake_signal，运行期 NameError，
+        # 三个实例连续 3 次 wake 失败（9/20 10:0x 全量 offline 事故）。
         from infrastructure.ai import think_cycle
         self._effort_state = think_cycle.new_state()
-        if wake_signal and wake_signal.get("type") in ("chat_stream", "group_message", "message"):
+        if wake_reason in ("message", "group_message", "chat_stream"):
             think_cycle.init_for_wake(self._effort_state, human_message=True)
         self._wake_call_idx = 0  # 兼容保留: 旧快答计数器（think_cycle 接管后仅观测用）
         # 每个 wake 推进一次段号。设计语义：segment_index = wake 序号，单调递增。

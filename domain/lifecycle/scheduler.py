@@ -1649,6 +1649,7 @@ def _wake_digital_life_inner_safe(
                     system_message=system_for_agent,
                     conversation_history=prev_history or None,
                     is_continuation=is_continuation,
+                    wake_reason=reason,
                 )
             except Exception as e:
                 agent_error = e

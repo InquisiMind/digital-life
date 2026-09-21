@@ -106,8 +106,8 @@ def load_project(project_id: str) -> ProjectConfig | None:
 
 # 实例名 → UUID 映射。新增实例时往这里加。
 _INSTANCE_NAME_TO_IID = {
-    "zero": "c2a5c8e8-e4f5-4c69-be3e-aac49903081d",
-    "alpha": "5052c33a-e700-44dd-aea3-00e04a661ab1",
+    "zero": "4b75b663-3f06-4547-9414-9dcbf5dbd943",
+    "alpha": "c8b845cc-9009-4430-94e8-13836cf2f2f8",
 }
 
 

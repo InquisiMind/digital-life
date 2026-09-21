@@ -889,12 +889,21 @@ def _express_one(args: Dict[str, Any], channel: str, **context) -> str:
                             target_chat = _strip_feishu_prefix(channel, kind="group:").strip()
                         else:
                             target_chat = _grp_ctx
-                        # ⚠️ 真实 chat_type：只有 target_chat 等于配置的 group context 时才算群。
-                        # 否则可能是 <pf>:dm:oc_<私聊 conv> 被 rewrite 的——那种情形下
-                        # 上面 send 走了 chat_id 接口（API 要求），但语义仍是私聊，
-                        # 不应记 group（否则 conversation_log chat_type 自相矛盾，
-                        # social_context 会把私聊当群）。
-                        real_chat_type = "group" if target_chat == (_grp_ctx or "") else "dm"
+                        # ⚠️ 真实 chat_type：优先查会话登记表（chats），登记了就以
+                        # 登记为准；查不到再回退"等于 group reply context 才算群"。
+                        # 2026-09-21 小王@小张蒸发案例：主动发起到品类群（非本唤醒
+                        # 的回复群）→ 旧判定误判 dm → fan-out 广播整块跳过 + 群聚合
+                        # 漏记，订阅该群的 peers（小张）永远收不到。
+                        # 回退保留旧语义：oc_ 私聊被 rewrite 的情形仍不算群。
+                        try:
+                            from domain.contacts import lookup_chat
+                            _reg = lookup_chat(target_chat) or {}
+                            if _reg.get("type"):
+                                real_chat_type = _reg["type"]
+                            else:
+                                real_chat_type = "group" if target_chat == (_grp_ctx or "") else "dm"
+                        except Exception:
+                            real_chat_type = "group" if target_chat == (_grp_ctx or "") else "dm"
                         # mention_user_ids：默认 prepend 到 text 前；
                         # 但若 text 里已经含 <at user_id="ou_xxx"></at> 标签，
                         # 跳过那些 ou_（auto-mention 已经替换过，避免重复）

@@ -589,3 +589,35 @@ def test_requeued_event_not_re_rendered() -> None:
             reset_instance_context(token)
     finally:
         _cleanup_test_env(tmp)
+
+
+def test_sanitize_payload_messages_after_compression_orphans() -> None:
+    """最终 payload 清洗：压缩后产生的孤儿头/坏头必须被清理（zero 0921 案例）。
+
+    场景：两层压缩删掉了对话头的父 assistant，留下 tool 结果开头 +
+    中段被指针化后再造的孤儿 → 清洗必须对最终列表生效。
+    """
+    from infrastructure.ai.agent import _sanitize_payload_messages
+
+    # 模拟压缩后的脏 payload：孤儿 tool 开头 + 正常对 + 中段孤儿
+    msgs = [
+        {"role": "tool", "tool_call_id": "call_a", "name": "terminal", "content": "残留结果"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_b", "type": "function", "function": {"name": "sense", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_b", "name": "sense", "content": "ok"},
+        {"role": "assistant", "content": "结论…"},
+        {"role": "tool", "tool_call_id": "call_c", "name": "terminal", "content": "压缩再造的孤儿"},
+    ]
+    _sanitize_payload_messages(msgs)
+
+    # 头不变式：首条非 system 是 user
+    assert msgs[0]["role"] == "user", f"清洗后头部应为 user，实际 {msgs[0]['role']}"
+    # 孤儿 call_a / call_c 被剔除，正常对 call_b 保留
+    ids = [m.get("tool_call_id") for m in msgs if m.get("role") == "tool"]
+    assert "call_a" not in ids and "call_c" not in ids, f"孤儿未剔除: {ids}"
+    assert "call_b" in ids, f"正常配对被误删: {ids}"
+
+    # 干净 payload 幂等：再跑一遍无变化
+    before = [dict(m) for m in msgs]
+    _sanitize_payload_messages(msgs)
+    assert msgs == before

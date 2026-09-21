@@ -628,50 +628,6 @@ class AIAgent:
         # （实测 wake_3311 修复后 call 序列仍带 48 孤儿——旧位置在
         # inject 内，触发条件没到就一直烧）。
         self._prune_orphan_recalls(messages)
-        # ── 消息头不变式（2026-09-21 alpha 400 死循环）────────────────────
-        # 长会话接续时，段压缩/工具裁剪可能把对话头（system/user）整个折掉，
-        # 剩余 messages[0] 是 assistant+tool_calls → GLM/OpenAI 系 API 直接
-        # 400 Bad Request，且每个重试 wake 组装出同样的坏头 → 死循环。
-        # 兜底：首条非 system 消息不是 user 时，插入最小合成 user 头。
-        for i, m in enumerate(messages):
-            if m.get("role") == "system":
-                continue
-            if m.get("role") != "user":
-                messages.insert(
-                    i,
-                    {"role": "user", "content": "（接续上一段工作，请从中断处继续）"},
-                )
-                logger.warning(
-                    "payload head invariant: inserted synthetic user head at %d "
-                    "(original head role=%s, messages=%d)", i, m.get("role"), len(messages),
-                )
-            break
-
-        # ── 孤儿 tool 消息剔除（同事故第二根因）─────────────────────────────
-        # 段压缩/工具指针化会移除 assistant 占位但留下 tool 结果（或序列化
-        # 不对称产生），GLM 严格校验 assistant.tool_calls ↔ tool.tool_call_id
-        # 配对 → 1214 messages 参数非法 → wake 秒死退避循环。实测 alpha
-        # 50 条消息里 16 条孤儿；剔除后同 payload 重放即被接受。
-        pending_ids: set[str] = set()
-        orphan_idx: set[int] = set()
-        for i, m in enumerate(messages):
-            role = m.get("role")
-            if role == "assistant":
-                for tc in (m.get("tool_calls") or []):
-                    tid = tc.get("id") if isinstance(tc, dict) else None
-                    if tid:
-                        pending_ids.add(tid)
-            elif role == "tool":
-                tid = m.get("tool_call_id")
-                if tid in pending_ids:
-                    pending_ids.discard(tid)
-                else:
-                    orphan_idx.add(i)
-        if orphan_idx:
-            messages[:] = [m for i, m in enumerate(messages) if i not in orphan_idx]
-            logger.warning(
-                "payload pairing: pruned %d orphan tool message(s)", len(orphan_idx)
-            )
         url = self._chat_url()
         headers = {"Content-Type": "application/json"}
         if self.api_key:
@@ -687,6 +643,12 @@ class AIAgent:
             ),
             "tools": registry.get_definitions(set(self._enabled_tool_names()), quiet=True),
         }
+        # ── 最终 payload 清洗（必须在压缩之后）────────────────────────────
+        # 2026-09-21 zero 案例：清洗曾放在压缩前——两层压缩会删父 assistant
+        # 留 tool 结果，清理后重新制造孤儿头顶 → GLM 1214 → 400 退避死循环
+        # （15:20 实测：清洗剪 18 条、压缩再造 2 条、发出仍脏）。段折叠偶然
+        # 产出干净头才自愈。因此清洗必须作为最后一道工序，作用于最终 payload。
+        _sanitize_payload_messages(payload["messages"])
         # provider 是模型知识的唯一家园 —— reasoning_effort / tools 格式
         # / extra_body 这些"按家族差异"的字段全部由 provider.customize_payload 决定，
         # agent.py 不识别"现在是 GLM 还是 o1 还是 Claude"。
@@ -2724,6 +2686,60 @@ def _int_delay(seconds: float) -> str:
         h, m = divmod(s, 3600)
         return f"{h}小时" + (f"{m // 60 * 10 // 10}分" if m >= 600 else "")
     return f"{s // 86400}天"
+
+
+def _sanitize_payload_messages(messages: list[dict[str, Any]]) -> None:
+    """最终 payload 消息清洗：消息头不变式 + 孤儿 tool 剔除（就地修改）。
+
+    必须在两层压缩（段叙事化/工具指针化）**之后**执行——压缩会删父
+    assistant 留 tool 结果，任何提前跑的清洗都会被压缩重新污染
+    （2026-09-21 zero 400 死循环：清洗剪 18 条 → 压缩再造 2 条孤儿头
+    → GLM 1214 messages 参数非法 → wake 退避循环，段折叠偶然产出
+    干净头才自愈）。
+
+    两道工序：
+    1. 头不变式：首条非 system 消息不是 user 时插入合成 user 头
+       （GLM/OpenAI 系 API 要求，否则 400）。
+    2. 孤儿 tool 剔除：tool 结果的 tool_call_id 在前文 assistant.tool_calls
+       中无配对 → 删除（实测 alpha 50 条消息 16 条孤儿，剔除后同 payload
+       重放即被接受）。
+    """
+    # 1. 头不变式
+    for i, m in enumerate(messages):
+        if m.get("role") == "system":
+            continue
+        if m.get("role") != "user":
+            messages.insert(
+                i,
+                {"role": "user", "content": "（接续上一段工作，请从中断处继续）"},
+            )
+            logger.warning(
+                "payload head invariant: inserted synthetic user head at %d "
+                "(original head role=%s, messages=%d)", i, m.get("role"), len(messages),
+            )
+        break
+
+    # 2. 孤儿 tool 剔除
+    pending_ids: set[str] = set()
+    orphan_idx: set[int] = set()
+    for i, m in enumerate(messages):
+        role = m.get("role")
+        if role == "assistant":
+            for tc in (m.get("tool_calls") or []):
+                tid = tc.get("id") if isinstance(tc, dict) else None
+                if tid:
+                    pending_ids.add(tid)
+        elif role == "tool":
+            tid = m.get("tool_call_id")
+            if tid in pending_ids:
+                pending_ids.discard(tid)
+            else:
+                orphan_idx.add(i)
+    if orphan_idx:
+        messages[:] = [m for i, m in enumerate(messages) if i not in orphan_idx]
+        logger.warning(
+            "payload pairing: pruned %d orphan tool message(s)", len(orphan_idx)
+        )
 
 
 def _render_signal_message(ev: dict[str, Any]) -> str:

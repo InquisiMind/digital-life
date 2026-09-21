@@ -532,3 +532,60 @@ def test_memory_id_harvest_visible_window_only() -> None:
         assert not agent2._injected_memory_ids
     finally:
         _cleanup_test_env(tmp)
+
+
+def test_requeued_event_not_re_rendered() -> None:
+    """回滚反消费重排队的事件：会话历史已投递 → 只补消费、不重复渲染。
+
+    2026-09-21 #513 双投场景：wake 中途被杀（重启）→ 调度器回滚把已投递
+    事件 unconsume 重排队（防丢设计）→ 重试拾取时又渲染一遍。
+    """
+    tmp, db_path = _make_test_env("test-no-rerender")
+    try:
+        from domain.lifecycle.events import (
+            emit_event, set_instance_context, reset_instance_context,
+        )
+        import sqlite3
+
+        token = set_instance_context("test-no-rerender")
+        try:
+            agent = _make_bare_agent(tmp, "test-no-rerender")
+            from infrastructure.ai.session_db import SessionDB
+            agent.session_db = SessionDB(db_path=db_path)
+            agent.session_db.create_session("sess-test", "test")
+
+            eid = emit_event("group_message", payload={"text": "回滚重排队", "chat_id": "oc_r"})
+            ev = {"event_id": eid, "kind": "group_message",
+                  "payload": {"text": "回滚重排队", "chat_id": "oc_r"}}
+            messages: list = []
+            failed = agent._consume_human_events([ev], messages)
+            assert failed == [] and len(messages) == 2, "首次投递应渲染一次"
+
+            # 模拟调度器回滚：反消费 + 重排队
+            conn = sqlite3.connect(str(db_path))
+            conn.execute("UPDATE events SET consumed_at=NULL WHERE event_id=?", (eid,))
+            conn.commit(); conn.close()
+
+            # 重试拾取：历史里已有 [#eid · 行 → 不再渲染、只补消费
+            messages2: list = []
+            failed2 = agent._consume_human_events([ev], messages2)
+            assert failed2 == []
+            assert messages2 == [], "已投递事件重排队后不得重复渲染"
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                n_rows = conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE tool_name='wake_signal' "
+                    "AND content LIKE ?", (f"[#{eid} ·%",)
+                ).fetchone()[0]
+                consumed = conn.execute(
+                    "SELECT consumed_at FROM events WHERE event_id=?", (eid,)
+                ).fetchone()[0]
+            finally:
+                conn.close()
+            assert n_rows == 1, f"会话里应恰好一条投递记录，实际 {n_rows}"
+            assert consumed is not None, "补消费后事件应回到已消费态"
+        finally:
+            reset_instance_context(token)
+    finally:
+        _cleanup_test_env(tmp)

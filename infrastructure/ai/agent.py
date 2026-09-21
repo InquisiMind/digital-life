@@ -2201,6 +2201,27 @@ class AIAgent:
 
         for ev in events:
             eid = ev.get("event_id")
+
+            # 已投递去重：wake 失败/进程重启回滚会把已投递事件反消费重排队
+            # （防丢设计），重试时模型在会话历史里已能看到该消息——再渲染
+            # 就是重复（2026-09-21 #513 双投）。历史里有 → 只补消费，不渲染。
+            if (
+                self.session_db is not None
+                and self.session_id
+                and eid is not None
+                and hasattr(self.session_db, "count_event_deliveries")
+            ):
+                try:
+                    if self.session_db.count_event_deliveries(self.session_id, int(eid)) > 0:
+                        logger.info(
+                            "event %s already delivered in session %s — consume-only, skip render",
+                            eid, self.session_id,
+                        )
+                        self._do_consume_events([ev])
+                        continue
+                except Exception:
+                    logger.debug("count_event_deliveries failed for %s", eid, exc_info=True)
+
             content = _render_signal_message(ev)
 
             # mid-session 注入附带同窗口最近对话（指代消解用）：

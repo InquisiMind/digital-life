@@ -417,6 +417,21 @@ class SessionDB:
                 self._conn.rollback()
                 raise
 
+    def count_event_deliveries(self, session_id: str, event_id: int) -> int:
+        """本 session 是否已投递过某事件（wake_signal 行按 ``[#<eid> ·`` 前缀计数）。
+
+        场景：wake 失败/进程重启回滚会把已投递事件反消费（unconsume）重排队
+        （防丢设计）。重试拾取时模型在会话历史里已能看到该消息——再渲染一次
+        就是重复投递（2026-09-21 #513 双投）。调用方据此跳过渲染、只补消费。
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id=? "
+                "AND tool_name='wake_signal' AND content LIKE ?",
+                (session_id, f"[#{event_id} ·%"),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
     def get_messages(self, session_id: str) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute("SELECT * FROM messages WHERE session_id=? ORDER BY timestamp, id", (session_id,)).fetchall()

@@ -118,13 +118,12 @@ def add_system_routes(app: web.Application) -> None:
             if f.is_file():
                 app.router.add_get(f"/{fname}", _make_static_handler(f))
 
-    # SPA fallback：所有 /system, /instance, /legacy, /system/*, /instance/*, /legacy/*
+    # SPA fallback：所有 /system, /instance, /system/*, /instance/*
     # 都服务前端 index.html（路由交给 vue-router 处理；未被精确匹配兜底到这里）
     app.router.add_get("/system", _handle_spa)
     app.router.add_get("/system/{tail:.*}", _handle_spa)
     app.router.add_get("/instance", _handle_spa_root_redirect)
     app.router.add_get("/instance/{tail:.*}", _handle_spa)
-    app.router.add_get("/legacy/{tail:.*}", _handle_spa)
     # 简短 alias：/ → /system
     app.router.add_get("/", _handle_root_redirect)
 

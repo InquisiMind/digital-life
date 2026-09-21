@@ -10,7 +10,6 @@ import './theme/layout.css'
 import SystemLayout from './layouts/SystemLayout.vue'
 import InstanceLayout from './layouts/InstanceLayout.vue'
 import PlaceholderView from './views/PlaceholderView.vue'
-import LegacyEmployee from './views/LegacyEmployee.vue'
 
 // 全局 helper 注册到 vue component context —— 避免 tree-shake 把 composable
 // 当 unused import 删（template 表达式里的 helper 名 rollup 不识别为引用）
@@ -76,10 +75,6 @@ const routes = [
   {
     path: '/employee/:iid',
     redirect: (to) => `/instance/${to.params.iid}/overview`,
-  },
-  {
-    path: '/legacy/employee/:iid/:rest(.*)?',
-    component: LegacyEmployee,
   },
 
   // === 默认入口 ===

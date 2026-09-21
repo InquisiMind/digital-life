@@ -94,11 +94,6 @@
         </template>
 
         <div class="sidebar-section" style="margin-top: auto">
-          <div class="sidebar-section-title">LEGACY</div>
-          <RouterLink v-if="iid" :to="`/legacy/employee/${iid}/`" class="sidebar-link">
-            <el-icon><Back /></el-icon>
-            <span>旧版控制台</span>
-          </RouterLink>
         </div>
       </aside>
 

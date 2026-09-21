@@ -83,7 +83,7 @@
                   <details v-if="item.type === 'injection'" class="injection-block" :class="{ 'injection-signal': isSignalInjection(item.inj) }" :data-flow-idx="idx" @click.stop>
                     <summary class="injection-head">
                       <span class="status-dot" :class="isSignalInjection(item.inj) ? 'live' : 'idle'"></span>
-                      <strong class="turn-role">{{ isSignalInjection(item.inj) ? 'EVENT' : 'SYS' }}</strong>
+                      <strong class="turn-role">{{ injLabel(item.inj) }}</strong>
                       <span class="tool-tag">{{ item.inj.sys_tool || 'unknown' }}</span>
                       <span class="brand-sub mono" style="margin-left:auto">{{ fmtTs(item.inj.injected_at) }}</span>
                       <el-button size="small" text @click.stop="copyText(JSON.stringify(item.inj, null, 2))" title="复制完整注入数据">copy</el-button>
@@ -220,6 +220,11 @@ function msgClass(m) {
 }
 // injection 块的"信号型注入"判定 - 与 turn.role-signal 同语义, 但走不同渲染路径
 // wake_signal/mid_session_event 注入是 mid-session 事件到达的核心信号, 需要一眼可识别
+function injLabel(inj) {
+  const s = inj?.sys_tool || ''
+  if (s === 'entity_recall') return 'RECALL'
+  return ['wake_signal','mid_session_event'].includes(s) ? 'EVENT' : 'SYS'
+}
 function isSignalInjection(inj) {
   const s = inj?.sys_tool || ''
   return ['wake_signal','mid_session_event'].includes(s)

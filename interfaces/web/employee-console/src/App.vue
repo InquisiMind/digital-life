@@ -7,7 +7,6 @@ import { RouterView } from 'vue-router'
 // App 仅作为根容器；具体内容由 vue-router 决定：
 //   /system/*     → SystemLayout + 全局台 views
 //   /instance/*   → InstanceLayout (=SystemLayout) + 实例 views
-//   /legacy/...   → LegacyEmployee（旧 945 行 UI，commit 6-7 期间渐进退役）
 </script>
 
 <style>

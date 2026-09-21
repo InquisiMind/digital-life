@@ -110,6 +110,10 @@ export const systemApi = {
     api.post('/api/system/skills/subscribe', { instance_id: instanceId, skill, subscribed }),
   toggleSkillGlobal: (globalKey, enabled) =>
     api.post('/api/system/skills/toggle', { global_key: globalKey, enabled }),
+  skillContent: (globalKey) =>
+    safeFetch(`/api/system/skills/content?key=${encodeURIComponent(globalKey)}`),
+  skillReveal: (globalKey) =>
+    api.post('/api/system/skills/reveal', { global_key: globalKey }),
   eventTypes: () => api.get('/api/system/event-types'),
   createEventType: (body) => api.post('/api/system/event-types', body),
   updateEventType: (typeId, body) => api.put(`/api/system/event-types/${typeId}`, body),

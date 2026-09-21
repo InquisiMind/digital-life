@@ -85,6 +85,8 @@ def add_system_routes(app: web.Application) -> None:
     app.router.add_get(f"{SYSTEM_API_PREFIX}/skills", _handle_skills_catalog)
     app.router.add_post(f"{SYSTEM_API_PREFIX}/skills/subscribe", _handle_skill_subscribe)
     app.router.add_post(f"{SYSTEM_API_PREFIX}/skills/toggle", _handle_skill_global_toggle)
+    app.router.add_get(f"{SYSTEM_API_PREFIX}/skills/content", _handle_skill_content)
+    app.router.add_post(f"{SYSTEM_API_PREFIX}/skills/reveal", _handle_skill_reveal)
 
     app.router.add_get(f"{SYSTEM_API_PREFIX}/event-types", _handle_list_event_types)
     app.router.add_post(f"{SYSTEM_API_PREFIX}/event-types", _handle_create_event_type)
@@ -1845,6 +1847,53 @@ def _read_instance_skills(iid: str) -> set[str]:
         return out
     except Exception:
         return set()
+
+
+def _find_skill_by_key(gkey: str) -> Path | None:
+    """按 global_key 在 catalog 里定位技能目录（校验存在 + 限项目根内）。"""
+    catalog = _build_skills_catalog()
+    match = next((x for x in catalog if x["global_key"] == gkey), None)
+    if match is None:
+        return None
+    root = get_project_root()
+    p = (root / match["path"]).resolve()
+    if not str(p).startswith(str(root.resolve())):
+        return None
+    return p if p.is_dir() else None
+
+
+async def _handle_skill_content(request: web.Request) -> web.Response:
+    """GET /api/system/skills/content?key=<global_key> —— 技能 SKILL.md 原文。"""
+    gkey = (request.query.get("key") or "").strip()
+    skill_dir = _find_skill_by_key(gkey)
+    if skill_dir is None:
+        return web.json_response({"error": "skill not found"}, status=404)
+    skill_md = skill_dir / "SKILL.md"
+    content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else ""
+    return web.json_response({
+        "global_key": gkey, "path": str(skill_dir), "content": content,
+    })
+
+
+async def _handle_skill_reveal(request: web.Request) -> web.Response:
+    """POST /api/system/skills/reveal —— 在访达中定位技能目录（仅 macOS）。"""
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+    gkey = str(body.get("global_key") or "").strip()
+    skill_dir = _find_skill_by_key(gkey)
+    if skill_dir is None:
+        return web.json_response({"error": "skill not found"}, status=404)
+    import sys as _sys
+    if _sys.platform != "darwin":
+        return web.json_response(
+            {"error": f"open local path unsupported on {_sys.platform}; path: {skill_dir}"},
+            status=400,
+        )
+    import subprocess as _sp
+    _sp.Popen(["open", "-R", str(skill_dir)])
+    return web.json_response({"ok": True, "path": str(skill_dir)})
 
 
 async def _handle_skill_global_toggle(request: web.Request) -> web.Response:

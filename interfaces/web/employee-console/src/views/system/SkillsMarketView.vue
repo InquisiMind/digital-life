@@ -45,10 +45,14 @@
           />
         </div>
 
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px;">
-          <span class="brand-sub mono" style="color: var(--text-muted);">
-            {{ skill.path }}
-          </span>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px; gap: 8px;">
+          <div style="display: flex; align-items: center; gap: 6px; min-width: 0;">
+            <span class="brand-sub mono" style="color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+              {{ skill.path }}
+            </span>
+            <el-button size="small" text @click="openDoc(skill)">文档</el-button>
+            <el-button size="small" text @click="revealLocal(skill)" title="在访达中定位">本地</el-button>
+          </div>
           <el-switch
             v-if="selectedInstance && skill.enabled !== false"
             :model-value="!!skill.subscribed"
@@ -62,6 +66,17 @@
         </div>
       </div>
     </div>
+
+    <el-drawer v-model="docDrawer.visible" :title="docDrawer.title" size="46%">
+      <div style="padding: 0 8px;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+          <span class="brand-sub mono" style="color: var(--text-muted);">{{ docDrawer.path }}</span>
+          <el-button size="small" text @click="copyText(docDrawer.path)">复制路径</el-button>
+          <el-button size="small" text @click="revealLocal({ global_key: docDrawer.key })">在访达中打开</el-button>
+        </div>
+        <div class="md-body" v-html="renderMarkdown(docDrawer.content)"></div>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -70,12 +85,36 @@ import { onMounted, reactive, ref, watch } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { systemApi } from '@/api/client'
+import { renderMarkdown } from '@/composables/useMarkdown'
 
 const instances = ref([])
 const skills = ref([])
 const selectedInstance = ref('')
 const toggling = reactive(new Set())
 const globalToggling = reactive(new Set())
+
+const docDrawer = reactive({ visible: false, title: '', path: '', content: '', key: '' })
+
+async function openDoc(skill) {
+  const d = await systemApi.skillContent(skill.global_key)
+  if (d.error) { ElMessage.error(d.error); return }
+  docDrawer.title = `${skill.name} · SKILL.md`
+  docDrawer.path = d.path
+  docDrawer.content = d.content || '（无 SKILL.md）'
+  docDrawer.key = skill.global_key
+  docDrawer.visible = true
+}
+
+async function revealLocal(skill) {
+  const d = await systemApi.skillReveal(skill.global_key)
+  if (d.error) { ElMessage.error(d.error); return }
+  ElMessage.success(`已在访达定位：${d.path}`)
+}
+
+function copyText(t) {
+  navigator.clipboard?.writeText(t)
+  ElMessage.success('已复制')
+}
 
 function scopeLabel(skill) {
   if (skill.scope === 'personal') return `${skill.owner_name || '实例'} · 自建`

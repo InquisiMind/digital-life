@@ -49,6 +49,10 @@ class Subscription:
     platform: str = "feishu"
     peers: list[Peer] = field(default_factory=list)
     name: str = ""  # 群名(可选)
+    # 显式退订标记:master sync 不再复活该条目;投递/唤醒侧视为不在群。
+    # 用于治理场景——messages.db 历史有记录的群,sync 默认会补回订阅,
+    # 手删条目会被复活,必须用此标记豁免。
+    unsubscribed: bool = False
 
 
 def _subscriptions_path(instance_id: str) -> Path:
@@ -80,6 +84,7 @@ def load_subscriptions(instance_id: str) -> dict[str, Subscription]:
             platform=cfg.get("platform") or "feishu",
             peers=peers,
             name=cfg.get("name") or "",
+            unsubscribed=bool(cfg.get("unsubscribed") or False),
         )
     return out
 
@@ -94,6 +99,7 @@ def save_subscriptions(instance_id: str, subs: dict[str, Subscription]) -> None:
                 "name": s.name,
                 "platform": s.platform,
                 "peers": [{"uuid": pe.uuid, "endpoint": pe.endpoint} for pe in s.peers],
+                "unsubscribed": s.unsubscribed,
             }
             for chat_id, s in subs.items()
         }
@@ -127,22 +133,32 @@ def sync_subscriptions_from_registry() -> None:
     # 先拉所有实例的 chat 集合 + endpoint
     chat_to_instances: dict[str, list[tuple[str, str]]] = {}  # chat -> [(iid, endpoint)]
     instance_chats: dict[str, set[str]] = {}
+    unsubscribed_map: dict[str, set[str]] = {}  # chat -> {已显式退订的 iid}
     for iid in instances:
         chats = _read_instance_chat_ids(iid) | _read_chats_from_messages_db(iid)
         instance_chats[iid] = chats
         endpoint = _peer_endpoint_for(iid)
         for chat in chats:
             chat_to_instances.setdefault(chat, []).append((iid, endpoint))
+        # 收集显式退订标记,供全局 peers 构建时排除
+        for chat, sub in load_subscriptions(iid).items():
+            if sub.unsubscribed:
+                unsubscribed_map.setdefault(chat, set()).add(iid)
 
     for iid in instances:
         my_chats = instance_chats.get(iid, set())
         cur = load_subscriptions(iid)
         changed = False
         for chat_id in my_chats:
+            # 显式退订豁免:unsubscribed=true 的条目 sync 不覆盖不复活,
+            # 也不再把它加进其他实例的 peers(投递侧视为不在群)。
+            if chat_id in cur and cur[chat_id].unsubscribed:
+                continue
             peers = [
                 Peer(uuid=oiid, endpoint=oep)
                 for (oiid, oep) in chat_to_instances.get(chat_id, [])
                 if oiid != iid  # 排除自己
+                and oiid not in unsubscribed_map.get(chat_id, set())  # 排除退订者
             ]
             if chat_id in cur:
                 # 已存在,保留(name 允许覆盖以维持参考价值,peers 也同步):
@@ -437,17 +453,24 @@ def _resolve_broadcast_targets(*, chat_id: str,
         return []
 
     targets: set[str] = set()
+    unsubscribed_uuids: set[str] = set()
     for iid in instances:
         subs = load_subscriptions(iid)
         sub = subs.get(chat_id)
         if sub is None:
             continue
+        if sub.unsubscribed:
+            # 显式退订:该实例不在群,也不是投递目标
+            unsubscribed_uuids.add(iid)
+            continue
         # 实例本身订阅了这个 chat → 它在群 → 加候选
         targets.add(iid)
         # peers 是它知道的同群其他实例 endpoint uuid
+        # (peers 可能残留退订前的旧引用,这里再滤一遍)
         for peer in sub.peers:
             if peer.uuid and peer.uuid != from_instance_id:
-                targets.add(peer.uuid)
+                if peer.uuid not in unsubscribed_uuids:
+                    targets.add(peer.uuid)
     targets.discard(from_instance_id)
     # 只保留确实有 apps/<id>/ 目录的(避免订阅 yaml 残留指向已删实例)
     return [t for t in targets if t in instances]

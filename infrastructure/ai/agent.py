@@ -183,6 +183,21 @@ class AIAgent:
             assistant_msg, tool_msg = self._sys_tool_call("wake_signal", prompt)
             messages.append(assistant_msg)
             messages.append(tool_msg)
+            # 持久化接续唤醒的事件 prompt（2026-09-21 zero #736 前端黑箱）：
+            # 此前只进内存 + audit 双写——前端会话流看不到，且下次重载历史时
+            # 模型自己也丢掉这条触发事件（与 mid-session 2026-06-23 修复的
+            # "14 分钟黑箱"同类）。事件在调度器 dispatch 时已被 covered_event_ids
+            # 消费，这里只补持久化、不再消费。
+            if self.session_id:
+                try:
+                    from domain.lifecycle.runtime_context import get_current_event_chat_id
+                    _cid = get_current_event_chat_id() or ""
+                except Exception:
+                    _cid = ""
+                self._append_message(
+                    session_id, "tool", prompt,
+                    tool_name="wake_signal", chat_id=_cid,
+                )
             if self.audit_ctx is not None:
                 try:
                     self.audit_ctx.recall("wake_signal", prompt)

@@ -108,6 +108,8 @@ export const systemApi = {
   skills: (iid) => api.get('/api/system/skills', iid ? { iid } : {}),
   subscribeSkill: (instanceId, skill, subscribed) =>
     api.post('/api/system/skills/subscribe', { instance_id: instanceId, skill, subscribed }),
+  toggleSkillGlobal: (globalKey, enabled) =>
+    api.post('/api/system/skills/toggle', { global_key: globalKey, enabled }),
   eventTypes: () => api.get('/api/system/event-types'),
   createEventType: (body) => api.post('/api/system/event-types', body),
   updateEventType: (typeId, body) => api.put(`/api/system/event-types/${typeId}`, body),

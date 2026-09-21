@@ -84,6 +84,7 @@ def add_system_routes(app: web.Application) -> None:
     )
     app.router.add_get(f"{SYSTEM_API_PREFIX}/skills", _handle_skills_catalog)
     app.router.add_post(f"{SYSTEM_API_PREFIX}/skills/subscribe", _handle_skill_subscribe)
+    app.router.add_post(f"{SYSTEM_API_PREFIX}/skills/toggle", _handle_skill_global_toggle)
 
     app.router.add_get(f"{SYSTEM_API_PREFIX}/event-types", _handle_list_event_types)
     app.router.add_post(f"{SYSTEM_API_PREFIX}/event-types", _handle_create_event_type)
@@ -1697,10 +1698,53 @@ async def _handle_skills_catalog(request: web.Request) -> web.Response:
     return web.json_response({"skills": catalog, "skill_count": len(catalog)})
 
 
+def _skills_enabled_registry_path() -> Path:
+    return get_project_root() / "data" / "skills_enabled.json"
+
+
+def _load_skills_enabled() -> dict[str, bool]:
+    """全局技能启用电台：{\"scope/name\": enabled}。缺省 = 启用。"""
+    try:
+        raw = json.loads(_skills_enabled_registry_path().read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_skills_enabled(state: dict[str, bool]) -> None:
+    path = _skills_enabled_registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _build_skills_catalog() -> list[dict[str, Any]]:
-    """扫描 interfaces/skills/ + shared/skills/ 下每个目录，拼成 catalog。"""
+    """扫描 interfaces/skills/ + shared/skills/ + apps/*/skills/ 三层拼成 catalog。
+
+    - system: interfaces/skills（框架内置）
+    - shared: shared/skills（跨实例共享，实例自建共享也落这里）
+    - personal: apps/<iid>/skills（实例私有自建，owner 标来源实例——其他实例
+      也可订阅挂载，市场里可见可管）
+    每条带 enabled（全局启用开关，data/skills_enabled.json，缺省 true）。
+    """
     root = get_project_root()
     catalog: list[dict[str, Any]] = []
+    enabled_state = _load_skills_enabled()
+
+    def _add(scope: str, entry: Path, owner: dict[str, str] | None = None) -> None:
+        # personal 同名技能按 owner 区分（三个实例各有 retail_query，互不影响）
+        key = f"{scope}/{owner['id'][:8]}/{entry.name}" if owner else f"{scope}/{entry.name}"
+        item = {
+            "name": entry.name,
+            "scope": scope,
+            "description": _extract_skill_description(entry),
+            "path": str(entry.relative_to(root)),
+            "global_key": key,
+            "enabled": enabled_state.get(key, True),
+        }
+        if owner:
+            item["owner_id"] = owner["id"]
+            item["owner_name"] = owner["name"]
+        catalog.append(item)
 
     for scope, base in (("system", root / "interfaces" / "skills"),
                         ("shared", root / "shared" / "skills")):
@@ -1711,14 +1755,26 @@ def _build_skills_catalog() -> list[dict[str, Any]]:
                 continue
             if entry.name.startswith(".") or entry.name.startswith("_"):
                 continue
-            catalog.append(
-                {
-                    "name": entry.name,
-                    "scope": scope,
-                    "description": _extract_skill_description(entry),
-                    "path": str(entry.relative_to(root)),
-                }
-            )
+            _add(scope, entry)
+
+    # personal：实例自建技能进市场（owner 标注），供其他实例订阅挂载
+    apps_dir = root / "apps"
+    if apps_dir.is_dir():
+        registry = _load_registry() or {}
+        for app_entry in sorted(apps_dir.iterdir()):
+            if not app_entry.is_dir() or app_entry.name.startswith("."):
+                continue
+            meta = registry.get(app_entry.name) or {}
+            owner = {"id": app_entry.name, "name": str(meta.get("display_name") or app_entry.name[:8])}
+            skills_base = app_entry / "skills"
+            if not skills_base.is_dir():
+                continue
+            for entry in sorted(skills_base.iterdir()):
+                if not entry.is_dir():
+                    continue
+                if entry.name.startswith(".") or entry.name.startswith("_"):
+                    continue
+                _add("personal", entry, owner=owner)
     return catalog
 
 
@@ -1789,6 +1845,33 @@ def _read_instance_skills(iid: str) -> set[str]:
         return out
     except Exception:
         return set()
+
+
+async def _handle_skill_global_toggle(request: web.Request) -> web.Response:
+    """POST /api/system/skills/toggle —— 全局启用/停用一个技能。
+
+    Body: {"scope": "system|shared|personal", "name": "...", "enabled": bool}
+    停用后技能对全系统不可挂载（catalog 里标 enabled=false，订阅侧禁用）；
+    恢复启用即回。状态存 data/skills_enabled.json（运行时态，不入 git）。
+    """
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+    gkey = str(body.get("global_key") or "").strip()
+    if not gkey:
+        return web.json_response({"error": "global_key is required"}, status=400)
+    enabled = bool(body.get("enabled", True))
+
+    catalog = _build_skills_catalog()
+    match = next((s for s in catalog if s["global_key"] == gkey), None)
+    if match is None:
+        return web.json_response({"error": f"skill {gkey} not found"}, status=404)
+
+    state = _load_skills_enabled()
+    state[match["global_key"]] = enabled
+    _save_skills_enabled(state)
+    return web.json_response({"ok": True, "global_key": match["global_key"], "enabled": enabled})
 
 
 async def _handle_skill_subscribe(request: web.Request) -> web.Response:

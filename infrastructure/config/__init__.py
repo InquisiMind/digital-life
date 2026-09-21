@@ -254,6 +254,35 @@ def get_app_instance_id(explicit: str | None = None) -> str:
     return _default_instance_id()
 
 
+def get_tool_whitelist(instance_id: str | None = None) -> list[str] | None:
+    """实例级工具白名单 — apps/<iid>/config/app.yaml 的 tools.whitelist。
+
+    条目可为 toolset 名（整组放行）或具体工具名（单点放行），与
+    AIAgent.enabled_toolsets 的混合语义对齐。AND 叠加在 reason 层过滤之上：
+    白名单只会收紧，不会越过 reason 层放行。
+    未配置 / 空列表 / 解析失败 → None（全量行为，对老 app.yaml 零破坏）。
+    """
+    try:
+        cfg_path = (
+            get_project_root()
+            / "apps"
+            / get_app_instance_id(instance_id)
+            / "config"
+            / "app.yaml"
+        )
+        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return None
+    tools = cfg.get("tools") or {}
+    if not isinstance(tools, dict):
+        return None
+    wl = tools.get("whitelist")
+    if isinstance(wl, list) and wl:
+        items = [str(x).strip() for x in wl if str(x).strip()]
+        return items or None
+    return None
+
+
 def get_instance_display_name(instance_id: str | None = None) -> str:
     """Return the human-readable display_name for an instance UUID."""
     uuid_key = get_app_instance_id(instance_id)

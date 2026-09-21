@@ -55,6 +55,10 @@ class AIAgent:
     session_input_tokens: int = 0
     session_output_tokens: int = 0
     enabled_toolsets: list[str] | tuple[str, ...] | None = None
+    # 实例级工具白名单（apps/<iid>/config/app.yaml → tools.whitelist）。
+    # AND 叠加在 enabled_toolsets 之上：只有白名单里的 toolset/工具名才暴露。
+    # 条件暴露工具（rest preview 等躯体机制）不受此限——那是机制不是业务能力。
+    tool_whitelist: list[str] | tuple[str, ...] | None = None
     skip_memory: bool = True
     logs_dir: Path = field(default_factory=lambda: get_runtime_home() / "sessions")
 
@@ -1041,7 +1045,17 @@ class AIAgent:
                 if registry.get_toolset_for_tool(name) in toolsets or name in toolsets:
                     selected.append(name)
             base = selected
+        # 实例级白名单 AND 层：toolset 名或工具名命中才保留。
+        # 只会收紧；未配置(None)则跳过，零行为变化。
+        if self.tool_whitelist:
+            wl = set(self.tool_whitelist)
+            base = [
+                n
+                for n in base
+                if n in wl or registry.get_toolset_for_tool(n) in wl
+            ]
         # V6: 合并条件暴露工具 (rest preview 后动态加入)
+        # 在白名单之后——条件暴露是躯体机制(rest/preview)，不受业务白名单管。
         base.extend(self._conditionally_revealed_tools)
         return base
 

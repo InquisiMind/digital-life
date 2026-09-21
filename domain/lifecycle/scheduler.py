@@ -1354,6 +1354,7 @@ def _wake_digital_life_inner_safe(
         )
 
         # L4 需要精简工具集，避免模型被48个工具淹没而只发文字
+        from infrastructure.config import get_tool_whitelist
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),
@@ -1367,6 +1368,7 @@ def _wake_digital_life_inner_safe(
             session_id=session_id,
             session_db=_session_db,
             enabled_toolsets=_enabled_toolsets_for_reason(reason),
+            tool_whitelist=get_tool_whitelist(instance_id),
             skip_memory=True,
             instance_id=instance_id,
         )

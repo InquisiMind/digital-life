@@ -11,6 +11,7 @@ import uuid
 from typing import Any
 
 from aiohttp import web
+from infrastructure.config import get_tool_whitelist
 
 logger = logging.getLogger("gateway.openai_api")
 
@@ -100,6 +101,7 @@ async def _handle_chat_completions(request: web.Request) -> web.Response:
                 session_id=session_id,
                 session_db=session_db,
                 skip_memory=True,
+                tool_whitelist=get_tool_whitelist(),
             )
             result = agent.run_conversation(
                 prompt,

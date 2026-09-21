@@ -402,6 +402,17 @@ def receive_broadcast(payload: dict) -> dict:
 
             # 2. emit 一个 group_message 事件(走和飞书入站完全一致的 urgency 分类)
             # 由 peer 自己的 cron + handler 决定立即 wake / 30s 累积。
+            # 9/21 修复: bot 互发时飞书侧 mentions 结构不解析(纯文本 @名字),
+            # 这里按接收方显示名补 mentions_bot,否则 rest 中的实例被唤醒分级
+            # 判"不吵醒",消息静默沉没(小王→小张 08:03 事故)。
+            mentioned_name = ""
+            try:
+                from infrastructure.config import get_instance_display_name
+                _pn = (get_instance_display_name(peer_iid) or "").strip()
+                if _pn and f"@{_pn}" in text:
+                    mentioned_name = _pn
+            except Exception:
+                pass
             try:
                 emit_event(
                     kind="group_message",
@@ -412,8 +423,8 @@ def receive_broadcast(payload: dict) -> dict:
                         "sender_kind": "bot",          # 不当 human
                         "chat_name": "",
                         "chat_id": chat_id,
-                        "mentions_bot": False,         # 靠 keywords/owner 判定 immediate
-                        "mention_names": "",
+                        "mentions_bot": bool(mentioned_name),  # 文本 @名字 → 强制 immediate
+                        "mention_names": mentioned_name,
                         "source": "broadcast",
                         "_bypass_chat_stream_write": True,  # 已写过 messages.db
                     },

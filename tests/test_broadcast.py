@@ -415,3 +415,52 @@ def test_broadcast_outbound_fallback_excludes_unsubscribed(tmp_path, monkeypatch
         chat_id=chat, text="x", msg_ref="om_3",
     )
     assert n == 0
+
+
+def test_receive_broadcast_mentions_parsing(tmp_path, monkeypatch):
+    """9/21 二层修复: bot 互发文本 @名字 → mentions_bot=True(强制唤醒标记)。"""
+    from_iid, peer_iid = "from-iid-921", "peer-iid-921"
+    _setup_master_fake(tmp_path, monkeypatch, from_iid, peer_iid, chat="oc_mention")
+
+    import domain.messages.broadcast as bc
+    import domain.lifecycle.events as dle
+    import infrastructure.config as icfg
+
+    captured = []
+    monkeypatch.setattr(dle, "emit_event",
+                        lambda kind, payload, channel: captured.append((kind, payload, channel)))
+
+    # case1: peer 显示名=小张, 文本 @小张 → mentions_bot=True
+    monkeypatch.setattr(icfg, "get_instance_display_name", lambda iid: "小张")
+    res = bc.receive_broadcast(payload={
+        "from_instance_id": from_iid, "from_display_name": "小李",
+        "chat_id": "oc_mention", "text": "@小张 汇报: 今日销售 100 件",
+        "msg_ref": "om_mention_1",
+    })
+    assert res.get("ok") is True, res
+    assert captured, "emit not called"
+    kind, payload, _ = captured[-1]
+    assert kind == "group_message"
+    assert payload["mentions_bot"] is True
+    assert payload["mention_names"] == "小张"
+
+    # case2: peer 显示名=小王, @的是小张(不匹配) → False
+    captured.clear()
+    monkeypatch.setattr(icfg, "get_instance_display_name", lambda iid: "小王")
+    bc.receive_broadcast(payload={
+        "from_instance_id": from_iid, "from_display_name": "小李",
+        "chat_id": "oc_mention", "text": "@小张 汇报: 今日销售 100 件",
+        "msg_ref": "om_mention_2",
+    })
+    assert captured[-1][1]["mentions_bot"] is False
+
+    # case3: 正文提到"小张"但无 @ 前缀 → False(防误报)
+    captured.clear()
+    monkeypatch.setattr(icfg, "get_instance_display_name", lambda iid: "小张")
+    bc.receive_broadcast(payload={
+        "from_instance_id": from_iid, "from_display_name": "小李",
+        "chat_id": "oc_mention", "text": "今天小张负责的品类卖了 100 件",
+        "msg_ref": "om_mention_3",
+    })
+    assert captured[-1][1]["mentions_bot"] is False
+

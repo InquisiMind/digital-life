@@ -19,8 +19,10 @@ import infrastructure.ai.agent as agent_mod
 class _FakeAgent:
     instance_id = "test-window-ctx"
     session_id = None
+    session_db = None  # 走 _do_consume_events legacy 回退（无原子事务路径）
     audit_ctx = None
     _effort_state = None
+    _injected_signal_event_ids = set()
 
     def _do_consume_events(self, events):
         self.consumed = events

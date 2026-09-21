@@ -319,3 +319,216 @@ def test_mid_session_inject_skips_already_consumed_event() -> None:
             reset_instance_context(token)
     finally:
         _cleanup_test_env(tmp)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 2026-09-21 #124 双投事故回归：write-then-show 原子投递
+# 根因：_consume_human_events 先渲染后消费，_do_consume_events 的
+# except:pass 吞掉消费失败 → 模型看过、DB 未消费 → 下个 wake 重投一次。
+# 修复语义："模型看到"（append live 上下文）放在同文件单事务成功之后。
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def _make_bare_agent(tmp: str, instance_id: str, session_id: str = "sess-test"):
+    """构造跳过 __post_init__ 的裸 AIAgent（只给 _consume_human_events 依赖的属性）。"""
+    from infrastructure.ai.agent import AIAgent
+
+    agent = object.__new__(AIAgent)
+    agent.instance_id = instance_id
+    agent.session_id = session_id
+    agent.session_db = None
+    agent.audit_ctx = None
+    agent._injected_signal_event_ids = set()
+    agent._injected_memory_ids = set()
+    agent._sys_tool_counter = 0
+    agent._effort_state = None
+    return agent
+
+
+def test_atomic_deliver_message_and_consume_commit_together() -> None:
+    """SessionDB.append_message_with_consume：消息行与事件消费同事务提交。"""
+    tmp, db_path = _make_test_env("test-atomic-commit")
+    try:
+        from infrastructure.ai.session_db import SessionDB
+        from domain.lifecycle.events import emit_event, set_instance_context, reset_instance_context
+
+        token = set_instance_context("test-atomic-commit")
+        try:
+            import sqlite3
+            sdb = SessionDB(db_path=db_path)
+            sdb.create_session("sess-atomic", "test")
+            eid = emit_event("group_message", payload={"text": "原子投递", "chat_id": "oc_x"})
+
+            msg_id = sdb.append_message_with_consume(
+                "sess-atomic", "tool", "[#%d · 测试]" % eid,
+                event_ids=[eid], tool_name="wake_signal", chat_id="oc_x",
+            )
+            assert msg_id > 0
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                msg = conn.execute(
+                    "SELECT content, tool_name FROM messages WHERE id=?", (msg_id,)
+                ).fetchone()
+                ev = conn.execute(
+                    "SELECT consumed_at, consumed_by_session_id FROM events WHERE event_id=?",
+                    (eid,),
+                ).fetchone()
+            finally:
+                conn.close()
+            assert msg is not None and msg[1] == "wake_signal"
+            assert ev[0] is not None, "同事务内事件必须已消费"
+            assert ev[1] == "sess-atomic"
+        finally:
+            reset_instance_context(token)
+    finally:
+        _cleanup_test_env(tmp)
+
+
+def test_atomic_deliver_rollback_leaves_no_partial_state() -> None:
+    """事务失败：消息行与事件消费**都不落库**（不允许一个有一个没有）。"""
+    tmp, db_path = _make_test_env("test-atomic-rollback")
+    try:
+        from infrastructure.ai.session_db import SessionDB
+        from domain.lifecycle.events import emit_event, set_instance_context, reset_instance_context
+
+        token = set_instance_context("test-atomic-rollback")
+        try:
+            import sqlite3
+            sdb = SessionDB(db_path=db_path)
+            sdb.create_session("sess-rb", "test")
+            eid = emit_event("group_message", payload={"text": "回滚测试", "chat_id": "oc_y"})
+            before_msgs = sdb.get_messages("sess-rb")
+
+            # 让事务中途失败：消息 INSERT 之后、事件 UPDATE 之前把 events 表
+            # 掉包成缺列形态（sqlite3.Connection.execute 只读不可 monkeypatch，
+            # 用改表结构制造同类的 mid-transaction OperationalError）
+            sdb._conn.execute("ALTER TABLE events RENAME TO events_bak")
+            sdb._conn.commit()
+            try:
+                sdb.append_message_with_consume(
+                    "sess-rb", "tool", "[#%d · 回滚]" % eid,
+                    event_ids=[eid], tool_name="wake_signal", chat_id="oc_y",
+                )
+                raise AssertionError("必须抛出事务失败")
+            except sqlite3.OperationalError:
+                pass
+            finally:
+                sdb._conn.execute("ALTER TABLE events_bak RENAME TO events")
+                sdb._conn.commit()
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                ev = conn.execute(
+                    "SELECT consumed_at FROM events WHERE event_id=?", (eid,)
+                ).fetchone()
+            finally:
+                conn.close()
+            after_msgs = sdb.get_messages("sess-rb")
+            assert ev[0] is None, "事务失败后事件不得被消费"
+            assert len(after_msgs) == len(before_msgs), "事务失败后消息行不得落库"
+        finally:
+            reset_instance_context(token)
+    finally:
+        _cleanup_test_env(tmp)
+
+
+def test_consume_human_events_failure_keeps_event_undelivered() -> None:
+    """投递事务失败：不 append live 上下文、返回失败列表 → 模型从未看到。"""
+    tmp, db_path = _make_test_env("test-fail-undelivered")
+    try:
+        from domain.lifecycle.events import set_instance_context, reset_instance_context
+
+        token = set_instance_context("test-fail-undelivered")
+        try:
+            agent = _make_bare_agent(tmp, "test-fail-undelivered")
+
+            class _BoomSessionDB:
+                def append_message_with_consume(self, *a, **kw):
+                    raise RuntimeError("injected txn failure")
+
+            agent.session_db = _BoomSessionDB()
+            ev = {"event_id": 42, "kind": "group_message",
+                  "payload": {"text": "失败重试", "chat_id": "oc_z"}}
+            messages: list = []
+            failed = agent._consume_human_events([ev], messages)
+
+            assert failed == [ev], "失败事件必须原样返回给调用方"
+            assert messages == [], "投递失败时模型上下文不得出现该消息（write-then-show）"
+
+            # 修复成功后（换回正常 db）重投 = 首次投递
+            from infrastructure.ai.session_db import SessionDB
+            agent.session_db = SessionDB(db_path=db_path)
+            agent.session_db.create_session("sess-test", "test", model="test")
+            failed2 = agent._consume_human_events([ev], messages)
+            assert failed2 == []
+            assert len(messages) == 2, "成功后恰好渲染一次（assistant+tool pair）"
+        finally:
+            reset_instance_context(token)
+    finally:
+        _cleanup_test_env(tmp)
+
+
+def test_delivered_event_not_re_picked_on_continuation() -> None:
+    """已投递（事务成功=已消费）的事件，接续唤醒不会被 DB 扫描再次捞出。"""
+    tmp, db_path = _make_test_env("test-no-repick")
+    try:
+        from domain.lifecycle.events import (
+            emit_event, set_instance_context, reset_instance_context,
+        )
+
+        token = set_instance_context("test-no-repick")
+        try:
+            agent = _make_bare_agent(tmp, "test-no-repick")
+            from infrastructure.ai.session_db import SessionDB
+            agent.session_db = SessionDB(db_path=db_path)
+            agent.session_db.create_session("sess-test", "test", model="test")
+
+            eid = emit_event("group_message", payload={"text": "接续测试", "chat_id": "oc_c"})
+            ev = {"event_id": eid, "kind": "group_message",
+                  "payload": {"text": "接续测试", "chat_id": "oc_c"}}
+            messages: list = []
+            failed = agent._consume_human_events([ev], messages)
+            assert failed == [] and len(messages) == 2
+
+            # 新 wake 的 agent（内存集合清零），DB 扫描不应再捞出该事件
+            agent2 = _make_bare_agent(tmp, "test-no-repick")
+            agent2.session_db = agent.session_db
+            messages2: list = []
+            picked = agent2._inject_due_db_events(messages2)
+            assert not picked, "已消费事件不得被 DB 扫描重复投递"
+            assert messages2 == []
+        finally:
+            reset_instance_context(token)
+    finally:
+        _cleanup_test_env(tmp)
+
+
+def test_memory_id_harvest_visible_window_only() -> None:
+    """记忆可见窗口去重：从可见 entity_recall 收割 id，wake_signal 的 #id 不误收。"""
+    tmp, db_path = _make_test_env("test-harvest")
+    try:
+        agent = _make_bare_agent(tmp, "test-harvest")
+        history = [
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "sys_001", "type": "function",
+                "function": {"name": "entity_recall", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "sys_001", "name": "entity_recall",
+             "content": "[联想命中] - 🔍[RULE] #1924 (4d前) 规则内容... - 🎯[KNOWLEDGE] #312 (64d前) ..."},
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "sys_002", "type": "function",
+                "function": {"name": "wake_signal", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "sys_002", "name": "wake_signal",
+             "content": "[#124 · 新消息到达 - 会话中途注入] ..."},
+        ]
+        agent._harvest_injected_memory_ids(history)
+        assert "1924" in agent._injected_memory_ids
+        assert "312" in agent._injected_memory_ids
+        assert "124" not in agent._injected_memory_ids, "wake_signal 的事件 id 不得混入记忆抑制集合"
+
+        # 模拟 KEEP_ROUNDS 裁剪后：recall 不在可见列表 → 不收割 → 解除抑制
+        agent2 = _make_bare_agent(tmp, "test-harvest")
+        agent2._harvest_injected_memory_ids(history[:0])
+        assert not agent2._injected_memory_ids
+    finally:
+        _cleanup_test_env(tmp)

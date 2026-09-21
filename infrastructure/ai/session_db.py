@@ -334,6 +334,89 @@ class SessionDB:
             self._conn.commit()
             return int(cursor.lastrowid)
 
+    def append_message_with_consume(
+        self,
+        session_id: str,
+        role: str,
+        content: str | None = None,
+        event_ids: list[int] | None = None,
+        **kwargs: Any,
+    ) -> int:
+        """原子投递：INSERT 消息行 + 消费 events 行，单事务提交。
+
+        mid-session 事件注入的 exactly-once 基石（2026-09-21 #124 双投事故）：
+        messages 表与 events 表同在本实例 state.db，同一连接内一个事务写两边——
+        "模型看到消息"（消息行落库）与"事件已消费"（consumed_at 落库）要么都
+        发生要么都不发生。消费侧 UPDATE 带 consumed_at IS NULL 幂等守卫，
+        与 legacy_bus.consume_event 写入格式一致（clock.now_iso()）。
+
+        失败上抛不吞——调用方（agent._consume_human_events）据此决定不 append
+        live 上下文、不清内存池，下一轮 _chat 干净重试（模型从未看到过，
+        重试是首次投递而非重复）。
+        """
+        from domain.lifecycle.clock import now_iso as _now_iso
+
+        if not event_ids:
+            return self.append_message(session_id, role, content=content, **kwargs)
+
+        # events 表的 consumed_by_session_id 列由 LegacyEventBus.ensure_columns
+        # 懒加载补齐；全新库里首次走本方法时可能还没有——自确保（幂等，一次性）。
+        if not getattr(self, "_events_cols_ensured", False):
+            with self._lock:
+                cols = {r[1] for r in self._conn.execute("PRAGMA table_info(events)").fetchall()}
+                if "consumed_by_session_id" not in cols:
+                    self._conn.execute(
+                        "ALTER TABLE events ADD COLUMN consumed_by_session_id TEXT"
+                    )
+                    self._conn.commit()
+                self._events_cols_ensured = True
+
+        segment_index = self._current_segment.get(session_id, 0)
+        tool_calls = kwargs.get("tool_calls")
+        tool_calls_json = json.dumps(tool_calls, ensure_ascii=False, default=str) if tool_calls else None
+        placeholders = ",".join("?" for _ in event_ids)
+        tool_count = len(tool_calls) if isinstance(tool_calls, list) else (1 if tool_calls else 0)
+
+        with self._lock:
+            try:
+                cursor = self._conn.execute(
+                    """INSERT INTO messages
+                    (session_id, role, content, tool_call_id, tool_calls, tool_name, timestamp, token_count,
+                     finish_reason, reasoning, reasoning_details, codex_reasoning_items, segment_index, chat_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        session_id,
+                        role,
+                        content,
+                        kwargs.get("tool_call_id"),
+                        tool_calls_json,
+                        kwargs.get("tool_name"),
+                        time.time(),
+                        kwargs.get("token_count"),
+                        kwargs.get("finish_reason"),
+                        kwargs.get("reasoning"),
+                        json.dumps(kwargs["reasoning_details"], ensure_ascii=False, default=str) if kwargs.get("reasoning_details") else None,
+                        json.dumps(kwargs["codex_reasoning_items"], ensure_ascii=False, default=str) if kwargs.get("codex_reasoning_items") else None,
+                        segment_index,
+                        kwargs.get("chat_id") or "",
+                    ),
+                )
+                now = _now_iso()
+                self._conn.execute(
+                    f"UPDATE events SET consumed_at = ?, consumed_by_session_id = ? "
+                    f"WHERE event_id IN ({placeholders}) AND consumed_at IS NULL",
+                    [now, session_id, *event_ids],
+                )
+                self._conn.execute(
+                    "UPDATE sessions SET message_count=message_count+1, tool_call_count=tool_call_count+? WHERE id=?",
+                    (tool_count, session_id),
+                )
+                self._conn.commit()
+                return int(cursor.lastrowid)
+            except Exception:
+                self._conn.rollback()
+                raise
+
     def get_messages(self, session_id: str) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute("SELECT * FROM messages WHERE session_id=? ORDER BY timestamp, id", (session_id,)).fetchall()

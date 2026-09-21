@@ -167,6 +167,9 @@ class AIAgent:
             # 无 tag 的 user（如 continuation 中拉回的旧 action_prompt 裸 user）保留原样。
             # 不再区分"新 session / 续用 session"路径，行为一致。
             messages.extend(self._convert_user_to_tool(conversation_history))
+            # 记忆去重状态跟可见性走（2026-09-21 小张案例：接续唤醒重置
+            # _injected_memory_ids，同一条记忆在活跃会话里被反复注入 6 次）。
+            self._harvest_injected_memory_ids(messages)
         if is_continuation:
             # 接续 session: 把本 wake 的 prompt 以 wake_signal (sys_tool_call) 形式注入,
             # 与 mid-session 新事件到达保持同构——避免在对话里再插入一条 role:user
@@ -1939,7 +1942,10 @@ class AIAgent:
 
         这里在每次 _chat 开头补一路 DB 读取（pop_due_events 只读不消费），
         命中到期 message/group_message 就直接走 _consume_human_events
-        （show = consume），不依赖内存池。
+        （write-then-show，同文件原子事务投递），不依赖内存池。
+
+        自愈路径：已投递（在 _injected_signal_event_ids）但 DB 消费仍未落
+        的事件（事务失败/进程崩溃残留）→ 只补消费不渲染，避免双投。
         """
         if not self.instance_id:
             return False
@@ -1952,11 +1958,28 @@ class AIAgent:
             logger.debug("_inject_due_db_events scan failed", exc_info=True)
             return False
 
-        new_events = [
+        candidates = [
             e for e in due
             if e.get("kind") in _AUTO_CONSUME_SIGNAL_KINDS
-            and e.get("event_id") not in self._injected_signal_event_ids
         ]
+        if not candidates:
+            return False
+
+        new_events = [
+            e for e in candidates
+            if e.get("event_id") not in self._injected_signal_event_ids
+        ]
+        # 已投递但 DB 未消费（投递事务失败的残留）→ 只补消费，不重复渲染
+        consumed_only = [e for e in candidates if e not in new_events]
+        if consumed_only:
+            still_failed = self._do_consume_events(consumed_only)
+            if still_failed:
+                logger.warning(
+                    "DB-scan consume-retry still failing for %d event(s): %s "
+                    "(already delivered to model; bookkeeping only)",
+                    len(still_failed), still_failed,
+                )
+
         if not new_events:
             return False
 
@@ -1972,10 +1995,14 @@ class AIAgent:
                 "description": td.description if td else "",
                 "payload": ev.get("payload", {}),
             })
-        self._injected_signal_event_ids.update(s["event_id"] for s in summaries)
-        self._consume_human_events(summaries, messages)
+        failed_delivery = self._consume_human_events(summaries, messages)
+        self._injected_signal_event_ids.update(
+            s.get("event_id") for s in summaries if s not in failed_delivery
+        )
         # 与 _inject_signalled_events 一致：登记 viewed，避免回复被关卡二拦一轮
         for ev in summaries:
+            if ev in failed_delivery:
+                continue
             try:
                 cid = str((ev.get("payload") or {}).get("chat_id") or "")
                 if cid:
@@ -1984,8 +2011,9 @@ class AIAgent:
             except Exception:
                 pass
         logger.info(
-            "DB-scan mid-session pickup: injected %d message event(s) to instance=%s session=%s",
-            len(summaries), self.instance_id, self.session_id,
+            "DB-scan mid-session pickup: injected %d message event(s) to instance=%s session=%s"
+            + (" (%d delivery failed, will retry)" % len(failed_delivery) if failed_delivery else ""),
+            len(summaries) - len(failed_delivery), self.instance_id, self.session_id,
         )
         return True
 
@@ -2036,29 +2064,61 @@ class AIAgent:
                     consumed_normal = True
 
         # Mark all new events as injected (prevent re-injection this session)
-        self._injected_signal_event_ids.update(e.get("event_id") for e in new_events)
-
+        # ——但 message 类事件只在**投递成功**后标记（write-then-show）：
+        # 事务失败的事件不标记，留在池里下一轮 _chat 重试（模型从未看到，
+        # 重试是首次投递）。manual 类无 DB 消费语义，标记即可。
+        failed_delivery: list[dict] = []
         if auto_consume_events:
-            self._consume_human_events(auto_consume_events, messages)
-            # 事件内容已展示给模型 → 同步登记 viewed（关卡二账本）。
-            # 不登记的话"白看"：模型回复该 chat 时仍被关卡二拦截一轮
-            # （mid-session 插入私聊 → 回私聊被拦 → 加载流水 → 重发，
-            # 事件里明明已经看到了内容）。
-            for ev in auto_consume_events:
-                try:
-                    cid = str((ev.get("payload") or {}).get("chat_id") or "")
-                    if cid:
-                        from domain.lifecycle.channel_views import mark_channel_viewed
-                        mark_channel_viewed(cid)
-                except Exception:
-                    pass
+            failed_delivery = self._consume_human_events(auto_consume_events, messages)
+
+        delivered_ids = {
+            e.get("event_id") for e in auto_consume_events
+            if e not in failed_delivery
+        }
+        manual_ids = {e.get("event_id") for e in manual_events}
+        self._injected_signal_event_ids.update(delivered_ids | manual_ids)
+
+        # 事件内容已展示给模型 → 同步登记 viewed（关卡二账本）。
+        # 不登记的话"白看"：模型回复该 chat 时仍被关卡二拦截一轮
+        # （mid-session 插入私聊 → 回私聊被拦 → 加载流水 → 重发，
+        # 事件里明明已经看到了内容）。
+        for ev in auto_consume_events:
+            if ev in failed_delivery:
+                continue
+            try:
+                cid = str((ev.get("payload") or {}).get("chat_id") or "")
+                if cid:
+                    from domain.lifecycle.channel_views import mark_channel_viewed
+                    mark_channel_viewed(cid)
+            except Exception:
+                pass
 
         if manual_events:
             self._notify_manual_events(manual_events, messages)
 
         return consumed_normal
 
-    def _consume_human_events(self, events: list[dict], messages: list[dict[str, Any]]) -> None:
+    def _harvest_injected_memory_ids(self, messages: list[dict[str, Any]]) -> None:
+        """从当前可见的 entity_recall 消息收割认知 id，初始化记忆抑制集合。
+
+        记忆去重状态跟可见性走（2026-09-21 小张案例：接续唤醒重置
+        _injected_memory_ids，同一条记忆在活跃会话里被反复注入 6 次）。
+        KEEP_ROUNDS=3 裁掉的老召回不在列表里，自动解除抑制、允许按新
+        上下文重新浮现（与 _inject_entity_recall 的设计注释一致）。
+        只扫 tool_name=='entity_recall' 的行，避免把 wake_signal 里的
+        事件 #id 误当记忆 id。收割点与格式生成同文件共置（格式为
+        query_entities_ranked 渲染的 ``#<id>`` 认知标记）。
+        """
+        try:
+            import re as _re_harvest
+            for m in messages:
+                if m.get("role") == "tool" and m.get("name") == "entity_recall":
+                    c = str(m.get("content") or "")
+                    self._injected_memory_ids.update(_re_harvest.findall(r"#(\d+)", c))
+        except Exception:
+            logger.debug("memory-id harvest from history failed", exc_info=True)
+
+    def _consume_human_events(self, events: list[dict], messages: list[dict[str, Any]]) -> list[dict]:
         """Show message/group_message content as tool result and auto-consume.
 
         渲染策略：调用 ``_render_signal_message`` 走 event_types.yaml 的
@@ -2072,22 +2132,31 @@ class AIAgent:
         修复：复用 event_registry 的 wake_prompt，私聊模板含 ``对话：{chat_id}``、
         群模板含 ``群：{chat_name}（{chat_id}）``——模型既能判断回复路径、也能
         正确附带发送上下文。
+
+        投递语义（2026-09-21 #124 双投事故重构，write-then-show）：
+        "模型看到" 的入口（append 进 live 上下文）放在持久化成功之后——
+        优先走 ``session_db.append_message_with_consume`` 同文件单事务
+        （INSERT 消息行 + UPDATE events 消费，原子提交）。事务失败 →
+        模型从未看到 → 不标记、不清池 → 下轮 _chat 重试是**首次投递**而非
+        重复。无 session_db（adhoc）时退回 ``_do_consume_events`` 旧路径。
+        返回投递失败的事件列表，调用方只标记成功者。
         """
-        # Auto-consume: mark in DB + clear from in-memory queue
-        self._do_consume_events(events)
+        failed: list[dict] = []
 
         # think_cycle A 入口(mid-session): 人类消息打断当前任务 → 下一轮 LLM call
         # 走 minimal 快答(用户在等), 快答后再恢复原 effort。新消息=新的快答意图,
         # 多条合并消费时 on_human_message 天然幂等(每次都重置 pending)。
-        try:
-            from infrastructure.ai import think_cycle
-            state = getattr(self, "_effort_state", None)
-            if state is not None:
-                think_cycle.on_human_message(state)
-        except Exception:
-            logger.debug("think_cycle.on_human_message failed", exc_info=True)
+        def _fire_think_cycle() -> None:
+            try:
+                from infrastructure.ai import think_cycle
+                state = getattr(self, "_effort_state", None)
+                if state is not None:
+                    think_cycle.on_human_message(state)
+            except Exception:
+                logger.debug("think_cycle.on_human_message failed", exc_info=True)
 
         for ev in events:
+            eid = ev.get("event_id")
             content = _render_signal_message(ev)
 
             # mid-session 注入附带同窗口最近对话（指代消解用）：
@@ -2111,29 +2180,51 @@ class AIAgent:
             except Exception:
                 logger.debug("window-context attach failed", exc_info=True)
 
+            payload = ev.get("payload", {}) if isinstance(ev.get("payload"), dict) else {}
+            chat_id = payload.get("chat_id", "") if isinstance(payload, dict) else ""
+
+            # ── 投递（write-then-show）─────────────────────────────────────────
+            delivered = False
+            if (
+                self.session_db is not None
+                and self.session_id
+                and hasattr(self.session_db, "append_message_with_consume")
+            ):
+                # 同文件单事务：消息行 + 事件消费原子提交
+                try:
+                    self.session_db.append_message_with_consume(
+                        self.session_id, "tool", content,
+                        event_ids=[int(eid)] if eid is not None else [],
+                        tool_name="wake_signal",
+                        chat_id=chat_id,
+                    )
+                    delivered = True
+                except Exception as exc:
+                    logger.warning(
+                        "atomic deliver failed for event %s — model has NOT seen it, "
+                        "will retry next _chat: %s", eid, exc,
+                    )
+            else:
+                # adhoc / 旧版 mock session_db：退回先消费后展示（尽力而为）
+                if not self._do_consume_events([ev]):
+                    delivered = True
+
+            if not delivered:
+                failed.append(ev)
+                continue
+
+            # 事务已提交 → 消息必然持久化且事件必然消费，append live 上下文
             assistant_msg, tool_msg = self._sys_tool_call("wake_signal", content)
             messages.append(assistant_msg)
             messages.append(tool_msg)
-            # ⚠ 关键 bug 修复(2026-06-23):mid-session 注入必须持久化到 session_db,
-            # 否则下一次 _chat 重新加载 messages 时,wake_signal 消失在历史里——
-            # 模型本轮 LLM call 看一眼,下一轮 LLM call 就忘了。
-            # 历史 BUG 现象:alpha 在 RUNNING 时收到人类的复杂任务,但只在
-            # 当前 LLM call 看到;后续 N 次 LLM call 都失去这条,直到偶然调
-            # sense_conversation 才在 messages.db 里翻到——导致 14 分钟黑箱。
-            # 修法:_append_message 写到 sessions 表(下一轮 _chat 重启 messages
-            # 时它还在)。chat_id 从 ev payload 取(让前端 Transcript 也按 chat 聚合)。
-            payload = ev.get("payload", {}) if isinstance(ev.get("payload"), dict) else {}
-            if self.session_id:
-                self._append_message(
-                    self.session_id, "tool", content,
-                    tool_name="wake_signal",
-                    chat_id=payload.get("chat_id", "") if isinstance(payload, dict) else "",
-                )
             if self.audit_ctx is not None:
                 try:
                     self.audit_ctx.recall("wake_signal", content)
                 except Exception:
                     logger.debug("Failed to dual-write wake_signal", exc_info=True)
+            _fire_think_cycle()
+
+        return failed
 
 
     def _notify_manual_events(self, events: list[dict], messages: list[dict[str, Any]]) -> None:
@@ -2154,29 +2245,37 @@ class AIAgent:
                 self.audit_ctx.recall("wake_signal", "\n".join(lines))
             except Exception:
                 logger.debug("Failed to dual-write wake_signal", exc_info=True)
-    def _do_consume_events(self, events: list[dict]) -> None:
-        """Mark events as consumed in DB and clear them from the in-memory queue."""
-        event_ids = [ev.get("event_id") for ev in events if ev.get("event_id") is not None]
-        if not event_ids:
-            return
+    def _do_consume_events(self, events: list[dict]) -> list[int]:
+        """Mark events as consumed in DB and clear them from the in-memory queue.
 
-        # 1. Mark consumed in DB
-        try:
-            from domain.lifecycle.events import consume_event
-            for eid in event_ids:
-                try:
-                    consume_event(eid)
-                except Exception:
-                    pass
-        except ImportError:
-            pass
-
-        # 2. Remove only these events from in-memory signalled queue
-        try:
-            from domain.lifecycle.session_events import consume_signalled_events_by_ids
-            consume_signalled_events_by_ids(set(event_ids))
-        except ImportError:
-            pass
+        返回消费失败的 event_id 列表——调用方据此决定哪些事件不能标记为
+        已投递（2026-09-21 #124 双投事故：旧版 ``except: pass`` 静默吞掉
+        消费失败，渲染照常进行、内存池照常清空，DB 里事件却挂着未消费，
+        下一个 wake 被重新捞出再渲染一次）。
+        """
+        failed: list[int] = []
+        for ev in events:
+            eid = ev.get("event_id")
+            if eid is None:
+                continue
+            try:
+                from domain.lifecycle.events import consume_event
+                consume_event(eid)
+            except Exception as exc:
+                logger.warning(
+                    "consume_event(%s) failed — event kept for retry: %s", eid, exc
+                )
+                failed.append(int(eid))
+                continue
+            # 消费成功才清内存池；失败的留在池里等下一轮 _chat 重试
+            try:
+                from domain.lifecycle.session_events import consume_signalled_events_by_ids
+                consume_signalled_events_by_ids({eid})
+            except ImportError:
+                pass
+            except Exception:
+                logger.debug("pool clear for event %s failed", eid, exc_info=True)
+        return failed
 
     def _inject_entity_recall(self, messages: list[dict[str, Any]]) -> None:
         """Scan new messages for known entities and inject relevant memories.

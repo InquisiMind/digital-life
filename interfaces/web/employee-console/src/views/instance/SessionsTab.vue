@@ -286,10 +286,24 @@ const timeline = computed(() => {
       key: 'msg-' + i,
     }
   })
-  const injItems = injectionsData.value.map((inj, i) => ({
-    type: 'injection', inj, ts: Number(inj.injected_at) || 0,
-    key: 'inj-' + (inj.id || i),
-  }))
+  // 双写去重：wake_signal/entity_recall 等 sys_tool 同时落 messages（session_db）
+  // 和 injections（audit_ctx.recall 双写）——同内容只保留 messages 行，
+  // 否则同一事件渲染两遍（紫色注入块 + 蓝色消息行）。
+  const sysToolContents = new Set(
+    merged
+      .filter(m => m.role === 'tool' && SYS_TOOLS.has(m.tool_name || ''))
+      .map(m => String(m.content || ''))
+  )
+  const injItems = injectionsData.value
+    .filter(inj => {
+      const t = inj.sys_tool || ''
+      if (!SYS_TOOLS.has(t)) return true
+      return !sysToolContents.has(String(inj.content || ''))
+    })
+    .map((inj, i) => ({
+      type: 'injection', inj, ts: Number(inj.injected_at) || 0,
+      key: 'inj-' + (inj.id || i),
+    }))
   const all = [...msgItems, ...injItems]
   all.sort((a, b) => {
     if (a.ts !== b.ts) return a.ts - b.ts

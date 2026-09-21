@@ -311,7 +311,9 @@ function payloadDumpHint(item) {
 }
 function msgLabel(m) {
   // mid-session 注入类 sys_tool 用专属标签
-  if (m?.role === 'tool' && ['wake_signal','entity_recall','mid_session_event','sys_nudge'].includes(m?.tool_name)) return 'EVENT'
+  // entity_recall 是记忆联想（非事件）——单独 RECALL 标签，不与 wake_signal 混标 EVENT
+  if (m?.role === 'tool' && m?.tool_name === 'entity_recall') return 'RECALL'
+  if (m?.role === 'tool' && ['wake_signal','mid_session_event','sys_nudge'].includes(m?.tool_name)) return 'EVENT'
   return { user:'EVENT', assistant:'AI', tool:'TOOL', system:'SYS' }[m.role||'']||m.role||''
 }
 function msgDotClass(m) {

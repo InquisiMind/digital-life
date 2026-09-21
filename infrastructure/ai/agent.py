@@ -609,6 +609,50 @@ class AIAgent:
         # （实测 wake_3311 修复后 call 序列仍带 48 孤儿——旧位置在
         # inject 内，触发条件没到就一直烧）。
         self._prune_orphan_recalls(messages)
+        # ── 消息头不变式（2026-09-21 alpha 400 死循环）────────────────────
+        # 长会话接续时，段压缩/工具裁剪可能把对话头（system/user）整个折掉，
+        # 剩余 messages[0] 是 assistant+tool_calls → GLM/OpenAI 系 API 直接
+        # 400 Bad Request，且每个重试 wake 组装出同样的坏头 → 死循环。
+        # 兜底：首条非 system 消息不是 user 时，插入最小合成 user 头。
+        for i, m in enumerate(messages):
+            if m.get("role") == "system":
+                continue
+            if m.get("role") != "user":
+                messages.insert(
+                    i,
+                    {"role": "user", "content": "（接续上一段工作，请从中断处继续）"},
+                )
+                logger.warning(
+                    "payload head invariant: inserted synthetic user head at %d "
+                    "(original head role=%s, messages=%d)", i, m.get("role"), len(messages),
+                )
+            break
+
+        # ── 孤儿 tool 消息剔除（同事故第二根因）─────────────────────────────
+        # 段压缩/工具指针化会移除 assistant 占位但留下 tool 结果（或序列化
+        # 不对称产生），GLM 严格校验 assistant.tool_calls ↔ tool.tool_call_id
+        # 配对 → 1214 messages 参数非法 → wake 秒死退避循环。实测 alpha
+        # 50 条消息里 16 条孤儿；剔除后同 payload 重放即被接受。
+        pending_ids: set[str] = set()
+        orphan_idx: set[int] = set()
+        for i, m in enumerate(messages):
+            role = m.get("role")
+            if role == "assistant":
+                for tc in (m.get("tool_calls") or []):
+                    tid = tc.get("id") if isinstance(tc, dict) else None
+                    if tid:
+                        pending_ids.add(tid)
+            elif role == "tool":
+                tid = m.get("tool_call_id")
+                if tid in pending_ids:
+                    pending_ids.discard(tid)
+                else:
+                    orphan_idx.add(i)
+        if orphan_idx:
+            messages[:] = [m for i, m in enumerate(messages) if i not in orphan_idx]
+            logger.warning(
+                "payload pairing: pruned %d orphan tool message(s)", len(orphan_idx)
+            )
         url = self._chat_url()
         headers = {"Content-Type": "application/json"}
         if self.api_key:

@@ -3,14 +3,11 @@
     <section class="page-hero">
       <div>
         <h1 class="page-title">Skill Market</h1>
-        <p class="page-subtitle">系统内置 + 实例共享 + 实例自建 · 全局管启用 · 实例管挂载</p>
+        <p class="page-subtitle">系统内置 + 实例共享 + 实例自建 · 本页只管全局启停 · 实例级订阅请进实例详情 → 能力订阅</p>
       </div>
       <div style="display: flex; align-items: center; gap: 12px;">
-        <span class="brand-sub">为实例订阅：</span>
-        <el-select v-model="selectedInstance" placeholder="选择实例…" filterable style="width: 180px;">
-          <el-option v-for="i in instances" :key="i.id" :label="i.display_name" :value="i.id" />
-        </el-select>
-        <el-button @click="loadAll"><el-icon><Refresh /></el-icon></el-button>
+        <el-tag effect="plain" type="info">全局 {{ enabledCount }}/{{ skills.length }} 启用</el-tag>
+        <el-button @click="loadSkills"><el-icon><Refresh /></el-icon></el-button>
       </div>
     </section>
 
@@ -39,8 +36,6 @@
           <el-switch
             :model-value="skill.enabled !== false"
             :loading="globalToggling.has(skill.global_key)"
-            active-text="启用"
-            inactive-text="停用"
             @change="(v) => toggleGlobal(skill, v)"
           />
         </div>
@@ -53,16 +48,6 @@
             <el-button size="small" text @click="openDoc(skill)">文档</el-button>
             <el-button size="small" text @click="revealLocal(skill)" title="在访达中定位">本地</el-button>
           </div>
-          <el-switch
-            v-if="selectedInstance && skill.enabled !== false"
-            :model-value="!!skill.subscribed"
-            :loading="toggling.has(skill.name)"
-            active-text="订阅"
-            inactive-text=""
-            @change="(v) => toggleSubscribe(skill, v)"
-          />
-          <span v-else-if="skill.enabled === false" class="brand-sub" style="color: var(--neon-red);">全局停用中</span>
-          <span v-else class="brand-sub" style="color: var(--text-muted);">选实例…</span>
         </div>
       </div>
     </div>
@@ -81,19 +66,18 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { systemApi } from '@/api/client'
 import { renderMarkdown } from '@/composables/useMarkdown'
 
-const instances = ref([])
 const skills = ref([])
-const selectedInstance = ref('')
-const toggling = reactive(new Set())
 const globalToggling = reactive(new Set())
 
 const docDrawer = reactive({ visible: false, title: '', path: '', content: '', key: '' })
+
+const enabledCount = computed(() => skills.value.filter((s) => s.enabled !== false).length)
 
 async function openDoc(skill) {
   const d = await systemApi.skillContent(skill.global_key)
@@ -124,24 +108,10 @@ function scopeTagType(scope) {
   return { system: 'info', shared: 'warning', personal: 'success' }[scope] || 'info'
 }
 
-async function loadInstances() {
-  const d = await systemApi.instances()
-  if (d.error) return
-  instances.value = d.instances || []
-  if (!selectedInstance.value && instances.value.length) {
-    selectedInstance.value = instances.value[0].id
-  }
-}
-
 async function loadSkills() {
-  const d = await systemApi.skills(selectedInstance.value)
+  const d = await systemApi.skills()
   if (d.error) return
   skills.value = d.skills || []
-}
-
-async function loadAll() {
-  await loadInstances()
-  await loadSkills()
 }
 
 async function toggleGlobal(skill, enabled) {
@@ -157,21 +127,7 @@ async function toggleGlobal(skill, enabled) {
   await loadSkills()
 }
 
-async function toggleSubscribe(skill, subscribed) {
-  if (!selectedInstance.value) return
-  toggling.add(skill.name)
-  const d = await systemApi.subscribeSkill(selectedInstance.value, skill.name, subscribed)
-  toggling.delete(skill.name)
-  if (d.error) {
-    ElMessage.error(d.error)
-    return
-  }
-  ElMessage.success(`${skill.name} ${subscribed ? '已订阅' : '已退订'} · ${d.skills.length} 项`)
-  await loadSkills()
-}
-
-watch(selectedInstance, loadSkills)
-onMounted(loadAll)
+onMounted(loadSkills)
 </script>
 
 <style scoped>

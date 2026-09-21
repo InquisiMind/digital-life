@@ -36,7 +36,9 @@ def register_task_tools(
 
     # ── task ──
     def _handle_task(args: Dict[str, Any], **context) -> str:
-        action = (args.get("action") or "list").strip().lower()
+        action = (args.get("action") or "").strip().lower()
+        if not action:
+            return _j({"ok": False, "reason": "缺少必填参数 action（create/list/get/update/start/pause/done/cancel/search），请补齐后重试"})
         task_id = (args.get("todo_id") or args.get("task_id") or "").strip()
         title = (args.get("title") or "").strip()
         description = (args.get("description") or "").strip()
@@ -259,7 +261,9 @@ def register_task_tools(
 
     # ── task_plan ──
     def _handle_task_plan(args: Dict[str, Any], **_) -> str:
-        action = (args.get("action") or "list").strip().lower()
+        action = (args.get("action") or "").strip().lower()
+        if not action:
+            return _j({"ok": False, "reason": "缺少必填参数 action（create/list/complete/skip/update），请补齐后重试"})
         task_id = (args.get("todo_id") or args.get("task_id") or "").strip()
         content = (args.get("content") or "").strip()
         deadline = (args.get("deadline") or "").strip() or None
@@ -342,7 +346,9 @@ def register_task_tools(
 
     # ── task_note ──
     def _handle_task_note(args: Dict[str, Any], **context) -> str:
-        action = (args.get("action") or "read").strip().lower()
+        action = (args.get("action") or "").strip().lower()
+        if not action:
+            return _j({"ok": False, "reason": "缺少必填参数 action（add/read），请补齐后重试"})
         task_id = (args.get("todo_id") or args.get("task_id") or "").strip()
         content = (args.get("content") or "").strip()
 
@@ -458,7 +464,9 @@ def register_task_tools(
         """待办工具。三种触发：time / condition / ongoing。
         时间型 create 自动注册闹钟；update/delete/status 变化自动联动闹钟。
         """
-        action = (args.get("action") or "list").strip().lower()
+        action = (args.get("action") or "").strip().lower()
+        if not action:
+            return _j({"ok": False, "reason": "缺少必填参数 action（create/list/get/update/delete），请补齐后重试"})
         snap = consume_energy_fn(0)
 
         if action == "create":

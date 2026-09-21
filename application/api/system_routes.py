@@ -1691,6 +1691,9 @@ async def _handle_skills_catalog(request: web.Request) -> web.Response:
     可选 query ``?iid=xxx``：在该实例下，额外补 ``subscribed: bool`` 字段。
     """
     iid = (request.query.get("iid") or "").strip()
+    # 契约v2 E1: iid 白名单校验——短iid/typo 静默返回全 False 的坑，入参即挡
+    if iid and iid not in (_load_registry() or {}):
+        return web.json_response({"error": f"unknown instance: {iid}"}, status=404)
     catalog = _build_skills_catalog()
     if iid:
         subscribed = _read_instance_skills(iid)
@@ -1849,6 +1852,33 @@ def _read_instance_skills(iid: str) -> set[str]:
         return set()
 
 
+def _classify_skill_for_instance(iid: str, skill: str) -> dict[str, Any] | None:
+    """契约 v2 订阅校验②③：判定 name 对该实例是否可订阅。
+
+    返回 None = 可订阅；返回 dict = 拒绝（404 not subscribable / 409 他人 personal）。
+    - 可订阅 = 本实例 personal ∪ shared ∪ system 至少一处命中（loader 同解析序）
+    - 仅命中其他实例 personal = 409 引导显式转 shared
+    """
+    catalog = _build_skills_catalog()
+    hits = [s for s in catalog if s["name"] == skill]
+    if not hits:
+        return {
+            "status": 404,
+            "reason": f"not subscribable: skill '{skill}' not found "
+                      f"in personal(iid)/shared/system（挡 typo 僵尸订阅）",
+        }
+    for s in hits:
+        if s["scope"] in ("system", "shared"):
+            return None
+        if s["scope"] == "personal" and s.get("owner_id") == iid:
+            return None
+    owners = sorted({str(s.get("owner_name") or str(s.get("owner_id"))[:8]) for s in hits})
+    return {
+        "status": 409,
+        "reason": f"personal skill of {', '.join(owners)}, 请其 owner 移入 shared 后再订阅",
+    }
+
+
 def _find_skill_by_key(gkey: str) -> Path | None:
     """按 global_key 在 catalog 里定位技能目录（校验存在 + 限项目根内）。"""
     catalog = _build_skills_catalog()
@@ -1945,6 +1975,15 @@ async def _handle_skill_subscribe(request: web.Request) -> web.Response:
         )
     if iid not in (_load_registry() or {}):
         return web.json_response({"error": f"unknown instance: {iid}"}, status=404)
+
+    # 契约 v2 校验②③（订阅方向校验；取消免校验——允许清理历史僵尸订阅）
+    if subscribed:
+        verdict = _classify_skill_for_instance(iid, skill)
+        if verdict is not None:
+            body = {"error": verdict["reason"]}
+            if verdict["status"] == 409:
+                body["hint"] = verdict["reason"]
+            return web.json_response(body, status=verdict["status"])
 
     try:
         current = _read_instance_skills(iid)

@@ -219,6 +219,64 @@ def load_registered_tools(instance_id: str = "") -> dict[str, int]:
 # ── Skill registration ───────────────────────────────────────────────────────
 
 
+def _skill_description_from_content(content: str) -> str:
+    """从 content 提取 description：首行非空文本，去标题前缀/强调符，截 60 字。
+
+    供 frontmatter 包裹时回填（替代硬编码英文占位符，让 skill_index 渲染
+    有意义的一行摘要）。
+    """
+    for line in content.strip().splitlines():
+        text = line.strip()
+        while text.startswith("#"):
+            text = text.lstrip("#").strip()
+        if not text:
+            continue
+        for ch in ("*", "`"):
+            text = text.replace(ch, "")
+        text = text.strip()
+        if text:
+            return text[:60]
+    return "auto-registered skill"
+
+
+def _append_skill_to_app_yaml(name: str, instance_id: str) -> bool:
+    """把 skill name 追加进实例 app.yaml 的 skills 列表（保序去重，幂等）。
+
+    get_instance_registered_skills / render_skill_index 只认
+    apps/<iid>/config/app.yaml 的 skills 字段；不回填则注册的 skill
+    下次 wake 不可见（0921 bug 修复）。已存在视为成功（幂等）。
+    """
+    try:
+        import yaml as _yaml
+
+        from infrastructure.config import (
+            get_app_instance_id,
+            get_instance_app_config_path,
+        )
+
+        iid = get_app_instance_id(instance_id or None)
+        app_yaml = get_instance_app_config_path(iid)
+        cfg: dict[str, Any] = {}
+        if app_yaml.exists():
+            cfg = _yaml.safe_load(app_yaml.read_text(encoding="utf-8")) or {}
+        skills = cfg.get("skills")
+        if not isinstance(skills, list):
+            skills = []
+        if name in skills:
+            return True
+        skills.append(name)
+        cfg["skills"] = skills
+        app_yaml.parent.mkdir(parents=True, exist_ok=True)
+        app_yaml.write_text(
+            _yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        return True
+    except Exception as exc:
+        logger.warning("Failed to append skill %s to app.yaml: %s", name, exc)
+        return False
+
+
 def register_skill(
     *,
     name: str,
@@ -250,7 +308,7 @@ def register_skill(
         final_content = (
             "---\n"
             f"name: {name}\n"
-            f"description: auto-registered skill\n"
+            f"description: {_skill_description_from_content(content)}\n"
             "version: 1.0.0\n"
             "platforms: []\n"
             "---\n\n"
@@ -272,13 +330,27 @@ def register_skill(
         extra={"file": str(rel_path)},
     )
 
+    # personal scope: 回填实例 app.yaml 的 skills 列表。
+    # render_skill_index 只认 app.yaml 的 skills 字段，不回填则下次 wake
+    # skill_index 不渲染该 skill → 注册即被静默吞掉（0921 实锤 bug 修复）。
+    app_yaml_note = ""
+    if scope == "personal":
+        if _append_skill_to_app_yaml(name, instance_id):
+            app_yaml_note = "已加入 app.yaml 订阅列表。"
+        else:
+            app_yaml_note = (
+                "⚠️ app.yaml 回填失败——下次 wake 的 skill_index 不会出现该 skill，"
+                f"需手动在 apps/<iid>/config/app.yaml 的 skills 列表补一行 '{name}'。"
+            )
+
     return {
         "ok": True,
         "skill_name": name,
         "file_path": str(rel_path),
         "scope": scope,
         "note": (
-            f"已写入。下次 wake 在 skill_index 就能看到 '{name}'，"
+            f"已写入。{app_yaml_note}"
+            f"下次 wake 在 skill_index 就能看到 '{name}'，"
             f"调 skill_view('{name}') 看完整方法论。"
             f"修改时再调 register_skill 传同名即可覆盖。"
         ),

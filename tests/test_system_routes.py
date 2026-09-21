@@ -259,6 +259,12 @@ def test_skill_subscribe_toggles_app_yaml_list(isolated_project, app_with_one_in
         _read_instance_skills,
     )
 
+    # 契约 v2：订阅前技能须真实存在（personal/shared/system 任一），
+    # 否则 404 挡 typo 僵尸订阅。先造一个该实例的 personal skill。
+    skill_dir = isolated_project / "apps" / app_with_one_instance / "skills" / "new_skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# New Skill\n\ncreated for test\n", encoding="utf-8")
+
     request = _make_request(
         "POST",
         "/api/system/skills/subscribe",

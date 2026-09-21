@@ -136,6 +136,22 @@ class ToolRegistry:
         if not any(tool.toolset == entry.toolset for tool in self._tools.values()):
             self._toolset_checks.pop(entry.toolset, None)
 
+    @staticmethod
+    def _missing_required(entry: "ToolEntry", payload: dict[str, Any]) -> list[str]:
+        """C(0921): 对照 schema required 列表找缺失必填参数。schema 无 required 视为通过。"""
+        try:
+            schema = entry.schema or {}
+            # 兼容两种 schema 形态: 包装形态 {"function": {"parameters": ...}}
+            # 和扁平 OpenAI 形态 {"parameters": ...} (运行时注册实际用扁平形态)
+            fn = schema.get("function") or {}
+            params = fn.get("parameters") if fn else None
+            if params is None:
+                params = schema.get("parameters") or {}
+            required = params.get("required") or []
+            return [p for p in required if p not in payload]
+        except Exception:
+            return []
+
     def dispatch(self, name: str, args: dict[str, Any] | None = None, **kwargs: Any) -> str:
         entry = self._tools.get(name)
         if not entry:
@@ -149,6 +165,15 @@ class ToolRegistry:
             deprecated_prefix = "[retired] "
         try:
             payload = args or {}
+            # C(0921): 必填参数缺失在 dispatch 层拦截, 报错带参数名
+            # (此前错误出现在 handler 深处的 TypeError, 与参数名脱钩)。
+            missing = self._missing_required(entry, payload)
+            if missing:
+                return tool_error(
+                    f"Missing required parameter(s): {', '.join(missing)} (tool: {name})",
+                    retired=not entry.schema_visible,
+                    hint=f"必填参数缺失: {', '.join(missing)}。请补参后重试。",
+                )
             if entry.is_async:
                 from interfaces.tools.async_utils import run_async
 

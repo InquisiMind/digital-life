@@ -15,22 +15,6 @@
       "registered_at": "2026-08-25T08:29:33",
       "scope": "shared",
       "file": "shared/skills/cognition_extraction_pipeline/SKILL.md"
-    },
-    {
-      "name": "diagnosis_analyst",
-      "description": "# 诊断分析师方法论（小李 · 存量线）",
-      "version": "1",
-      "registered_at": "2026-09-20T21:03:39",
-      "scope": "shared",
-      "file": "shared/skills/diagnosis_analyst/SKILL.md"
-    },
-    {
-      "name": "selection_specialist",
-      "description": "# 选品专员方法论（小王 · 增量线）",
-      "version": "1",
-      "registered_at": "2026-09-20T21:04:01",
-      "scope": "shared",
-      "file": "shared/skills/selection_specialist/SKILL.md"
     }
   ]
 }

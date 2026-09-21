@@ -18,10 +18,10 @@ def _setup_module(tmp_path, monkeypatch):
 def test_record_inbound_and_list_roundtrip(tmp_path, monkeypatch):
     M = _setup_module(tmp_path, monkeypatch)
 
-    rid = M.record_inbound(chat_id="oc_test", sender_id="ou_human",
-                           sender_name="张三", text="hello",
+    rid, inserted = M.record_inbound(chat_id="oc_test", sender_id="ou_human",
+                                sender_name="张三", text="hello",
                            msg_id="om_001", source="lark")
-    assert rid > 0
+    assert rid > 0 and inserted is True
 
     msgs = M.list_messages("oc_test", limit=10)
     assert len(msgs) == 1
@@ -42,7 +42,10 @@ def test_dedup_same_source_and_msg_ref(tmp_path, monkeypatch):
                           text="hi", msg_id="om_x", source="lark")
     r2 = M.record_inbound(chat_id="oc_t", sender_id="ou_h", sender_name="张三",
                           text="hi", msg_id="om_x", source="lark")
-    assert r1 == r2, "相同 (source, msg_ref) 必须去重,返回同一 row id"
+    id1, ins1 = r1
+    id2, ins2 = r2
+    assert id1 == id2, "相同 (source, msg_ref) 必须去重,返回同一 row id"
+    assert ins1 is True and ins2 is False, "第二次写入必须是确认重复(inserted=False)"
 
     # 但不同 source 不去重(例如同 msg_id 在 lark vs broadcast: 视为两条不同消息)
     r3 = M.record_broadcast_in(chat_id="oc_t", from_display_name="alpha",
@@ -67,10 +70,10 @@ def test_chat_id_isolation(tmp_path, monkeypatch):
 
 def test_outbound_marks_self(tmp_path, monkeypatch):
     M = _setup_module(tmp_path, monkeypatch)
-    rid = M.record_outbound(chat_id="oc_x", self_display_name="zero",
+    rid, inserted = M.record_outbound(chat_id="oc_x", self_display_name="zero",
                              self_instance_id="uuid_zero",
                              text="hi all", msg_id="om_out_1", source="lark")
-    assert rid > 0
+    assert rid > 0 and inserted is True
     m = M.list_messages("oc_x", limit=1)[0]
     assert m["direction"] == "out"
     assert m["sender_role"] == "self"
@@ -80,12 +83,12 @@ def test_outbound_marks_self(tmp_path, monkeypatch):
 
 def test_broadcast_in_marks_bot_broadcast(tmp_path, monkeypatch):
     M = _setup_module(tmp_path, monkeypatch)
-    rid = M.record_broadcast_in(chat_id="oc_x",
+    rid, inserted = M.record_broadcast_in(chat_id="oc_x",
                                  from_display_name="alpha",
                                  from_instance_id="uuid_alpha",
                                  text="alpha said",
                                  msg_ref="om_alpha_1")
-    assert rid > 0
+    assert rid > 0 and inserted is True
     m = M.list_messages("oc_x", limit=1)[0]
     assert m["direction"] == "in"
     assert m["source"] == "broadcast:uuid_alpha"
@@ -125,9 +128,9 @@ def test_list_plain_text_rendering(tmp_path, monkeypatch):
 def test_record_skips_empty_chat_or_text(tmp_path, monkeypatch):
     M = _setup_module(tmp_path, monkeypatch)
     assert M.record_message(direction="in", source="lark", chat_id="",
-                            text="x") is None
+                            text="x") == (None, False)
     assert M.record_message(direction="in", source="lark", chat_id="oc_x",
-                            text="") is None
+                            text="") == (None, False)
 
 
 def test_instance_data_isolation(tmp_path, monkeypatch):

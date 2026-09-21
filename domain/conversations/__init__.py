@@ -31,11 +31,13 @@ def record_inbound_message(
     msg_id: str = "",
     sender_kind: str = "human",
     attachments: list[str] | None = None,
-) -> Optional[int]:
+) -> tuple[Optional[int], bool]:
     """入站消息(实例自己收到平台消息时调一次)。
 
     旧签名保留兼容;实际写本实例 messages.db(direction='in',
     sender_role='human'/'other',per-app open_id 仅本库可见)。
+    返回 (row_id, inserted):inserted=False 即 (source,msg_ref) 重复
+    (平台重推/广播重放)——handler 侧事件闸门的关键信号(9/21)。
     """
     from domain.messages import record_inbound
     # 平台前缀: feishu → lark, 其它用平台名自身
@@ -78,7 +80,7 @@ def publish_chat_message(
     my_iid = get_app_instance_id() or sender_id
     my_name = get_instance_display_name() or sender_name or "Self"
 
-    rid = record_outbound(
+    rid, _inserted = record_outbound(
         chat_id=chat_id, self_display_name=my_name,
         self_instance_id=my_iid, text=text, msg_id=msg_id, source="feishu",
     )

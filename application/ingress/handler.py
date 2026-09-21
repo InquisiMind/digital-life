@@ -471,10 +471,10 @@ def _route_to_life(
         attachment_ids=attachment_ids or [],
     )
     logger.info(
-        "EMIT_HUMAN_RESULT event_id=%d is_group=%s chat_id=%r "
+        "EMIT_HUMAN_RESULT event_id=%r is_group=%s chat_id=%r "
         "instance_id=%r outcome=%s",
         event_id, is_group, chat_id, instance_id,
-        "ok" if event_id > 0 else "FAILED-or-merged",
+        "ok" if (event_id or 0) > 0 else "FAILED-or-merged",
     )
 
     try:
@@ -715,6 +715,37 @@ def _emit_l4_human_event(
                     t = (item.get("text") if isinstance(item, dict) else "") or ""
                     lines.append(f"  {s}：{t}")
                 _mt_block = "\n".join(lines)
+            # ── 事件闸门(9/21 幂等修复):record 先行,emit 后置 ──
+            # 平台重推同一 msg_id 时,UNIQUE(source,msg_ref) 在落库层幂等,
+            # inserted=False 即确认重复 → 跳过 emit,实例不会被二次唤醒。
+            # 落库失败(rid None,如 BUSY)→ 照投不误:宁重复不丢失(at-least-once)。
+            # 上次正常投递时 conversation_log/聚合库都已留痕,重复路径直接短路。
+            rid: int | None = None
+            inserted = True
+            try:
+                from domain.conversations import record_inbound_message
+                rid, inserted = record_inbound_message(
+                    chat_id,
+                    sender_id=sender_id,
+                    sender_name=sender_name,
+                    text=text,
+                    msg_id=msg_id,
+                    sender_kind="human",
+                    attachments=attachment_ids if attachment_ids else None,
+                )
+            except Exception as exc:
+                # 之前是 except: pass + 引用了未定义的 msg 变量,导致聚合库 5 天 0 条 human 消息。
+                # 改为 warning 暴露根因,便于定位。闸门侧:异常按"落库失败"处理,照投事件。
+                logger.warning("record_inbound_message failed (chat=%s sender=%s): %s",
+                               chat_id[:16], sender_name, exc, exc_info=True)
+                rid, inserted = None, True
+            if inserted is False and rid is not None:
+                logger.info(
+                    "L4 dedup gate: duplicate msg skipped (chat=%s msg_ref=%r row_id=%s)",
+                    chat_id[:16], msg_id, rid,
+                )
+                return 0
+
             event_id = emit_event(
                 kind="group_message",
                 payload={
@@ -754,24 +785,6 @@ def _emit_l4_human_event(
                 )
             except Exception:
                 pass
-            # 记录到聚合库（让所有实例看到这条 in）
-            # sender_id 已在函数顶部统一为 unified_id；msg_id 透传做 UNIQUE 去重。
-            try:
-                from domain.conversations import record_inbound_message
-                record_inbound_message(
-                    chat_id,
-                    sender_id=sender_id,
-                    sender_name=sender_name,
-                    text=text,
-                    msg_id=msg_id,
-                    sender_kind="human",
-                    attachments=attachment_ids if attachment_ids else None,
-                )
-            except Exception as exc:
-                # 之前是 except: pass + 引用了未定义的 msg 变量，导致聚合库 5 天 0 条 human 消息。
-                # 改为 warning 暴露根因，便于定位。
-                logger.warning("record_inbound_message failed (chat=%s sender=%s): %s",
-                               chat_id[:16], sender_name, exc, exc_info=True)
             return event_id
 
         event_id = emit_event(

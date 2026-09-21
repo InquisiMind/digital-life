@@ -86,6 +86,13 @@ def _now_iso() -> str:
 _SCHEMA_LOCK = threading.Lock()
 
 
+def _connect(p):
+    """打开 messages 库连接。busy_timeout 是连接级属性，必须每次 connect 都设。"""
+    conn = sqlite3.connect(str(p))
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
 def _ensure_schema(instance_id: str | None = None) -> None:
     """幂等创建 messages 表。
 
@@ -97,7 +104,7 @@ def _ensure_schema(instance_id: str | None = None) -> None:
     p = messages_db_path(instance_id)
     p.parent.mkdir(parents=True, exist_ok=True)
     with _SCHEMA_LOCK:
-        conn = sqlite3.connect(str(p))
+        conn = _connect(p)
         try:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS messages (
@@ -142,41 +149,33 @@ def record_message(
     direction: str,
     source: str,
     chat_id: str,
-    sender_name: str = "",
     text: str,
-    msg_ref: str = "",
     platform_sender: str = "",
-    sender_role: str = "",
+    sender_name: str = "",
+    sender_role: str = "other",
+    msg_ref: str = "",
     instance_id: str | None = None,
     attachments: list[str] | None = None,
-) -> Optional[int]:
-    """通用 INSERT,带 (source, msg_ref) 去重。
+) -> tuple[Optional[int], bool]:
+    """写入一条消息，返回 (row_id, inserted)。
 
-    返回插入后的 row id;若是 OR IGNORE 冲突(重复),返回既有行的 id。
-
-    direction: 'in' / 'out'
-    source: 'lark' / 'wechat' / ... / 'broadcast:<peer_uuid>'
-    chat_id: 群 oc_ 或私聊 ou_
-    platform_sender: 入站时填对方 open_id(per-app 视角,永不外漏);
-                     出站时填 self_uuid;广播写入时填 from_uuid
-    sender_name: display_name(给模型看的)
-    sender_role: 'self'/'human'/'bot-broadcast'/'other'
-    msg_ref: 平台原生 msg_id 或广播来源自带,配 source 做去重
-    instance_id: 显式指定写入目标实例库。master 进程接收广播中转时必传,
-                 绕过 ContextVar 默认值(否则会错写到 master 默认实例)。
-    attachments: 可选的 attachment_id 列表（多模态附件）。JSON 序列化存 attachments_json 列。
+    幂等闸门：UNIQUE(source, msg_ref) 冲突时返回 (既有行id, False)；
+    空消息返回 (None, False)；落库异常(锁/损坏)返回 (None, False)。
+    inserted=True 表示新插入(调用方应继续投递事件)；False 表示重复或
+    失败——row_id 区分: >0 重复(跳过投递), None 失败(调用方裁量)。
     """
     if not chat_id or text is None or not str(text).strip():
-        return None
-    _ensure_schema(instance_id)
-    p = messages_db_path(instance_id)
-    if not msg_ref:
-        msg_ref = f"local_{direction}_{int(time.time() * 1000)}_{(platform_sender or sender_name or 'x')[:8]}_{_uuid.uuid4().hex[:6]}"
-    now = _now_iso()
-    attachments_json = json.dumps(attachments, ensure_ascii=False) if attachments else ""
-
-    conn = sqlite3.connect(str(p))
+        return None, False
+    conn = None
     try:
+        _ensure_schema(instance_id)
+        p = messages_db_path(instance_id)
+        if not msg_ref:
+            msg_ref = f"local_{direction}_{int(time.time() * 1000)}_{(platform_sender or sender_name or 'x')[:8]}_{_uuid.uuid4().hex[:6]}"
+        now = _now_iso()
+        attachments_json = json.dumps(attachments, ensure_ascii=False) if attachments else ""
+
+        conn = _connect(p)
         cursor = conn.execute(
             "INSERT OR IGNORE INTO messages "
             "(ts, direction, source, chat_id, platform_sender, sender_name, "
@@ -187,20 +186,20 @@ def record_message(
         )
         conn.commit()
         if cursor.rowcount > 0:
-            return cursor.lastrowid
-        # 命中 UNIQUE 冲突,返回既有行的 id
+            return cursor.lastrowid, True
+        # 命中 UNIQUE 冲突 → 重复消息。既有行 id 一并返回(调用方可对账)
         row = conn.execute(
             "SELECT id FROM messages WHERE source=? AND msg_ref=?",
             (source, msg_ref),
         ).fetchone()
-        return row[0] if row else None
+        return (row[0], False) if row else (None, False)
     except Exception as exc:
         logger.warning("record_message failed (chat=%s dir=%s): %s",
                        chat_id[:16], direction, exc)
-        return None
+        return None, False
     finally:
-        conn.close()
-
+        if conn is not None:
+            conn.close()
 
 def record_inbound(
     *,
@@ -212,26 +211,21 @@ def record_inbound(
     source: str = "feishu",
     sender_kind: str = "human",
     attachments: list[str] | None = None,
-) -> Optional[int]:
-    """入站消息:实例自己收到平台消息时调一次。
-
-    sender_id = 平台视角的 sender open_id(per-app,存进 platform_sender)。
-    sender_kind: 'human' / 'bot'(决定 sender_role)。
-    attachments: 可选的 attachment_id 列表（多模态入站——图片/文件）。
-    """
-    role = "human" if sender_kind == "human" else "other"
+) -> tuple[Optional[int], bool]:
+    """记录入站消息。返回 (row_id, inserted)——inserted=False 且 row_id>0
+    表示重复(平台重推/广播重放)，调用方应跳过后续事件投递；
+    inserted=False 且 row_id=None 表示落库失败，调用方裁量(宁重复不丢失)。"""
     return record_message(
         direction="in",
         source=source,
         chat_id=chat_id,
+        platform_sender=sender_id,
         sender_name=sender_name,
+        sender_role=sender_kind,
         text=text,
         msg_ref=msg_id,
-        platform_sender=sender_id,
-        sender_role=role,
         attachments=attachments,
     )
-
 
 def record_outbound(
     *,
@@ -241,21 +235,20 @@ def record_outbound(
     text: str,
     msg_id: str = "",
     source: str = "feishu",
-) -> Optional[int]:
-    """出站消息:实例自己发群/私聊消息成功后调。
+) -> tuple[Optional[int], bool]:
+    """出站消息:实例自己发群/私聊消息成功后调。返回 (row_id, inserted)。
 
-    self_instance_id 是当前实例 UUID,写入 platform_sender 字段。
-    self_display_name 是 'zero'/'alpha' 等,写入 sender_name。
+    self_instance_id 写入 platform_sender, self_display_name 写入 sender_name。
     """
     return record_message(
         direction="out",
         source=source,
         chat_id=chat_id,
+        platform_sender=self_instance_id,
         sender_name=self_display_name,
+        sender_role="self",
         text=text,
         msg_ref=msg_id,
-        platform_sender=self_instance_id,
-        sender_role="self",
     )
 
 
@@ -303,7 +296,7 @@ def list_messages(chat_id: str, limit: int = 30) -> list[dict]:
         return []
     _ensure_schema()
     p = messages_db_path()
-    conn = sqlite3.connect(str(p))
+    conn = _connect(p)
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
@@ -363,7 +356,7 @@ def last_inbound_per_sender(senders: list[str]) -> dict[str, dict]:
         return {}
     _ensure_schema()
     p = messages_db_path()
-    conn = sqlite3.connect(str(p))
+    conn = _connect(p)
     conn.row_factory = sqlite3.Row
     try:
         placeholders = ",".join("?" * len(senders))

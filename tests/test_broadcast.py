@@ -284,3 +284,134 @@ def test_receive_broadcast_routes_to_correct_subscribers(
         assert z_has == 1, f"zero 应当收到广播,实际 {z_has}"
     finally:
         a_msgs.close(); z_msgs.close()
+
+
+def test_broadcast_outbound_fallback_resolves_live_peers(tmp_path, monkeypatch):
+    """peers 快照为空时,outbound 应现场反查同群订阅者兜底,不再静默归零。
+
+    复现今天 9/21 事故:小李 subscriptions.yaml 品类群 peers 空 →
+    broadcast_outbound 返回 0 且无任何日志,小张收不到消息。
+    """
+    import os
+    import infrastructure.config as cfg
+    import domain.messages.broadcast as B
+
+    from_iid, peer_iid = "from-aaaa", "peer-bbbb"
+    chat = "oc_pinlei"
+
+    # from 实例:品类群条目存在但 peers 为空(事故现场)
+    fdir = tmp_path / "apps" / from_iid
+    (fdir / "config").mkdir(parents=True)
+    (fdir / "config" / "subscriptions.yaml").write_text(
+        f"subscriptions:\n  {chat}:\n    platform: lark\n    name: 品类群\n    peers: []\n",
+        encoding="utf-8",
+    )
+    # peer 实例:订阅同一群(它会出现在自己的 subscriptions 里 → 反查可命中)
+    pdir = tmp_path / "apps" / peer_iid
+    (pdir / "config").mkdir(parents=True)
+    (pdir / "config" / "subscriptions.yaml").write_text(
+        f"subscriptions:\n  {chat}:\n    platform: lark\n    name: 品类群\n    peers: []\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(cfg, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(cfg, "get_instance_dir",
+                        lambda iid=None: tmp_path / "apps" / (iid or ""))
+    monkeypatch.setattr(cfg, "get_instance_data_dir",
+                        lambda iid=None: (tmp_path / "apps" / (iid or "") / "data"))
+    monkeypatch.setattr(cfg, "discover_active_instances",
+                        lambda: [from_iid, peer_iid])
+    for k in ("DIGITAL_LIFE_INSTANCE_ID", "L4_AGENT_ID", "DIGITAL_LIFE_EMPLOYEE_ID"):
+        os.environ.pop(k, None)
+
+    posted = []
+    class _Resp:
+        status_code = 200
+        text = ""
+    def fake_post(endpoint, json=None, timeout=None):
+        posted.append((endpoint, json))
+        return _Resp()
+    monkeypatch.setattr(B.httpx, "post", fake_post)
+    monkeypatch.setattr(B, "_peer_endpoint_for",
+                        lambda iid: f"http://127.0.0.1:1/internal/x-{iid}")
+
+    n = B.broadcast_outbound(
+        from_instance_id=from_iid, from_display_name="小李",
+        chat_id=chat, text="查一下库存", msg_ref="om_fb1",
+    )
+    assert n == 1, f"兜底应投递 1 个 peer, got {n}"
+    assert len(posted) == 1
+    assert posted[0][1]["msg_ref"] == "om_fb1"
+    assert peer_iid in posted[0][0], "兜底目标应为反查出的同群订阅者"
+
+
+def test_broadcast_outbound_no_fallback_when_snapshot_configured(tmp_path, monkeypatch):
+    """快照非空时用显式配置,不触发兜底反查(不覆盖人手维护的 peers)。"""
+    import os
+    import infrastructure.config as cfg
+    import domain.messages.broadcast as B
+
+    from_iid, peer_iid, other_iid = "from-aaaa", "peer-bbbb", "other-cccc"
+    chat = "oc_group"
+    _setup_master_fake(tmp_path, monkeypatch, from_iid, peer_iid, chat)
+    # other 也 active 且订阅同群,若兜底误触发会被投到 other —— 断言不会
+    monkeypatch.setattr(cfg, "discover_active_instances",
+                        lambda: [from_iid, peer_iid, other_iid])
+    odir = tmp_path / "apps" / other_iid
+    (odir / "config").mkdir(parents=True)
+    (odir / "config" / "subscriptions.yaml").write_text(
+        f"subscriptions:\n  {chat}:\n    platform: lark\n    peers: []\n",
+        encoding="utf-8",
+    )
+
+    posted = []
+    class _Resp:
+        status_code = 200
+        text = ""
+    monkeypatch.setattr(B.httpx, "post",
+                        lambda endpoint, json=None, timeout=None:
+                        (posted.append(endpoint), _Resp())[1])
+
+    n = B.broadcast_outbound(
+        from_instance_id=from_iid, from_display_name="zero",
+        chat_id=chat, text="hi", msg_ref="om_2",
+    )
+    assert n == 1 and len(posted) == 1
+    assert "8642" in posted[0], "应只投 yaml 显式配置的 peer endpoint"
+
+
+def test_broadcast_outbound_fallback_excludes_unsubscribed(tmp_path, monkeypatch):
+    """兜底反查须尊重 unsubscribed 标记(A 方案退订者不复活)。"""
+    import os
+    import infrastructure.config as cfg
+    import domain.messages.broadcast as B
+
+    from_iid, peer_iid = "from-aaaa", "peer-bbbb"
+    chat = "oc_pinlei"
+    for iid in (from_iid, peer_iid):
+        d = tmp_path / "apps" / iid / "config"
+        d.mkdir(parents=True)
+        d.joinpath("subscriptions.yaml").write_text(
+            f"subscriptions:\n  {chat}:\n    platform: lark\n"
+            f"    unsubscribed: {str(iid == peer_iid).lower()}\n    peers: []\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(cfg, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(cfg, "get_instance_dir",
+                        lambda iid=None: tmp_path / "apps" / (iid or ""))
+    monkeypatch.setattr(cfg, "get_instance_data_dir",
+                        lambda iid=None: (tmp_path / "apps" / (iid or "") / "data"))
+    monkeypatch.setattr(cfg, "discover_active_instances",
+                        lambda: [from_iid, peer_iid])
+    for k in ("DIGITAL_LIFE_INSTANCE_ID", "L4_AGENT_ID", "DIGITAL_LIFE_EMPLOYEE_ID"):
+        os.environ.pop(k, None)
+
+    monkeypatch.setattr(B.httpx, "post",
+                        lambda *a, **kw: (_ for _ in ()).throw(
+                            AssertionError("unsubscribed peer 不应被投递")))
+
+    n = B.broadcast_outbound(
+        from_instance_id=from_iid, from_display_name="from",
+        chat_id=chat, text="x", msg_ref="om_3",
+    )
+    assert n == 0

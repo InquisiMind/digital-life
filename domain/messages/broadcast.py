@@ -261,8 +261,25 @@ def broadcast_outbound(
         msg_ref = f"broadcast_{from_instance_id[:8]}_{int(_t.time()*1000)}_{h}"
     subs = load_subscriptions(from_instance_id)
     sub = subs.get(chat_id)
-    if not sub or not sub.peers:
-        return 0
+    peers = list(sub.peers) if (sub and sub.peers) else []
+    if not peers:
+        # 静态快照缺位兜底(peers 为空):现场从全局盘面反查同群订阅者。
+        # 背景:peers 快照只由 sync_subscriptions_from_registry 在网关启动时构建,
+        # 之后同群新增订阅者(如今天小李→小张的品类群)不会自动补齐,广播在此
+        # 静默归零——消息黑洞。此兜底只在快照为空时触发,不覆盖非空显式配置。
+        targets = _resolve_broadcast_targets(
+            chat_id=chat_id, from_instance_id=from_instance_id)
+        peers = [Peer(uuid=t, endpoint=_peer_endpoint_for(t))
+                 for t in targets]
+        if peers:
+            logger.warning(
+                "BROADCAST_PEERS_FALLBACK from=%s chat=%r yaml_snapshot_empty "
+                "live_resolved=%d peers=[%s]",
+                from_instance_id[:8], chat_id, len(peers),
+                ",".join(t[:8] for t in targets),
+            )
+        else:
+            return 0
 
     payload = {
         "from_instance_id": from_instance_id,
@@ -270,17 +287,17 @@ def broadcast_outbound(
         "chat_id": chat_id,
         "text": text,
         "msg_ref": msg_ref,
-        "source_platform": sub.platform,
+        "source_platform": (sub.platform if sub else "feishu"),
     }
 
     delivered = 0
     logger.info(
         "BROADCAST_HTTP_OUT from=%s chat=%r peer_count=%d text_head=%r msg_ref=%r",
-        from_instance_id[:8], chat_id, len(sub.peers),
+        from_instance_id[:8], chat_id, len(peers),
         (text[:60] + ("…" if len(text) > 60 else "")) if isinstance(text, str) else text,
         msg_ref,
     )
-    for peer in sub.peers:
+    for peer in peers:
         if not peer.endpoint:
             logger.info(
                 "BROADCAST_SKIP_PEER reason=no_endpoint from=%s peer=%s chat=%r",

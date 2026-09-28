@@ -169,3 +169,7 @@ var/models/
 # 隐私红线不入 git；缺失时 loader 返回空、注册时自动重建）
 shared/skills/skills_manifest.json
 shared/tools/tools_manifest.json
+
+# === 本地快照/备份 ===
+backup/
+*.bak_*

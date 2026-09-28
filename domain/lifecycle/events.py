@@ -69,6 +69,58 @@ def _get_instance_channel() -> str:
     """返回当前实例的 channel 前缀，用于事件隔离。"""
     return _instance_channel_var.get()
 
+
+# ==== 实例级事件订阅闸 (2026-09-28, zhp 指令: 非消息事件按实例订阅) ====
+# 配置文件: apps/{instance_id}/config/event_subscriptions.yaml
+#   subscribed: all          → 全量订阅(18 种)
+#   subscribed: [kind, ...]  → 只订阅列出的 kind
+#   subscribed: []           → 非消息事件全停(消息类仍硬编码放行)
+# 缺文件 → 默认全收(向后兼容未配置实例,避免静默失聪)。
+# 消息类 message/group_message/birth 永远放行——订阅闸只管非消息事件,
+# 语义上"订阅"是给自己加唤醒负担的事件,消息是人发的必须能叫醒。
+_ALWAYS_PASSTHROUGH_KINDS = {"message", "group_message", "birth"}
+_subs_cache: Dict[str, tuple] = {}  # config_path -> (mtime, subscribed_set or "all")
+
+
+def _load_event_subscriptions(instance_id: str):
+    """读取该实例的事件订阅配置,带 mtime 缓存。返回 None(缺文件=全收)或集合。"""
+    cfg = _repo_root / "apps" / instance_id / "config" / "event_subscriptions.yaml"
+    try:
+        mtime = cfg.stat().st_mtime
+    except OSError:
+        return None
+    cached = _subs_cache.get(str(cfg))
+    if cached and cached[0] == mtime:
+        return cached[1]
+    try:
+        import yaml
+        data = yaml.safe_load(cfg.read_text()) or {}
+        raw = data.get("subscribed", [])
+        if raw == "all":
+            parsed = "all"
+        else:
+            parsed = {str(k) for k in raw}
+    except Exception as exc:
+        logger.warning("EVENT_SUBSCRIPTIONS_LOAD_FAILED path=%s exc=%r → 按全收处理", cfg, exc)
+        return None
+    _subs_cache[str(cfg)] = (mtime, parsed)
+    return parsed
+
+
+def _subscription_allows(kind: str, instance_channel: str) -> bool:
+    """非消息事件是否允许入队。channel 形如 instance:{uuid}(/子通道)。"""
+    if kind in _ALWAYS_PASSTHROUGH_KINDS:
+        return True
+    inst = instance_channel.split("/", 1)[0]
+    if not inst.startswith("instance:"):
+        return True  # 非 instance channel(如 default)不拦
+    subscribed = _load_event_subscriptions(inst[len("instance:"):])
+    if subscribed is None:
+        return True  # 未配置 = 默认全收
+    if subscribed == "all":
+        return True
+    return kind in subscribed
+
 from domain.lifecycle.event_bus import LegacyEventBus  # noqa: E402
 from domain.lifecycle.affairs.runtime import _conn, init_db  # noqa: E402
 
@@ -246,6 +298,14 @@ def emit_event(
     from .event_registry import validate_event_type
 
     validate_event_type(kind, raise_on_unknown=True)
+
+    # 实例级订阅闸:未订阅的非消息事件不入队不叫醒(2026-09-28 zhp 指令)。
+    if not _subscription_allows(kind, instance_channel):
+        logger.info(
+            "EMIT_BLOCKED kind=%s instance_channel=%r → 未订阅,不入队",
+            kind, instance_channel,
+        )
+        return 0
 
     payload = payload or {}
 
@@ -603,6 +663,16 @@ def pop_due_events(limit: int = 50) -> List[Dict]:
     return events
 
 
+def peek_unconsumed_event(event_id: int) -> Optional[Dict]:
+    """只读取出一条未消费事件；None = 已消费 / 不存在。
+
+    mid-session 信号池幽灵过滤用：内存池是"瞬时通知"不是账本，条目可能
+    陈旧（前一会话已投递消费）。走 _event_bus 连接（与 emit/consume 同源），
+    与 _peek_single_event 语义相同但路径解析不分叉。
+    """
+    return _event_bus.peek_unconsumed_event(event_id)
+
+
 def list_recent_events(
     hours: float = 6.0,
     kinds: Optional[Set[str]] = None,
@@ -643,7 +713,15 @@ def consume_event(event_id: int, target_affair_id: Optional[str] = None, session
         # 哪条路径消费的。栈太深只取 3 帧。
         "; ".join(_caller_summary())[:160],
     )
-    _event_bus.consume_event(event_id=event_id, target_affair_id=target_affair_id, session_id=sid)
+    consumed_now = _event_bus.consume_event(
+        event_id=event_id, target_affair_id=target_affair_id, session_id=sid
+    )
+    if not consumed_now:
+        logger.info(
+            "CONSUME_NOOP event_id=%d — already consumed, first-consume record kept "
+            "(caller_stack_head=%s)",
+            event_id, "; ".join(_caller_summary())[:160],
+        )
 
 
 def unconsume_events(event_ids: list[int]) -> int:

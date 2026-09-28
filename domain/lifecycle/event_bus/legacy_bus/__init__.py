@@ -20,7 +20,7 @@ events 表结构（L4 扩展后）：
 
 关键 SQL 查询模式：
   pop_due_events:  WHERE consumed_at IS NULL AND (fire_at IS NULL OR fire_at <= now) AND channel LIKE 'instance:X%'
-  consume_event:   UPDATE events SET consumed_at=now, consumed_by_session_id=sid WHERE event_id=?
+  consume_event:   UPDATE events SET consumed_at=now, consumed_by_session_id=sid WHERE event_id=? AND consumed_at IS NULL
   list_recent:     WHERE created_at >= since AND channel LIKE ... ORDER BY event_id DESC
 """
 
@@ -163,6 +163,20 @@ class LegacyEventBus:
             ).fetchall()
         return [self.row_to_dict(row) for row in rows]
 
+    def peek_unconsumed_event(self, event_id: int) -> Optional[Dict]:
+        """只读查询单条事件，仅当未消费时返回（信号池幽灵过滤用）。
+
+        与 pop_due_events 不同：不检查 fire_at / channel——调用方已持有
+        事件本体，只缺一个"它是否仍待处理"的真值判断。走 bus 自己的
+        connection_factory（与 emit/consume 同源），不引入第二套路径解析。
+        """
+        with self._connection_factory() as connection:
+            row = connection.execute(
+                "SELECT * FROM events WHERE event_id = ? AND consumed_at IS NULL",
+                (event_id,),
+            ).fetchone()
+        return self.row_to_dict(row) if row is not None else None
+
     def list_recent_events(
         self,
         hours: float = 6.0,
@@ -188,20 +202,27 @@ class LegacyEventBus:
             events = [event for event in events if event["kind"] in kinds]
         return events
 
-    def consume_event(self, event_id: int, target_affair_id: Optional[str] = None, session_id: Optional[str] = None) -> None:
-        """标记事件为已消费 — 事件生命周期的终点。
+    def consume_event(self, event_id: int, target_affair_id: Optional[str] = None, session_id: Optional[str] = None) -> bool:
+        """标记事件为已消费 — 事件生命周期的终点（幂等，首消费记录不可覆盖）。
 
         写入 consumed_at（当前时间）和 consumed_by_session_id（消费会话）。
         consumed_by_session_id 被 calendar() 用于聚合展示过往会话。
 
-        事件一旦被消费，就不会再被 pop_due_events() 捞出。
-        唯一的重新激活路径是通过 cancel_pending_events 的 payload_filter 匹配恢复。
+        UPDATE 带 ``consumed_at IS NULL`` 守卫：已消费的事件不被重复消费覆盖
+        （0922 zero #1064 双投：发送关卡 check_before_send 补消费时把 17:43 的
+        真实首消费记录覆盖成 18:26/另一会话，calendar 聚合错位 + 排障被误导）。
+        与 consume_events_by_kind 的守卫对齐。重新激活仍走 unconsume_events。
+
+        Returns:
+            True = 本次写入消费记录；False = 事件已消费（no-op，记录保持首消费值）。
         """
         with self._connection_factory() as connection:
-            connection.execute(
-                "UPDATE events SET consumed_at = ?, target_affair_id = ?, consumed_by_session_id = ? WHERE event_id = ?",
+            cursor = connection.execute(
+                "UPDATE events SET consumed_at = ?, target_affair_id = ?, consumed_by_session_id = ? "
+                "WHERE event_id = ? AND consumed_at IS NULL",
                 (self._now_iso(), target_affair_id, session_id, event_id),
             )
+            return bool(getattr(cursor, "rowcount", 1))
 
     def consume_events_by_kind(self, kind: str, session_id: Optional[str] = None, channel_prefix: str | None = None) -> int:
         """按类型批量消费到期未消费事件。"""

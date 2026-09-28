@@ -261,9 +261,12 @@ def record_broadcast_in(
     msg_ref: str,
     source_platform: str = "feishu",
     instance_id: str | None = None,
-) -> Optional[int]:
+) -> tuple[Optional[int], bool]:
     """接收广播:peer 实例 HTTP POST 过来后,本实例写一行 'in'。
 
+    返回 (row_id, inserted)——inserted=False 且 row_id>0 表示重复广播
+    (UNIQUE(source, msg_ref) 命中),调用方必须跳过事件投递,否则 emit 侧
+    没有 UNIQUE 约束保护,同一 msg_ref 会投出多份事件。
     source 形如 'broadcast:<from_uuid>',与 (source, msg_ref) 配合做去重。
     sender_role='bot-broadcast' 让模型识别这是兄弟实例说的话。
 

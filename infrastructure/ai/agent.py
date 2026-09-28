@@ -2081,6 +2081,38 @@ class AIAgent:
         if not new_events:
             return False
 
+        # DB 消费状态过滤：内存池是"瞬时通知"，条目可能陈旧——前一会话已
+        # 原子投递（消费已落库）但池未清的残留、会话结束兜底消费后的残留，
+        # 都会让新会话的 agent（_injected_signal_event_ids 清零）把旧事件
+        # 当新事件重投（2026-09-22 zero #1064 双投）。DB consumed_at 是唯一
+        # 真值：已消费的幽灵清出池并跳过；校验异常时 fail-open 照旧投递
+        # （DB 不可读不该让消息滞留，消费守卫与池清理另有兜底）。
+        verified: list[dict] = []
+        for ev in new_events:
+            eid = ev.get("event_id")
+            if eid is None:
+                continue
+            try:
+                from domain.lifecycle.events import peek_unconsumed_event
+                still_pending = peek_unconsumed_event(int(eid)) is not None
+            except Exception:
+                still_pending = True
+            if still_pending:
+                verified.append(ev)
+                continue
+            logger.info(
+                "pool ghost skipped: event %s already consumed — dropped from signal pool",
+                eid,
+            )
+            try:
+                from domain.lifecycle.session_events import consume_signalled_events_by_ids
+                consume_signalled_events_by_ids({int(eid)})
+            except Exception:
+                logger.debug("ghost pool clear for event %s failed", eid, exc_info=True)
+        new_events = verified
+        if not new_events:
+            return False
+
         # Split by whether we auto-consume
         auto_consume_events: list[dict] = []
         manual_events: list[dict] = []
@@ -2255,6 +2287,22 @@ class AIAgent:
                         chat_id=chat_id,
                     )
                     delivered = True
+                    # 原子投递成功 → 同步清内存信号池（与 _do_consume_events 对齐）。
+                    # 池是"瞬时通知"不是账本，不清会让条目跨会话存活——新会话的
+                    # agent（_injected_signal_event_ids 清零）把它当新事件重投
+                    # （2026-09-22 zero #1064 双投：17:43 投递成功但留池，
+                    # 18:25 新唤醒整批广播被再投一遍，check_before_send 还被
+                    # 幽灵误拦一轮）。
+                    if eid is not None:
+                        try:
+                            from domain.lifecycle.session_events import (
+                                consume_signalled_events_by_ids,
+                            )
+                            consume_signalled_events_by_ids({int(eid)})
+                        except ImportError:
+                            pass
+                        except Exception:
+                            logger.debug("pool clear for event %s failed", eid, exc_info=True)
                 except Exception as exc:
                     logger.warning(
                         "atomic deliver failed for event %s — model has NOT seen it, "

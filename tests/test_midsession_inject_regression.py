@@ -621,3 +621,149 @@ def test_sanitize_payload_messages_after_compression_orphans() -> None:
     before = [dict(m) for m in msgs]
     _sanitize_payload_messages(msgs)
     assert msgs == before
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 2026-09-22 zero #1064 双投回归：原子投递清池 + 池幽灵 DB 过滤 + 首消费记录保护
+#
+# 事故时间线：17:43 广播事件 mid-session 原子投递进 16:43 会话（消费已落库），
+# 但原子路径不清内存信号池 → 池条目跨会话存活 → 18:25 新 wake 的新 agent
+# （_injected_signal_event_ids 清零、count_event_deliveries 按新 session 查
+# 必为 0）把幽灵当新事件整批重投 → 发送关卡 check_before_send 补消费时
+# 无守卫覆盖，把 17:43 的真实首消费记录改成 18:26/新会话。
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def test_atomic_deliver_clears_signal_pool() -> None:
+    """原子投递成功后必须把事件从内存信号池移除（与 _do_consume_events 对齐）。"""
+    tmp, db_path = _make_test_env("test-atomic-clear-pool")
+    try:
+        from domain.lifecycle.events import (
+            emit_event, set_instance_context, reset_instance_context,
+        )
+        from domain.lifecycle.session_events import (
+            signal_new_events, peek_signalled_events, consume_signalled_events,
+        )
+
+        token = set_instance_context("test-atomic-clear-pool")
+        try:
+            agent = _make_bare_agent(tmp, "test-atomic-clear-pool")
+            from infrastructure.ai.session_db import SessionDB
+            agent.session_db = SessionDB(db_path=db_path)
+            agent.session_db.create_session("sess-test", "test")
+
+            eid = emit_event("group_message", payload={"text": "清池", "chat_id": "oc_p"})
+            ev = {"event_id": eid, "kind": "group_message",
+                  "payload": {"text": "清池", "chat_id": "oc_p"}}
+            signal_new_events([ev], instance_id="test-atomic-clear-pool")
+
+            messages: list = []
+            failed = agent._consume_human_events([ev], messages)
+            assert failed == [] and len(messages) == 2, "原子投递应成功渲染一次"
+
+            pool = peek_signalled_events(instance_id="test-atomic-clear-pool")
+            assert not any(e.get("event_id") == eid for e in pool), (
+                f"原子投递成功后事件 {eid} 必须清出信号池，否则跨会话成为幽灵"
+            )
+        finally:
+            consume_signalled_events(instance_id="test-atomic-clear-pool")
+            reset_instance_context(token)
+    finally:
+        _cleanup_test_env(tmp)
+
+
+def test_stale_pool_ghost_not_redelivered_across_sessions() -> None:
+    """0922 zero #1064 场景：已消费事件的池残留不得被新会话重投。
+
+    场景还原：会话 A 原子投递并消费 → 池条目未清残留（模拟旧版行为）→
+    新 wake 的新 agent 从池里再捞一遍 → 重复渲染 + 关卡被幽灵误拦。
+    修复后：投递前按 DB consumed_at 过滤，幽灵跳过渲染并清出池。
+    """
+    tmp, db_path = _make_test_env("test-ghost-filter")
+    try:
+        from domain.lifecycle.events import (
+            emit_event, set_instance_context, reset_instance_context,
+        )
+        from domain.lifecycle.session_events import (
+            signal_new_events, peek_signalled_events, consume_signalled_events,
+        )
+
+        token = set_instance_context("test-ghost-filter")
+        try:
+            from infrastructure.ai.session_db import SessionDB
+            agent1 = _make_bare_agent(tmp, "test-ghost-filter")
+            agent1.session_db = SessionDB(db_path=db_path)
+            agent1.session_db.create_session("sess-a", "test")
+
+            eid = emit_event("group_message", payload={"text": "幽灵", "chat_id": "oc_g"})
+            ev = {"event_id": eid, "kind": "group_message",
+                  "payload": {"text": "幽灵", "chat_id": "oc_g"}}
+            messages: list = []
+            assert agent1._consume_human_events([ev], messages) == []
+
+            # 模拟旧版未清池的残留（修复前该条目会一直留在池里跨会话存活）
+            signal_new_events([ev], instance_id="test-ghost-filter")
+
+            # 新 wake 的新 agent：内存去重集合清零、新 session 投递查重必为 0
+            agent2 = _make_bare_agent(tmp, "test-ghost-filter")
+            agent2.session_db = agent1.session_db
+            messages2: list = []
+            consumed_normal = agent2._inject_signalled_events(messages2)
+            assert not consumed_normal, "已消费的池幽灵不得被当作新事件消费"
+            assert messages2 == [], "已消费的池幽灵不得重复渲染"
+
+            pool = peek_signalled_events(instance_id="test-ghost-filter")
+            assert not any(e.get("event_id") == eid for e in pool), "幽灵必须同时清出池"
+        finally:
+            consume_signalled_events(instance_id="test-ghost-filter")
+            reset_instance_context(token)
+    finally:
+        _cleanup_test_env(tmp)
+
+
+def test_consume_event_keeps_first_consume_record() -> None:
+    """已消费事件的重复 consume 不得覆盖首消费记录（时间 + 会话归属）。
+
+    0922 案例：check_before_send 补消费把 17:43 的真实消费记录覆盖成
+    18:26/另一会话——calendar 聚合错位 + 排障被误导。
+    """
+    tmp, db_path = _make_test_env("test-consume-guard")
+    try:
+        from domain.lifecycle.events import (
+            emit_event, consume_event, set_instance_context, reset_instance_context,
+        )
+        import sqlite3
+
+        token = set_instance_context("test-consume-guard")
+        try:
+            eid = emit_event("group_message", payload={"text": "守卫"})
+            consume_event(eid, session_id="sess-first")
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                first = conn.execute(
+                    "SELECT consumed_at, consumed_by_session_id FROM events WHERE event_id=?",
+                    (eid,),
+                ).fetchone()
+            finally:
+                conn.close()
+            assert first[0] is not None, "首消费必须落库"
+            assert first[1] == "sess-first"
+
+            # 第二次消费（如发送关卡补消费）：必须 no-op，不得覆盖
+            consume_event(eid, session_id="sess-second")
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                second = conn.execute(
+                    "SELECT consumed_at, consumed_by_session_id FROM events WHERE event_id=?",
+                    (eid,),
+                ).fetchone()
+            finally:
+                conn.close()
+            assert second[1] == "sess-first", "首消费会话归属不得被覆盖"
+            assert second[0] == first[0], "首消费时间不得被覆盖"
+        finally:
+            reset_instance_context(token)
+    finally:
+        _cleanup_test_env(tmp)

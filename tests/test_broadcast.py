@@ -417,6 +417,72 @@ def test_broadcast_outbound_fallback_excludes_unsubscribed(tmp_path, monkeypatch
     assert n == 0
 
 
+def test_receive_broadcast_duplicate_does_not_reemit(tmp_path, monkeypatch):
+    """9/24 小张 #251/#252 回归:同一 msg_ref 的重复 POST,messages.db 只入一次,
+    emit_event 也必须只发一次。旧实现里 UNIQUE 约束只保护 messages.db 行,
+    emit 不受保护——发送端 per-peer 快照把多个 peer 指到同一 master 中转 URL
+    时,每个 POST 都全量派发,订阅者收到 N 份 group_message 事件。"""
+    from_iid, peer_iid = "from-iid-dup", "peer-iid-dup"
+    _setup_master_fake(tmp_path, monkeypatch, from_iid, peer_iid, chat="oc_dup2")
+
+    import domain.lifecycle.events as dle
+    captured = []
+    monkeypatch.setattr(dle, "emit_event",
+                        lambda kind, payload, channel: captured.append((kind, payload, channel)))
+
+    payload = {
+        "from_instance_id": from_iid, "from_display_name": "小李",
+        "chat_id": "oc_dup2", "text": "dup emit probe",
+        "msg_ref": "om_dup_emit_1",
+    }
+    r1 = B.receive_broadcast(payload)
+    r2 = B.receive_broadcast(payload)
+    assert r1["ok"] is True and r1["delivered"] == 1, r1
+    assert r2["ok"] is True and r2["delivered"] == 0, r2
+    assert r2.get("duplicates") == 1, r2
+    assert len(captured) == 1, f"重复广播不得重发事件,实际 emit {len(captured)} 次"
+
+
+def test_broadcast_outbound_dedupes_shared_endpoint(tmp_path, monkeypatch):
+    """9/24 双投回归(发送侧):同群多个 peer 共享同一 master 中转 URL 时,
+    只 POST 一次——中转侧收到一次就全量派发给所有订阅者,逐 peer 重发同一
+    URL 等于把同一消息中转 N 遍。返回值仍按 peer 数计(2 个 peer 都算送达)。"""
+    import infrastructure.config as cfg
+
+    from_iid, p1, p2 = "from-aaaa", "peer-b1bb", "peer-b2cc"
+    chat = "oc_shared"
+    shared_endpoint = "http://127.0.0.1:8642/internal/message-broadcast"
+    d = tmp_path / "apps" / from_iid / "config"
+    d.mkdir(parents=True)
+    (d / "subscriptions.yaml").write_text(
+        f"subscriptions:\n"
+        f"  {chat}:\n"
+        f"    platform: lark\n"
+        f"    peers:\n"
+        f"    - uuid: {p1}\n      endpoint: {shared_endpoint}\n"
+        f"    - uuid: {p2}\n      endpoint: {shared_endpoint}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cfg, "get_instance_dir",
+                        lambda iid=None: tmp_path / "apps" / (iid or ""))
+
+    posted = []
+    class _Resp:
+        status_code = 200
+        text = ""
+    monkeypatch.setattr(B.httpx, "post",
+                        lambda endpoint, json=None, timeout=None:
+                        (posted.append(endpoint), _Resp())[1])
+
+    n = B.broadcast_outbound(
+        from_instance_id=from_iid, from_display_name="小李",
+        chat_id=chat, text="hi", msg_ref="om_shared_1",
+    )
+    assert len(posted) == 1, f"共享 endpoint 只应 POST 一次,实际 {len(posted)}"
+    assert posted[0] == shared_endpoint
+    assert n == 2, f"返回值按 peer 数计,期望 2,实际 {n}"
+
+
 def test_receive_broadcast_mentions_parsing(tmp_path, monkeypatch):
     """9/21 二层修复: bot 互发文本 @名字 → mentions_bot=True(强制唤醒标记)。"""
     from_iid, peer_iid = "from-iid-921", "peer-iid-921"

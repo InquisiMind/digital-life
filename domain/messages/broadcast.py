@@ -297,6 +297,12 @@ def broadcast_outbound(
         (text[:60] + ("…" if len(text) > 60 else "")) if isinstance(text, str) else text,
         msg_ref,
     )
+    # 同一 endpoint 只 POST 一次:同机部署下所有 peer 的 endpoint 都是同一个
+    # master 中转 URL(_peer_endpoint_for 不区分实例),receive_broadcast 收到
+    # 一次 POST 就会全量派发给所有订阅者——per-peer 逐个 POST 同一 URL 等于
+    # 把同一消息中转 N 遍(2026-09-24:peer_count=2 → 每个订阅者双份事件)。
+    # 接收侧幂等闸门(BROADCAST_DUP_SKIP)兜底,这里从源头不再发冗余 POST。
+    endpoint_peers: dict[str, list[Peer]] = {}
     for peer in peers:
         if not peer.endpoint:
             logger.info(
@@ -304,25 +310,30 @@ def broadcast_outbound(
                 from_instance_id[:8], peer.uuid[:8], chat_id,
             )
             continue
+        endpoint_peers.setdefault(peer.endpoint, []).append(peer)
+    for endpoint, group in endpoint_peers.items():
         try:
-            r = httpx.post(peer.endpoint, json=payload, timeout=timeout)
+            r = httpx.post(endpoint, json=payload, timeout=timeout)
             if r.status_code == 200:
-                delivered += 1
+                delivered += len(group)
                 logger.info(
-                    "BROADCAST_HTTP_OK from=%s → peer=%s chat=%r status=200",
-                    from_instance_id[:8], peer.uuid[:8], chat_id,
+                    "BROADCAST_HTTP_OK from=%s → peers=[%s] chat=%r status=200",
+                    from_instance_id[:8],
+                    ",".join(p.uuid[:8] for p in group), chat_id,
                 )
             else:
                 logger.warning(
-                    "BROADCAST_HTTP_BAD_STATUS from=%s → peer=%s chat=%r endpoint=%s status=%d body=%r",
-                    from_instance_id[:8], peer.uuid[:8], chat_id,
-                    peer.endpoint, r.status_code, r.text[:120],
+                    "BROADCAST_HTTP_BAD_STATUS from=%s → peers=[%s] chat=%r endpoint=%s status=%d body=%r",
+                    from_instance_id[:8],
+                    ",".join(p.uuid[:8] for p in group), chat_id,
+                    endpoint, r.status_code, r.text[:120],
                 )
         except Exception as exc:
             logger.warning(
-                "BROADCAST_HTTP_EXC from=%s → peer=%s chat=%r endpoint=%s exc=%r",
-                from_instance_id[:8], peer.uuid[:8], chat_id,
-                peer.endpoint, exc,
+                "BROADCAST_HTTP_EXC from=%s → peers=[%s] chat=%r endpoint=%s exc=%r",
+                from_instance_id[:8],
+                ",".join(p.uuid[:8] for p in group), chat_id,
+                endpoint, exc,
             )
     return delivered
 
@@ -376,6 +387,7 @@ def receive_broadcast(payload: dict) -> dict:
     from domain.messages import record_broadcast_in
 
     delivered = 0
+    duplicates = 0
     errors: list[str] = []
     for peer_iid in targets:
         # 切到 peer 实例上下文(record + emit 都会按此隔离)
@@ -384,7 +396,7 @@ def receive_broadcast(payload: dict) -> dict:
         try:
             # 1. 写入 peer 的 messages.db
             try:
-                record_broadcast_in(
+                rec = record_broadcast_in(
                     chat_id=chat_id,
                     from_display_name=from_display_name or from_instance_id[:8],
                     from_instance_id=from_instance_id,
@@ -399,6 +411,22 @@ def receive_broadcast(payload: dict) -> dict:
                 logger.warning("receive_broadcast: record failed for peer %s: %s",
                                peer_iid[:8], exc)
                 continue
+            # 幂等闸门：record_message 走 INSERT OR IGNORE，(row_id>0, inserted=False)
+            # = 重复广播（发送端 per-peer 快照把多个 peer 指到同一 master 中转 URL，
+            # 每个 POST 都会全量派发给所有订阅者——2026-09-24 小张 #251/#252：
+            # peer_count=2 → 每个订阅者收到 2 份 group_message 事件）。messages.db
+            # 有 UNIQUE 约束兜底，emit_event 没有——重复时必须在这里拦下，不再投递。
+            # (None, False)=落库失败，fail-open 照旧投递（宁重复不丢失，缺行只损审计）。
+            if rec is not None:
+                _row_id, inserted = rec
+                if _row_id is not None and not inserted:
+                    duplicates += 1
+                    logger.info(
+                        "BROADCAST_DUP_SKIP peer=%s from=%s chat=%r msg_ref=%r "
+                        "— duplicate broadcast, event not re-emitted",
+                        peer_iid[:8], from_instance_id[:8], chat_id, msg_ref,
+                    )
+                    continue
 
             # 2. emit 一个 group_message 事件(走和飞书入站完全一致的 urgency 分类)
             # 由 peer 自己的 cron + handler 决定立即 wake / 30s 累积。
@@ -455,7 +483,7 @@ def receive_broadcast(payload: dict) -> dict:
             except Exception:
                 pass
 
-    return {"ok": True, "delivered": delivered,
+    return {"ok": True, "delivered": delivered, "duplicates": duplicates,
             "errors": errors if errors else None}
 
 

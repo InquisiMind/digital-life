@@ -691,10 +691,10 @@ def list_chats(*, limit: int = 50) -> list[dict]:
         conn = sqlite3.connect(str(_state_db_path()))
         try:
             rows = conn.execute(
-                "SELECT chat_id, name, type, notes FROM chats ORDER BY updated_at DESC LIMIT ?",
+                "SELECT chat_id, name, type, notes, updated_at FROM chats ORDER BY updated_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
-            return [{"chat_id": r[0], "name": r[1] or "", "type": r[2] or "", "notes": r[3] or ""} for r in rows]
+            return [{"chat_id": r[0], "name": r[1] or "", "type": r[2] or "", "notes": r[3] or "", "updated_at": r[4] or ""} for r in rows]
         finally:
             conn.close()
     except sqlite3.Error:

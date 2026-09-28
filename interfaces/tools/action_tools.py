@@ -111,6 +111,74 @@ def _list_contact_candidates() -> list[dict]:
     return out[:15]  # cap
 
 
+def _guess_target_windows(*, small: int = 6, top: int = 5) -> dict:
+    """必填报错时的"猜你想发的窗口"清单（zhp 2026-09-24 定稿）。
+
+    来源：contacts.list_chats（窗口档案，含 name/type/updated_at，按活跃倒序）。
+    规则：窗口总数 ≤6 全列；>6 取最近活跃 5 个。当前唤醒事件源排首位并标 ★。
+    清单仅展示、不做默认值——模型必须显式复制一个 ID 填 chat_id。
+    """
+    windows: list[dict] = []
+    try:
+        from domain.contacts import list_chats as _lch
+        for w in (_lch(limit=50) or []):
+            cid = (w.get("chat_id") or "").strip()
+            if not cid.startswith(("oc_", "ou_", "on_")):
+                continue
+            kind = "group" if cid.startswith("oc_") else "dm"
+            name = (w.get("name") or "").strip() or ("群" if kind == "group" else "私聊")
+            windows.append({
+                "chat_id": cid, "name": name, "kind": kind,
+                "updated_at": (w.get("updated_at") or ""),
+            })
+    except Exception:
+        pass
+    # 兜底：窗口档案为空时退回联系人候选（无活跃时间信息）
+    if not windows:
+        for c in _list_contact_candidates()[:top]:
+            pid = (c.get("channel") or "").split(":")[-1]
+            if not pid:
+                continue
+            windows.append({
+                "chat_id": pid, "name": c.get("name") or "",
+                "kind": "group" if pid.startswith("oc_") else "dm",
+                "updated_at": "",
+            })
+
+    curr = ""
+    try:
+        from domain.lifecycle.runtime_context import get_current_event_chat_id
+        curr = (get_current_event_chat_id() or "").strip()
+    except Exception:
+        pass
+
+    star = [w for w in windows if w["chat_id"] == curr]
+    rest = [w for w in windows if w["chat_id"] != curr]
+    keep = rest if len(windows) <= small else rest[:top]
+    ordered = star + keep
+
+    def _ts(raw: str) -> str:
+        s = (str(raw) or "").strip()
+        return (s[:16].replace("T", " ") + " 活跃") if s else "活跃时间未知"
+
+    def _fmt(w: dict) -> str:
+        tag = "群" if w["kind"] == "group" else "私聊"
+        base = f"（{w['name']}·{tag}，{_ts(w['updated_at'])}）"
+        if w["chat_id"] == curr:
+            return f"★ {w['chat_id']}{base} ← 当前事件源"
+        return f"· {w['chat_id']}{base}"
+
+    lines_txt = "\n".join(_fmt(w) for w in ordered) or "（暂无窗口记录，请先调 sense_contacts 查）"
+    return {
+        "lines": lines_txt,
+        "candidates": [
+            {"chat_id": w["chat_id"], "name": w["name"], "kind": w["kind"],
+             "updated_at": w.get("updated_at") or ""}
+            for w in ordered
+        ],
+    }
+
+
 def _get_runtime_channel_prefix() -> str:
     """返回当前事件来源的平台前缀（feishu / wechat / 默认 feishu）。
 
@@ -494,6 +562,113 @@ def _resolve_secret_for_env_app_id(app_id: str) -> str:
     return ""
 
 
+
+# ──────────────────────── 附件发送（飞书文件消息，2026-09-22 zhp 拍板） ────────────────────────
+# express_to_human 的 attachments 参数底层实现：文本发完后逐个上传本地文件
+# (im/v1/files) + 发 file 消息。通道能力差异（微信/语音不支持附件）在
+# _express_one 分支层报错给 agent，不进这里。
+
+_FEISHU_FILE_TYPE_BY_EXT = {
+    "pdf": "pdf", "doc": "doc", "docx": "doc",
+    "xls": "xls", "xlsx": "xls", "csv": "stream",
+    "txt": "stream", "md": "stream", "json": "stream", "log": "stream",
+    "png": "opus", "jpg": "opus", "jpeg": "opus", "webp": "opus", "mp3": "opus",
+}
+
+
+def _normalize_attachment_list(raw) -> list[str]:
+    """attachments 参数规范化：str→[str]，list[str]去重保序。非法项丢弃。"""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    seen, out = set(), []
+    for it in raw:
+        s = str(it or "").strip()
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
+
+def _json_inject(out: str, key: str, value) -> str:
+    """把字段塞进 handler 返回的 JSON 字符串；非 JSON（纯文本报错）时改包一层。"""
+    try:
+        obj = json.loads(out) if isinstance(out, str) else dict(out)
+        obj[key] = value
+        return json.dumps(obj, ensure_ascii=False)
+    except Exception:
+        return json.dumps({"raw": out, key: value}, ensure_ascii=False)
+
+
+def _send_feishu_file_messages(
+    app_id: str, app_secret: str, receive_id: str, files: list[str]
+) -> list[dict]:
+    """同步上传并发送飞书 file 消息。返回逐文件结果（不抛异常）。"""
+    import httpx
+    from pathlib import Path as _P
+
+    results: list[dict] = []
+    if not (app_id and app_secret and receive_id and files):
+        return [
+            {"file": f, "ok": False, "error": f"内部参数缺失(receive_id={receive_id[:12]}…)"}
+            for f in files
+        ]
+    try:
+        tr = httpx.post(
+            "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+            json={"app_id": app_id, "app_secret": app_secret}, timeout=15)
+        token = tr.json().get("tenant_access_token", "")
+    except Exception as e:
+        return [{"file": f, "ok": False, "error": f"取 token 异常: {e}"} for f in files]
+    if not token:
+        return [{"file": f, "ok": False, "error": "failed to get token"} for f in files]
+    headers = {"Authorization": f"Bearer {token}"}
+    for f in files:
+        fp = _P(f).expanduser()
+        entry: dict = {"file": f}
+        try:
+            if not fp.is_file():
+                entry.update(ok=False, error=f"文件不存在: {fp}")
+                results.append(entry)
+                continue
+            size = fp.stat().st_size
+            if size > 30 * 1024 * 1024:
+                entry.update(ok=False, error=f"{size}B 超飞书 30MB 上限")
+                results.append(entry)
+                continue
+            ftype = _FEISHU_FILE_TYPE_BY_EXT.get(fp.suffix.lower().lstrip("."), "stream")
+            with fp.open("rb") as fh:
+                up = httpx.post(
+                    "https://open.feishu.cn/open-apis/im/v1/files",
+                    headers=headers,
+                    data={"file_type": ftype, "file_name": fp.name},
+                    files={"file": (fp.name, fh)}, timeout=60)
+            ud = up.json()
+            if ud.get("code") != 0:
+                entry.update(ok=False, error=f"上传失败 code={ud.get('code')} {ud.get('msg')}")
+                results.append(entry)
+                continue
+            file_key = (ud.get("data") or {}).get("file_key", "")
+            mr = httpx.post(
+                "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+                headers={**headers, "Content-Type": "application/json"},
+                json={"receive_id": receive_id, "msg_type": "file",
+                      "content": json.dumps({"file_key": file_key})}, timeout=15)
+            md_ = mr.json()
+            if md_.get("code") != 0:
+                entry.update(ok=False, error=f"发送失败 code={md_.get('code')} {md_.get('msg')}")
+            else:
+                entry.update(ok=True, msg_id=(md_.get("data") or {}).get("message_id", ""))
+        except Exception as e:
+            entry.update(ok=False, error=f"异常: {e}")
+        results.append(entry)
+    return results
+
+
 def _express_one(args: Dict[str, Any], channel: str, **context) -> str:
     """单通道发送（原 _handle_express_to_human 主体）。"""
     logger.info("express_to_human CALLED: text=%s, channel=%s, chat_id=%s, mentions=%s",
@@ -503,6 +678,8 @@ def _express_one(args: Dict[str, Any], channel: str, **context) -> str:
     # UnboundLocalError。把 import 移到这里，所有 os 用法都被绑定。
     import os
     text = (args.get("text") or "").strip()
+    # attachments：本地文件附件路径列表（飞书通道支持；微信/语音不支持会报错给 agent）
+    _attach_files = _normalize_attachment_list(args.get("attachments"))
     # channel 优先取扇出层传入的值（多通道时每轮不同），args 里的作 fallback
     channel = (channel or args.get("channel") or "").strip()
     chat_id_arg = (args.get("chat_id") or "").strip()
@@ -620,68 +797,56 @@ def _express_one(args: Dict[str, Any], channel: str, **context) -> str:
         _pf = _get_runtime_channel_prefix()
         channel = f"{_pf}:{kind_str}:{chat_id_arg}"
     elif not channel:
-        # 都没给 → fallback current_event_chat_id（wake 时 set 的"当前事件来源"）
+        # ── chat_id/channel 必填制（2026-09-24 zhp 定稿，三起误发事故根治）──
+        # 历史：留空时走 fallback（_REPLY_CONTEXT LRU 回复上下文 > 事件源 > env），
+        # LRU 排在事件源前导致同批连发时目标被运行时状态拨走、静默送达错误窗口
+        # （9/16 @alpha 报告落私聊、9/22 三条、9/24 小张定稿消息落汇报群）。
+        # 规则：不静默猜测。报错 + "猜你想发的窗口"清单，模型必须显式复制一个
+        # OC 填 chat_id 再发（显式填错会被飞书 230002 拦截，可发现可重试）。
+        # 唯一例外：语音唤醒（本机扬声器，无错发风险）→ 默认 voice:speaker。
+        _voice_wake = False
         try:
-            from domain.lifecycle.runtime_context import get_current_event_chat_id
-            curr_chat = get_current_event_chat_id()
+            from domain.lifecycle.runtime_context import get_current_event_platform
+            _voice_wake = (get_current_event_platform() or "") == "voice"
         except Exception:
-            curr_chat = ""
-        if curr_chat:
-            # 显式 kind=dm + 用 fallback chat：如果 fallback chat 是 oc_ 开头
-            # （群 chat_id，不是真实 ou_ open_id），不能伪装成 dm 发——飞书会拒。
-            # 这种 case 给模型明确错误，避免"被 dm 套前缀后 sanitize 又改回 group"
-            # 的来回拼装陷阱。
-            explicit_kind_fb = (args.get("kind") or "").strip().lower()
-            if explicit_kind_fb == "dm" and curr_chat.startswith("oc_"):
-                return _j({
-                    "sent": False,
-                    "channel": "",
-                    "text": text,
-                    "error": (
-                        "你显式要求 kind=dm，但 current_event_chat_id 是 group chat "
-                        f"{curr_chat[:16]}…。要么去掉 kind 让系统按 ID 前缀发，要么显式 chat_id=ou_xxx。"
-                    ),
-                })
-            # kind 由 fallback chat_id 前缀派生（取代旧版读 wake_reason 判断）
-            kind_str = "group" if curr_chat.startswith("oc_") else "dm"
-            _pf = _get_runtime_channel_prefix()
-            channel = f"{_pf}:{kind_str}:{curr_chat}"
+            pass
+        if _voice_wake:
+            channel = "voice:speaker"
         else:
-            _pf = _get_runtime_channel_prefix()
-            channel = f"{_pf}:default"
-    # 模型给出 channel 直接保留，比如 "feishu:group:oc_xxx" 或 "feishu:dm:ou_xxx" 即可
+            _win = _guess_target_windows()
+            return _j({
+                "sent": False,
+                "channel": "",
+                "text": text,
+                "error": (
+                    "chat_id/channel 必填（本次留空已拦截，未发送）。"
+                    "猜你想发的窗口：\n" + _win["lines"] + "\n"
+                    "→ 把目标窗口的 OC 复制进 chat_id 参数再发"
+                    "（kind 可省略，按 ID 前缀自动判断；OC=窗口 ID，群/私聊通用）。"
+                ),
+                "candidates": _win["candidates"],
+            })
 
-    session_id = str(context.get("session_id") or "")
-
-    # 通道兜底（仅限 wake 入口显式设置的 reply context；不再从 contacts 表「猜」群）。
-    # 设计原则：目标通道必须明确。reply context 是 wake 根据 reason 正确 set 的上下文，
-    # 属合法兜底；contacts 表自动挑一个群属于无依据猜测（曾导致发错通道），已移除。
+    # 通道兜底（2026-09-24 必填制收尾）：default 标记不再走 LRU 隐式路由
+    # （曾导致错发窗口），一律并入必填报错；voice:default 唯一例外——本机
+    # 扬声器无错发风险，固定归一为 voice:speaker。
     _default_markers = ("lark:default", "feishu:default", "wechat:default", "voice:default")
     if channel in _default_markers:
-        # voice:default → 固定本地扬声器，不需要找 chat_id
         if channel == "voice:default":
             channel = "voice:speaker"
         else:
-            _dm = _get_dm_reply_chat_id()
-            _grp = _get_group_reply_chat_id()
-            if _dm:
-                channel = f"{_pf}:{_dm}"
-            elif _grp:
-                channel = f"{_pf}:{_grp}"
-            else:
-                # 兜底仍拿不到目标 → 显式拒绝，引导模型主动查 ID（不让系统盲猜发错通道）。
-                _candidates = _list_contact_candidates()
-                return _j({
-                    "sent": False,
-                    "channel": f"{_pf}:default",
-                    "text": text,
-                    "error": (
-                        "你没有指定发给谁，且本次唤醒也没有明确的回复上下文。"
-                        "请显式传 chat_id（OC = 窗口 ID，群和私聊窗口都是 oc_ 开头），"
-                        "或先调 sense_contacts 按名字查到窗口 ID 再发。"
-                    ),
-                    "candidates": _candidates,
-                })
+            _win = _guess_target_windows()
+            return _j({
+                "sent": False,
+                "channel": channel,
+                "text": text,
+                "error": (
+                    "channel=" + channel + " 是模糊目标（default 标记），已拦截。"
+                    "猜你想发的窗口：\n" + _win["lines"] + "\n"
+                    "→ 用 chat_id=<目标 OC>（或完整 channel=feishu:group:oc_xxx）再发。"
+                ),
+                "candidates": _win["candidates"],
+            })
 
     # ── awaiting_reply 自动策略(在 channel 确定后, mention 解析完) ──
     # wait_minutes=-1 表示模型选了 "auto", 需要根据通道+@情况自动判定
@@ -713,11 +878,21 @@ def _express_one(args: Dict[str, Any], channel: str, **context) -> str:
 
     # ── WeChat (ClawBot) 发送路径 —— 按 channel 前缀分发 ──
     if channel.startswith("wechat:"):
-        return _send_wechat_clawbot(channel, text, context, mention_user_ids)
+        _out = _send_wechat_clawbot(channel, text, context, mention_user_ids)
+        if _attach_files:
+            _out = _json_inject(_out, "attachments_error",
+                                "wechat 通道暂不支持附件，未发送: " + "; ".join(_attach_files)
+                                + "。请改走飞书通道(chat_id=oc_xxx)。")
+        return _out
 
     # ── 语音输出路径（本地 TTS 播放，不依赖飞书）──
     if channel.startswith("voice:"):
-        return _send_voice_local(channel, text, context, mention_user_ids)
+        _out = _send_voice_local(channel, text, context, mention_user_ids)
+        if _attach_files:
+            _out = _json_inject(_out, "attachments_error",
+                                "voice 通道不支持附件（语音读不了文件），未发送: "
+                                + "; ".join(_attach_files) + "。请改走飞书通道(chat_id=oc_xxx)。")
+        return _out
 
     
 # Send via feishu direct API (primary path)
@@ -726,6 +901,8 @@ def _express_one(args: Dict[str, Any], channel: str, **context) -> str:
     # 分段发送统计（仅飞书工具直发路径会填；其它路径保持 None 兼容老契约）
     segments_sent: int | None = None
     segments_total: int | None = None
+    # 附件结果（飞书路径且文本发送成功才填；其余 None）
+    _attach_results: list[dict] | None = None
     # 私聊路径的默认目标：仅用当前实例自己的回复上下文（DM/group），不读全局 FEISHU_FALLBACK。
     # 全局值跨实例串味（alpha 会拿 zero 的 chat 撞 cross app）。找不到时留空，
     # 由闭包内的 DM 分支按 channel 显式失败（提示模型用 sense_contacts 查 ID）。
@@ -1067,6 +1244,21 @@ def _express_one(args: Dict[str, Any], channel: str, **context) -> str:
                                 "express_to_human: group fan-out failed: %s", exc,
                                 exc_info=True,
                             )
+                    # ── 附件发送（文本成功后；target/routed_id 由闭包 nonlocal 暴露）──
+                    if _attach_files:
+                        _attach_target = target_chat or routed_id or ""
+                        if _attach_target:
+                            _attach_results = _send_feishu_file_messages(
+                                app_id, app_secret, _attach_target, _attach_files)
+                            _ok_n = sum(1 for r in _attach_results if r.get("ok"))
+                            logger.info(
+                                "express_to_human: attachments %d/%d sent → %s",
+                                _ok_n, len(_attach_results), _attach_target[:16])
+                        else:
+                            _attach_results = [
+                                {"file": f, "ok": False,
+                                 "error": "无法确定附件目标会话(target_chat/routed_id 均空)"}
+                                for f in _attach_files]
                 elif isinstance(result, tuple) and len(result) == 4:
                     err = result[1] or "feishu direct send failed"
                     segments_sent, segments_total = result[2], result[3]
@@ -1233,6 +1425,17 @@ def _express_one(args: Dict[str, Any], channel: str, **context) -> str:
     except Exception:
         pass
 
+    if sent and _attach_results is not None:
+        _a_ok = sum(1 for r in _attach_results if r.get("ok"))
+        if _a_ok == len(_attach_results) and _attach_results:
+            note_add = f"附件 {len(_attach_results)} 个全部送达。"
+        elif _attach_results:
+            note_add = f"附件 {_a_ok}/{len(_attach_results)} 送达。"
+        else:
+            note_add = ""
+    else:
+        note_add = ("附件未发送（文本已送达，附件失败详情见 attachments 字段）。"
+                    if (sent and _attach_files) else "")
     if sent:
         if segments_total and segments_total > 1:
             if segments_sent == segments_total:
@@ -1245,6 +1448,8 @@ def _express_one(args: Dict[str, Any], channel: str, **context) -> str:
     else:
         note = f"未送达（channel={channel}, error={err}）。"
 
+    if note_add:
+        note = note + " " + note_add
     return _j({
         "sent": sent,
         "channel": channel,
@@ -1253,6 +1458,7 @@ def _express_one(args: Dict[str, Any], channel: str, **context) -> str:
         "note": note,
         "segments_sent": segments_sent,
         "segments_total": segments_total,
+        "attachments": _attach_results,
     })
 
 
@@ -1266,10 +1472,11 @@ registry.register(
             "这是'表达'，不是'回复'——你有权选择说什么、何时说、对谁说。\n\n"
             "参数：\n"
             "- text: 必填。要说的话。\n"
-            "- chat_id: 飞书对话 ID（oc_xxx）。**留空 = 回复当前事件来源 chat**。"
+            "- chat_id: 飞书对话 ID（oc_xxx）。**必填**（语音回复除外）：留空会报错并附「猜你想发的窗口」清单，从中复制 OC 填入。"
             "可在一个 turn 内多次调用、指定不同 chat_id 实现多目标广播/转告。\n"
             "- channels: 多通道数组（如语音+飞书同时发）。同一句话说一次即可，不用调两次。\n"
-            "- kind: 'group' 或 'dm'。**默认按当前 wake 推断**，仅在你需要跨类型（如把私聊内容转告到群里）时显式指定。\n\n"
+            "- kind: 'group' 或 'dm'。**默认按当前 wake 推断**，仅在你需要跨类型（如把私聊内容转告到群里）时显式指定。\n"
+            "- attachments: 本地文件附件路径列表（飞书通道支持；微信/语音不支持会报错，文本不受影响）。\n\n"
             "你不需要每次都回复。可以沉默做事、可以用工具后再表达、可以等到信息齐全再统一同步。"
         ),
         "parameters": {
@@ -1279,8 +1486,8 @@ registry.register(
                 "chat_id": {
                     "type": "string",
                     "description": (
-                        "目标对话 ID（飞书 oc_xxx）。"
-                        "留空 = 回复当前事件来源 chat。"
+                        "目标对话 ID（飞书 oc_xxx）。必填（语音回复除外）："
+                        "留空会报错并附可选窗口清单。"
                         "用于跨对话通知、转告、多目标广播。"
                     ),
                 },
@@ -1311,6 +1518,17 @@ registry.register(
                         "用于群聊里主动 @ 其他用户或 bot。text 里不需要写 @xxx；"
                         "系统会自动在消息前缀加 <at> 标签。"
                         "另一简单用法：text 里直接写 '@displayName'（如 '@zero'），系统自动转 <at> 标签。"
+                    ),
+                },
+                "attachments": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "（可选）随消息发送的本地文件附件路径列表（绝对路径）。"
+                        "支持 md/txt/csv/xlsx/pdf/doc/png/jpg/mp3 等（≤30MB/个）。"
+                        "正文发完后逐个上传并以文件消息发出——适合'短正文+详情附件'的汇报形态。"
+                        "通道支持：飞书✓；微信/语音✗（不支持时该通道会返回 attachments_error，"
+                        "文本照发，agent 自行改走飞书通道补发附件）。"
                     ),
                 },
                 "wait_reply": {

@@ -1042,6 +1042,18 @@ class AIAgent:
                 base = [n for n in base if n not in blocked]
         except Exception:
             pass
+        # 服务专属工具（刀 4 协作原语）反向闸：实例不装载——实例间协作走
+        # broadcast 对等链，语义不同。
+        try:
+            from domain.service.capabilities import SERVICE_ONLY_TOOLS
+
+            if base and any(n in SERVICE_ONLY_TOOLS for n in base):
+                from domain.service.capabilities import service_only_tools_hidden
+
+                if service_only_tools_hidden():
+                    base = [n for n in base if n not in SERVICE_ONLY_TOOLS]
+        except Exception:
+            pass
         # V6: 合并条件暴露工具 (rest preview 后动态加入)
         # 在白名单之后——条件暴露是躯体机制(rest/preview)，不受业务白名单管。
         base.extend(self._conditionally_revealed_tools)
@@ -1059,6 +1071,7 @@ class AIAgent:
             "domain.todos.tools",
             "domain.project.tools",
             "interfaces.tools.terminal_tool",
+            "interfaces.tools.service_collab_tools",
             "interfaces.tools.code_execution_tool",
         ):
             try:

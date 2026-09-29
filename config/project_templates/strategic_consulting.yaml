@@ -1,0 +1,9 @@
+# 战略咨询项目模版（S00–S10 阶段流的容器）
+# 角色定义暂用 echo-def 占位（验收协作机制）；真实咨询角色定义
+# （合伙人/研究员/质控）后续按 PRD 提示词逐个建 def 后替换。
+name: 战略咨询
+roles:
+  - def: echo-def
+    name: 咨询合伙人
+  - def: echo-def
+    name: 研究员

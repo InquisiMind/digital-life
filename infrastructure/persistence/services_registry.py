@@ -62,6 +62,17 @@ CREATE TABLE IF NOT EXISTS service_leases (
     holder TEXT NOT NULL,
     acquired_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS projects (
+    project_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    template_id TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    stage TEXT DEFAULT '',
+    workspace_path TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_services_project ON services(project_id, status);
 """
 
 _SCHEMA_READY = False
@@ -120,6 +131,86 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 def new_service_id() -> str:
     """生成服务 ID：svc-<12hex>。会进入文件路径，只含安全字符。"""
     return f"svc-{uuid.uuid4().hex[:12]}"
+
+
+# ── projects（CustomerProject 注册表，刀 4）────────────────────────────
+
+
+def new_project_id() -> str:
+    """生成项目 ID：prj-<12hex>。"""
+    return f"prj-{uuid.uuid4().hex[:12]}"
+
+
+def create_project(name: str, template_id: str = "", workspace_path: str = "") -> dict:
+    """注册一个客户项目（CustomerProject）。workspace 目录由 domain 层创建。"""
+    _ensure_schema()
+    pid = new_project_id()
+    now = _now_iso()
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO projects (project_id, name, template_id, status, stage,"
+            " workspace_path, created_at, updated_at) VALUES (?, ?, ?, 'active', '', ?, ?, ?)",
+            (pid, name, template_id, workspace_path, now, now),
+        )
+    logger.info("PROJECT_CREATED project_id=%s name=%r template=%s", pid, name, template_id)
+    row = lookup_project(pid)
+    assert row is not None
+    return row
+
+
+def lookup_project(project_id: str) -> Optional[dict]:
+    _ensure_schema()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM projects WHERE project_id = ?", (project_id,)
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def list_projects(status: str | None = None) -> list[dict]:
+    _ensure_schema()
+    q = "SELECT * FROM projects"
+    params: tuple = ()
+    if status:
+        q += " WHERE status = ?"
+        params = (status,)
+    q += " ORDER BY created_at"
+    with _connect() as conn:
+        rows = conn.execute(q, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_project_fields(project_id: str, *, name: str | None = None,
+                          status: str | None = None, stage: str | None = None) -> bool:
+    _ensure_schema()
+    sets = ["updated_at = ?"]
+    params: list[Any] = [_now_iso()]
+    if name is not None:
+        sets.append("name = ?"); params.append(name)
+    if status is not None:
+        sets.append("status = ?"); params.append(status)
+    if stage is not None:
+        sets.append("stage = ?"); params.append(stage)
+    params.append(project_id)
+    with _connect() as conn:
+        cur = conn.execute(
+            f"UPDATE projects SET {', '.join(sets)} WHERE project_id = ?", params
+        )
+    return cur.rowcount > 0
+
+
+def list_services_by_project(project_id: str, status: str | None = None) -> list[dict]:
+    """项目内服务清单（协作工具/管理面用）。"""
+    _ensure_schema()
+    q = "SELECT * FROM services WHERE project_id = ?"
+    params: list[Any] = [project_id]
+    if status:
+        q += " AND status = ?"
+        params.append(status)
+    q += " ORDER BY created_at"
+    with _connect() as conn:
+        rows = conn.execute(q, params).fetchall()
+    return [_row_to_dict(r) for r in rows]
 
 
 def create_service(

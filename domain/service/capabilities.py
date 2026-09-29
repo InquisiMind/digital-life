@@ -47,6 +47,27 @@ CAPABILITY_GATED_TOOLS: dict[str, str] = {
     "project_bootstrap": "projects",
 }
 
+# 服务型专属工具（刀 4 协作原语）：实例不装载——实例间协作走 broadcast
+# 对等链，语义不同（send_to_peer 塞进实例会把对等链搅浑）。
+SERVICE_ONLY_TOOLS: frozenset[str] = frozenset({
+    "sense_project_peers",
+    "send_to_peer",
+    "project_file_list",
+    "project_file_read",
+    "project_file_write",
+})
+
+
+def service_only_tools_hidden(runtime_id: str | None = None) -> bool:
+    """当前运行体是否应隐藏服务专属工具（= 是实例）。"""
+    from infrastructure.config import get_app_instance_id
+    from infrastructure.persistence.services_registry import resolve_service_def
+
+    rid = runtime_id or get_app_instance_id()
+    if not rid:
+        return True
+    return resolve_service_def(rid) is None
+
 
 def capability_enabled(cap: str, runtime_id: str | None = None) -> bool:
     """该运行体是否启用某能力。实例恒 True；服务按注册表（默认关）。"""

@@ -478,6 +478,155 @@ def test_memory_index_skips_internal_projects_for_service(service_env):
         reset_current_instance_id(token)
 
 
+# ── 刀 4：项目层（CustomerProject + 共享工作区 + 协作） ───────────────
+
+
+@pytest.fixture()
+def project_template(service_env):
+    """写一个两角色测试模版（复用 echo-def 定义）。"""
+    tpl_dir = service_env / "config" / "project_templates"
+    tpl_dir.mkdir(parents=True, exist_ok=True)
+    (tpl_dir / "duo.yaml").write_text(
+        "name: 双人测试\nroles:\n  - def: echo-def\n    name: 甲\n  - def: echo-def\n    name: 乙\n",
+        encoding="utf-8",
+    )
+    return "duo"
+
+
+def test_create_customer_project(service_env, project_template):
+    from domain.project.customer import (
+        create_customer_project,
+        get_project_of_service,
+        project_workspace_dir,
+    )
+    from infrastructure.persistence import services_registry as sr
+
+    _make_def(service_env)
+    result = create_customer_project("验收项目", project_template)
+    pid = result["project"]["project_id"]
+    assert pid.startswith("prj-")
+    assert len(result["services"]) == 2
+    # 工作区已建
+    ws = project_workspace_dir(pid)
+    assert ws is not None and ws.is_dir()
+    assert ws == service_env / "projects" / pid / "workspace"
+    # 服务挂项目、角色名正确
+    a, b = result["services"]
+    assert a["project_id"] == pid and b["project_id"] == pid
+    assert a["display_name"] == "甲" and b["display_name"] == "乙"
+    assert get_project_of_service(a["service_id"])["project_id"] == pid
+    assert len(sr.list_services_by_project(pid, status="active")) == 2
+
+
+def test_project_workspace_shared_and_anchored(service_env, project_template):
+    from domain.project.customer import (
+        WorkspaceEscapeError,
+        create_customer_project,
+        resolve_workspace_path,
+    )
+    from infrastructure.config import get_workspace_dir
+
+    _make_def(service_env)
+    result = create_customer_project("共享验收", project_template)
+    a, b = result["services"]
+    pid = result["project"]["project_id"]
+
+    # 挂项目的服务：workspace 指向项目共享区（两服务同一目录）
+    ws_a = get_workspace_dir(a["service_id"])
+    ws_b = get_workspace_dir(b["service_id"])
+    assert ws_a == ws_b == service_env / "projects" / pid / "workspace"
+
+    # 锚定解析：区内放行
+    p = resolve_workspace_path(a["service_id"], "客户资料/背景.md")
+    assert p == ws_a / "客户资料" / "背景.md"
+    # 越界拒绝（../ 逃逸）
+    with pytest.raises(WorkspaceEscapeError):
+        resolve_workspace_path(a["service_id"], "../越界.txt")
+    with pytest.raises(WorkspaceEscapeError):
+        resolve_workspace_path(a["service_id"], "客户资料/../../越界.txt")
+    # symlink 逃逸拒绝：工作区内 symlink 指向区外
+    outside = service_env / "outside-secret.txt"
+    outside.write_text("秘密", encoding="utf-8")
+    link = ws_a / "逃逸链接"
+    link.symlink_to(outside)
+    with pytest.raises(WorkspaceEscapeError):
+        resolve_workspace_path(a["service_id"], "逃逸链接")
+    # 未挂项目的服务：锚定到私有 workspace（同样拦越界）
+    from domain.service import create_service
+
+    solo = create_service("echo-def")["service_id"]
+    assert get_workspace_dir(solo) != ws_a
+    with pytest.raises(WorkspaceEscapeError):
+        resolve_workspace_path(solo, "../x")
+
+
+def test_project_file_tools_gating_and_collab(service_env, project_template):
+    from domain.project.customer import create_customer_project
+    from domain.service import emit_to_service
+    from domain.service.capabilities import SERVICE_ONLY_TOOLS, service_only_tools_hidden
+
+    _make_def(service_env)
+    result = create_customer_project("协作验收", project_template)
+    a, b = result["services"]
+
+    # service-only 工具：服务可见、实例隐藏
+    assert service_only_tools_hidden(a["service_id"]) is False
+    assert service_only_tools_hidden("11111111-1111-1111-1111-111111111111") is True
+    assert SERVICE_ONLY_TOOLS >= {"send_to_peer", "project_file_write"}
+
+    # 工具实调：A 写共享文件 → B 可读（隔离验证：B 的库无 A 的事件）
+    from infrastructure.config import set_current_instance_id, reset_current_instance_id
+
+    import interfaces.tools.service_collab_tools as collab  # noqa: F401 注册
+
+    token = set_current_instance_id(a["service_id"])
+    try:
+        w = collab._handle_project_file_write(
+            {"path": "客户资料/需求.md", "content": "客户想优化商品经营"}
+        )
+        assert '"written": true' in w.lower()
+    finally:
+        reset_current_instance_id(token)
+
+    token = set_current_instance_id(b["service_id"])
+    try:
+        r = collab._handle_project_file_read({"path": "客户资料/需求.md"})
+        assert "商品经营" in r
+        # 越界写在工具层被拒（不抛异常，返回 tool_error 文案）
+        bad = collab._handle_project_file_write(
+            {"path": "../escape.txt", "content": "x"}
+        )
+        assert "越界" in bad or "escape" in bad.lower() or "失败" in bad
+        # 协作消息：B → A 走事件队列
+        send = collab._handle_send_to_peer(
+            {"peer_service_id": a["service_id"], "text": "请复核需求"}
+        )
+        assert '"sent": true' in send.lower()
+    finally:
+        reset_current_instance_id(token)
+
+    # A 的队列收到协作事件（B 的库没有）
+    import sqlite3 as _sq
+
+    def _last_text(db, sid):
+        conn = _sq.connect(str(db))
+        rows = conn.execute(
+            "SELECT payload FROM events WHERE channel LIKE ? ORDER BY event_id DESC LIMIT 1",
+            (f"instance:{sid}%",),
+        ).fetchall()
+        conn.close()
+        return rows
+
+    root = service_env
+    db_a = root / "apps" / "echo-def" / "services" / a["service_id"] / "data" / "state.db"
+    last_a = _last_text(db_a, a["service_id"])
+    assert last_a and "请复核需求" in last_a[0][0]
+    db_b = root / "apps" / "echo-def" / "services" / b["service_id"] / "data" / "state.db"
+    if db_b.exists():  # B 只发不收，库可能整个不存在——不存在即无泄漏
+        last_b = _last_text(db_b, b["service_id"])
+        assert not (last_b and "请复核需求" in last_b[0][0])
+
+
 def test_loop_fires_due_alarms_respects_subscription(service_env):
     from domain.lifecycle.clock import now_dt
     from domain.service import create_service

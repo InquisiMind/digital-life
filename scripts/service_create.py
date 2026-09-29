@@ -16,6 +16,10 @@
   python3 scripts/service_create.py activate <service_id>
   python3 scripts/service_create.py list [--all]
 
+  # 5. 项目（刀 4）：按模版建项目——批量创建一组服务 + 共享工作区
+  python3 scripts/service_create.py project-create --name 某某咨询 --template strategic_consulting
+  python3 scripts/service_create.py project-list
+
 验收剧本（刀 1）：bootstrap-echo → create → send（master 在跑时 ~10s 内
 spawn worker，日志在 apps/{def}/services/{sid}/data/var/logs/）→ archive →
 再 send（应 DROPPED reason=archived，不再拉起）。
@@ -129,9 +133,33 @@ def _cmd_list(args: argparse.Namespace) -> int:
         return 0
     for r in rows:
         print(
-            f"{r['service_id']}  def={r['agent_def_id']}  status={r['status']}"
-            f"  project={r.get('project_id') or '-'}  subs={r.get('subscriptions')}"
+            f"{r['service_id']}  {r.get('display_name') or '-'}  def={r['agent_def_id']}"
+            f"  status={r['status']}  project={r.get('project_id') or '-'}  subs={r.get('subscriptions')}"
         )
+    return 0
+
+
+def _cmd_project_create(args: argparse.Namespace) -> int:
+    from domain.project.customer import create_customer_project
+
+    result = create_customer_project(args.name, args.template)
+    p = result["project"]
+    print(f"✅ 项目已创建: {p['project_id']}  name={p['name']}  workspace={p['workspace_path']}")
+    for s in result["services"]:
+        print(f"   角色 {s['display_name']}: {s['service_id']}")
+    return 0
+
+
+def _cmd_project_list(_args: argparse.Namespace) -> int:
+    from infrastructure.persistence import services_registry
+
+    rows = services_registry.list_projects()
+    if not rows:
+        print("（空）")
+        return 0
+    for r in rows:
+        n = len(services_registry.list_services_by_project(r["project_id"]))
+        print(f"{r['project_id']}  {r['name']}  status={r['status']}  services={n}  ws={r['workspace_path']}")
     return 0
 
 
@@ -166,6 +194,14 @@ def main() -> int:
     p_list = sub.add_parser("list", help="列出服务")
     p_list.add_argument("--all", action="store_true", help="含已归档")
     p_list.set_defaults(func=_cmd_list)
+
+    p_pc = sub.add_parser("project-create", help="按模版建客户项目（批量建服务+共享工作区）")
+    p_pc.add_argument("--name", required=True, help="项目名")
+    p_pc.add_argument("--template", required=True, help="模版 ID（config/project_templates/）")
+    p_pc.set_defaults(func=_cmd_project_create)
+
+    p_pl = sub.add_parser("project-list", help="列出客户项目")
+    p_pl.set_defaults(func=_cmd_project_list)
 
     args = parser.parse_args()
     return args.func(args)

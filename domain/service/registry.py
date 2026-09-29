@@ -64,12 +64,13 @@ def create_service(
     display_name: str = "",
     capabilities: dict | None = None,
     subscriptions: list | None = None,
+    tools: list | None = None,
 ) -> dict:
     """注册服务并落目录骨架，返回服务行。
 
     新建服务要指定的四件事（设计文档 6.1）：基于哪个定义（此处）、属于哪个
     项目（project_id，可空=未挂项目）、初始上下文与对客身份（上层职责，
-    刀 3/4 管理面接入；此处先落注册表字段）。
+    刀 3 管理面接入；此处先落注册表字段）。tools：岗位工具面（模版角色）。
     """
     validate_agent_def(agent_def_id)
     svc = services_registry.create_service(
@@ -79,6 +80,7 @@ def create_service(
         display_name=display_name,
         capabilities=capabilities,
         subscriptions=subscriptions,
+        tools=tools,
     )
     sid = svc["service_id"]
     from infrastructure.config import get_project_root

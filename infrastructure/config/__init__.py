@@ -484,20 +484,18 @@ def get_workspace_dir(instance_id: str | None = None, *, only_probe: bool = Fals
     log = logging.getLogger("digital_life.config")
     iid = get_app_instance_id(instance_id)
 
-    # 服务型：挂项目的服务 → 项目共享工作区 projects/{pid}/workspace/
-    # （特性 6：项目内所有服务共享同一工作区，客户资料/中间产物放这里）；
-    # 未挂项目 → 服务私有 workspace（服务间绝不共享）。两条路径都不读 def 的
-    # app.yaml workspace_root——那是定义层配置，会被同定义的所有服务共享，
-    # 直接破坏隔离。
+    # 服务型：挂项目的服务 → 项目内个人区 projects/{pid}/members/{sid}/
+    # （草稿自由写；shared/ 共享区走 deliver 转正，见 domain/project/customer）；
+    # 未挂项目 → 服务私有 workspace。两条路径都不读 def 的 app.yaml
+    # workspace_root——那是定义层配置，会被同定义的所有服务共享，直接破坏隔离。
     if _service_def_id(iid):
         svc_ws = None
         try:
-            from domain.project.customer import project_workspace_dir
-            from infrastructure.persistence import services_registry
+            from domain.project.customer import get_project_of_service, member_personal_dir
 
-            svc = services_registry.lookup_service(iid)
-            if svc and svc.get("project_id"):
-                svc_ws = project_workspace_dir(svc["project_id"])
+            project = get_project_of_service(iid)
+            if project is not None:
+                svc_ws = member_personal_dir(project["project_id"], iid)
         except Exception as exc:
             log.debug("workspace: project lookup failed for %s: %s", iid[:12], exc)
         if svc_ws is None:

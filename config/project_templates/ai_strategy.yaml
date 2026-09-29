@@ -1,0 +1,16 @@
+# AI 战略咨询项目模版（S00–S10 的容器；阶段=待办分组，方法论住在 PM 的 skill）
+name: AI战略咨询
+watchdog: false
+roles:
+  - def: consulting-partner-def
+    name: 咨询合伙人
+    pm: true
+    tools: [sense_project_peers, send_chat_message, project_file_write,
+            project_file_read, project_deliver, project_todo_create,
+            project_todo_list, project_todo_update]
+  - def: consulting-researcher-def
+    name: 研究员
+    tools: [sense_project_peers, send_chat_message, project_file_write,
+            project_file_read, project_deliver, project_todo_list,
+            project_todo_update]
+initial_todos: []

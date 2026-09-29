@@ -140,14 +140,39 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_project_create(args: argparse.Namespace) -> int:
-    from domain.project.customer import create_customer_project
+    from domain.project.customer import create_project_from_template
 
-    result = create_customer_project(args.name, args.template)
+    result = create_project_from_template(args.name, args.template)
     p = result["project"]
-    print(f"✅ 项目已创建: {p['project_id']}  name={p['name']}  workspace={p['workspace_path']}")
+    print(f"✅ 项目已创建: {p['project_id']}  name={p['name']}  pm={p['pm_id']}")
     for s in result["services"]:
-        print(f"   角色 {s['display_name']}: {s['service_id']}")
+        mark = " ←PM" if s["service_id"] == result["pm_service_id"] else ""
+        print(f"   角色 {s['display_name']}: {s['service_id']}{mark}")
     return 0
+
+
+def _cmd_project_start(args: argparse.Namespace) -> int:
+    """S00：客户发言 → 自动建项目 → 首条消息投给 PM（web 入口的同一 domain API）。"""
+    from domain.project.customer import create_project_from_template
+    from domain.service.social import customer_message_to_pm
+
+    result = create_project_from_template(
+        args.name,
+        args.template,
+        customer={"id": f"cust-{args.customer or 'anon'}", "name": args.customer or "客户"},
+    )
+    p = result["project"]
+    print(f"✅ 项目已创建: {p['project_id']}  pm={result['pm_service_id']}")
+    event_id = customer_message_to_pm(
+        result["pm_service_id"],
+        {"id": f"cust-{args.customer or 'anon'}", "name": args.customer or "客户"},
+        args.message,
+    )
+    if event_id:
+        print(f"✅ 客户消息已投递 PM: event_id={event_id}（~10s 内 PM 被唤醒）")
+        return 0
+    print("❌ 消息投递被拒（见 master 日志）")
+    return 1
 
 
 def _cmd_project_list(_args: argparse.Namespace) -> int:
@@ -159,7 +184,8 @@ def _cmd_project_list(_args: argparse.Namespace) -> int:
         return 0
     for r in rows:
         n = len(services_registry.list_services_by_project(r["project_id"]))
-        print(f"{r['project_id']}  {r['name']}  status={r['status']}  services={n}  ws={r['workspace_path']}")
+        wd = "on" if r.get("watchdog_enabled") else "off"
+        print(f"{r['project_id']}  {r['name']}  status={r['status']}  services={n}  pm={r.get('pm_id') or '-'}  watchdog={wd}")
     return 0
 
 
@@ -195,10 +221,17 @@ def main() -> int:
     p_list.add_argument("--all", action="store_true", help="含已归档")
     p_list.set_defaults(func=_cmd_list)
 
-    p_pc = sub.add_parser("project-create", help="按模版建客户项目（批量建服务+共享工作区）")
+    p_pc = sub.add_parser("project-create", help="按模版建客户项目（批量建服务+社交圈+待办）")
     p_pc.add_argument("--name", required=True, help="项目名")
     p_pc.add_argument("--template", required=True, help="模版 ID（config/project_templates/）")
     p_pc.set_defaults(func=_cmd_project_create)
+
+    p_ps = sub.add_parser("project-start", help="S00：客户发言自动建项目并投递 PM（web 入口同款 API）")
+    p_ps.add_argument("--name", required=True, help="项目名")
+    p_ps.add_argument("--template", required=True, help="模版 ID")
+    p_ps.add_argument("--customer", default="", help="客户名")
+    p_ps.add_argument("--message", required=True, help="客户的第一句话")
+    p_ps.set_defaults(func=_cmd_project_start)
 
     p_pl = sub.add_parser("project-list", help="列出客户项目")
     p_pl.set_defaults(func=_cmd_project_list)

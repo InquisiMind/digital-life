@@ -1042,16 +1042,26 @@ class AIAgent:
                 base = [n for n in base if n not in blocked]
         except Exception:
             pass
-        # 服务专属工具（刀 4 协作原语）反向闸：实例不装载——实例间协作走
-        # broadcast 对等链，语义不同。
+        # 服务专属工具（刀 4b 项目协作原语）反向闸：实例不装载——实例间协作走
+        # broadcast 对等链，语义不同。服务侧再按岗位工具面（模版角色 →
+        # services.tools_json）收紧：只留交集，未配置=默认全量。
         try:
-            from domain.service.capabilities import SERVICE_ONLY_TOOLS
+            from domain.service.capabilities import (
+                SERVICE_PROJECT_TOOLS,
+                project_tools_allowed,
+                service_only_tools_hidden,
+            )
 
-            if base and any(n in SERVICE_ONLY_TOOLS for n in base):
-                from domain.service.capabilities import service_only_tools_hidden
-
+            if base and any(n in SERVICE_PROJECT_TOOLS for n in base):
                 if service_only_tools_hidden():
-                    base = [n for n in base if n not in SERVICE_ONLY_TOOLS]
+                    base = [n for n in base if n not in SERVICE_PROJECT_TOOLS]
+                else:
+                    allowed = project_tools_allowed()
+                    if allowed is not None:
+                        base = [
+                            n for n in base
+                            if n not in SERVICE_PROJECT_TOOLS or n in allowed
+                        ]
         except Exception:
             pass
         # V6: 合并条件暴露工具 (rest preview 后动态加入)

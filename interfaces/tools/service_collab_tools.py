@@ -1,20 +1,17 @@
-"""服务型协作工具（刀 4）——服务专属，实例不装载。
+"""服务型协作工具（刀 4b）——服务专属，实例默认不装载（工程可放行）。
 
-三个协作原语（设计文档特性 6/8）：
-  - sense_project_peers：同项目服务清单（我是谁、队友是谁）
-  - send_to_peer：给同项目某服务发协作消息——走对方事件队列（不偷看对方
-    私有记忆；共享的是项目工作区文件，不是对话上下文）
-  - project_file_list / read / write：项目共享工作区文件操作——全部过
-    resolve_workspace_path 锚定，越界（含 symlink 逃逸）直接拒绝
-
-实例型不装载这组工具（见 domain/service/capabilities.SERVICE_ONLY_TOOLS）：
-实例间协作走 broadcast 对等链，语义不同。
+工具面按模版角色收紧（services.tools_json，装配层应用）。原语：
+  - 社交：sense_project_peers / send_chat_message（群 fan-out·同伴·客户三路由）
+  - 文件：project_file_list / read / write（锚定项目目录；写限个人区）
+  - 转正：project_deliver（个人区 → shared/，显式交付）
+  - 待办：project_todo_create / list / update（可挂 parent 拆解）
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Any, Dict
 
 from infrastructure.config import get_app_instance_id
@@ -35,6 +32,9 @@ def _my_project():
     return get_project_of_service(_current_service_id())
 
 
+# ── 社交 ──────────────────────────────────────────────────────────────
+
+
 def _handle_sense_project_peers(_args: Dict[str, Any], **_) -> str:
     sid = _current_service_id()
     project = _my_project()
@@ -50,100 +50,88 @@ def _handle_sense_project_peers(_args: Dict[str, Any], **_) -> str:
             "service_id": p["service_id"],
             "role": p.get("display_name") or "",
             "is_me": p["service_id"] == sid,
-            "status": p["status"],
+            "is_pm": p["service_id"] == (project.get("pm_id") or ""),
         }
         for p in peers
     ]
     return json.dumps(
-        {"project_id": project["project_id"], "project_name": project["name"],
-         "stage": project.get("stage") or "", "peers": rows},
+        {
+            "project_id": project["project_id"],
+            "project_name": project["name"],
+            "pm_id": project.get("pm_id") or "",
+            "group_chat_id": f"svcgroup:{project['project_id']}",
+            "peers": rows,
+        },
         ensure_ascii=False,
     )
 
 
-def _handle_send_to_peer(args: Dict[str, Any], **_) -> str:
+def _handle_send_chat_message(args: Dict[str, Any], **_) -> str:
     sid = _current_service_id()
-    project = _my_project()
-    if not project:
-        return registry.tool_error("本服务未挂项目（无法发协作消息）")
-    peer_id = (args.get("peer_service_id") or "").strip()
+    if not _my_project():
+        return registry.tool_error("本服务未挂项目（无法发消息）")
+    chat_id = (args.get("chat_id") or "").strip()
     text = (args.get("text") or "").strip()
-    if not peer_id or not text:
-        return registry.tool_error("必须传 peer_service_id 和 text")
-    if peer_id == sid:
-        return registry.tool_error("不能给自己发协作消息")
+    if not chat_id or not text:
+        return registry.tool_error("必须传 chat_id 和 text")
+    from domain.service.social import send_chat_message
 
-    from infrastructure.persistence import services_registry
+    result = send_chat_message(sid, chat_id, text)
+    if not result.get("ok"):
+        return registry.tool_error(result.get("error") or "发送失败")
+    return json.dumps(result, ensure_ascii=False)
 
-    peers = services_registry.list_services_by_project(
-        project["project_id"], status="active"
-    )
-    if peer_id not in {p["service_id"] for p in peers}:
-        return registry.tool_error(
-            f"目标服务不在本项目 {project['project_id']} 内（用 sense_project_peers 查队友）"
-        )
 
-    from domain.service import emit_to_service
-
-    me = services_registry.lookup_service(sid) or {}
-    event_id = emit_to_service(
-        peer_id,
-        "message",
-        {
-            "text": text,
-            "from_service_id": sid,
-            "from_role": me.get("display_name") or "",
-            "project_id": project["project_id"],
-            "collab": True,
-        },
-    )
-    if not event_id:
-        return registry.tool_error(
-            "协作消息被拒（对方归档或未订阅 message）——event 未入队"
-        )
-    return json.dumps({"sent": True, "event_id": event_id, "peer": peer_id},
-                      ensure_ascii=False)
+# ── 文件（个人区自由写 / shared 只读 / deliver 转正） ────────────────
 
 
 def _handle_project_file_list(args: Dict[str, Any], **_) -> str:
     sid = _current_service_id()
-    if not _my_project():
-        return registry.tool_error("本服务未挂项目（无共享工作区）")
-    try:
-        from domain.project.customer import resolve_workspace_path
+    project = _my_project()
+    if not project:
+        return registry.tool_error("本服务未挂项目（无项目目录）")
+    sub = (args.get("subpath") or ".").strip() or "."
+    scope = (args.get("scope") or "").strip()  # ""=两者 | personal | shared
+    from domain.project.customer import member_personal_dir, project_root_dir, shared_dir
 
-        base = resolve_workspace_path(sid, ".")
-        sub = (args.get("subpath") or ".").strip() or "."
-        target = resolve_workspace_path(sid, sub)
+    targets: list[tuple[str, Path]] = []
+    root = project_root_dir(project["project_id"])
+    if scope in ("", "personal"):
+        targets.append(("personal", member_personal_dir(project["project_id"], sid)))
+    if scope in ("", "shared"):
+        targets.append(("shared", shared_dir(project["project_id"])))
+    out = []
+    for label, base in targets:
+        target = base if sub == "." else base / sub
         if not target.exists():
-            return registry.tool_error(f"路径不存在: {sub}")
-        entries = []
-        for p in sorted(target.iterdir()):
-            entries.append({
-                "name": p.name,
+            continue
+        for p in sorted(target.rglob("*"))[:200]:
+            rel = str(p.relative_to(root))
+            out.append({
+                "path": rel,
+                "area": label,
                 "type": "dir" if p.is_dir() else "file",
                 "size": p.stat().st_size if p.is_file() else 0,
             })
-        return json.dumps({"path": sub, "entries": entries}, ensure_ascii=False)
-    except Exception as exc:
-        return registry.tool_error(f"列目录失败: {exc}")
+    return json.dumps({"entries": out}, ensure_ascii=False)
 
 
 def _handle_project_file_read(args: Dict[str, Any], **_) -> str:
     sid = _current_service_id()
     if not _my_project():
-        return registry.tool_error("本服务未挂项目（无共享工作区）")
+        return registry.tool_error("本服务未挂项目（无项目目录）")
     relpath = (args.get("path") or "").strip()
     if not relpath:
-        return registry.tool_error("必须传 path（工作区相对路径）")
+        return registry.tool_error("必须传 path")
     try:
         from domain.project.customer import resolve_workspace_path
 
         p = resolve_workspace_path(sid, relpath)
         if not p.is_file():
             return registry.tool_error(f"文件不存在: {relpath}")
-        text = p.read_text(encoding="utf-8", errors="replace")[:_MAX_FILE_CHARS]
-        return text
+        return p.read_text(encoding="utf-8", errors="replace")[:_MAX_FILE_CHARS]
+    except PermissionError as exc:
+        return registry.tool_error(f"越界拒绝: {exc}")
     except Exception as exc:
         return registry.tool_error(f"读文件失败: {exc}")
 
@@ -151,7 +139,7 @@ def _handle_project_file_read(args: Dict[str, Any], **_) -> str:
 def _handle_project_file_write(args: Dict[str, Any], **_) -> str:
     sid = _current_service_id()
     if not _my_project():
-        return registry.tool_error("本服务未挂项目（无共享工作区）")
+        return registry.tool_error("本服务未挂项目（无项目目录）")
     relpath = (args.get("path") or "").strip()
     content = args.get("content")
     if not relpath or content is None:
@@ -159,108 +147,211 @@ def _handle_project_file_write(args: Dict[str, Any], **_) -> str:
     try:
         from domain.project.customer import resolve_workspace_path
 
-        p = resolve_workspace_path(sid, relpath)
+        p = resolve_workspace_path(sid, relpath, for_write=True)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(str(content), encoding="utf-8")
-        return json.dumps({"written": True, "path": relpath, "chars": len(str(content))},
-                          ensure_ascii=False)
+        return json.dumps(
+            {"written": True, "path": relpath, "chars": len(str(content))},
+            ensure_ascii=False,
+        )
     except PermissionError as exc:
         return registry.tool_error(f"越界拒绝: {exc}")
     except Exception as exc:
         return registry.tool_error(f"写文件失败: {exc}")
 
 
+def _handle_project_deliver(args: Dict[str, Any], **_) -> str:
+    sid = _current_service_id()
+    relpath = (args.get("path") or "").strip()
+    if not relpath:
+        return registry.tool_error("必须传 path（个人区相对路径）")
+    try:
+        from domain.project.customer import deliver_file
+
+        result = deliver_file(sid, relpath)
+        return json.dumps(result, ensure_ascii=False)
+    except (PermissionError, ValueError) as exc:
+        return registry.tool_error(str(exc))
+
+
+# ── 待办 ──────────────────────────────────────────────────────────────
+
+
+def _handle_project_todo_create(args: Dict[str, Any], **_) -> str:
+    sid = _current_service_id()
+    project = _my_project()
+    if not project:
+        return registry.tool_error("本服务未挂项目（无项目待办）")
+    title = (args.get("title") or "").strip()
+    if not title:
+        return registry.tool_error("必须传 title")
+    from infrastructure.persistence import services_registry
+
+    assignee = (args.get("assignee_id") or "").strip()
+    if assignee:
+        valid = {
+            p["service_id"] for p in services_registry.list_services_by_project(
+                project["project_id"], status="active"
+            )
+        }
+        if assignee not in valid:
+            return registry.tool_error(
+                f"assignee_id 不在本项目（用 sense_project_peers 查队友）"
+            )
+    todo = services_registry.create_project_todo(
+        project["project_id"], title,
+        parent_id=(args.get("parent_todo_id") or "").strip(),
+        detail=(args.get("detail") or "").strip(),
+        assignee_id=assignee,
+        created_by=sid,
+    )
+    return json.dumps(todo, ensure_ascii=False)
+
+
+def _handle_project_todo_list(args: Dict[str, Any], **_) -> str:
+    sid = _current_service_id()
+    project = _my_project()
+    if not project:
+        return registry.tool_error("本服务未挂项目（无项目待办）")
+    from infrastructure.persistence import services_registry
+
+    scope = (args.get("scope") or "open").strip()
+    status = None if scope == "all" else (None if scope == "mine" else scope)
+    if scope not in ("open", "in_progress", "done", "all", "mine"):
+        return registry.tool_error("scope 取值: open / in_progress / done / all / mine")
+    assignee = sid if scope == "mine" else None
+    if scope == "mine":
+        status = None
+    todos = services_registry.list_project_todos(
+        project["project_id"], status=status, assignee_id=assignee
+    )
+    return json.dumps(
+        [{"todo_id": t["todo_id"], "title": t["title"], "parent_id": t["parent_id"],
+          "assignee": t["assignee_id"], "status": t["status"]} for t in todos],
+        ensure_ascii=False,
+    )
+
+
+def _handle_project_todo_update(args: Dict[str, Any], **_) -> str:
+    sid = _current_service_id()
+    project = _my_project()
+    if not project:
+        return registry.tool_error("本服务未挂项目（无项目待办）")
+    todo_id = (args.get("todo_id") or "").strip()
+    if not todo_id:
+        return registry.tool_error("必须传 todo_id")
+    from infrastructure.persistence import services_registry
+
+    todo = services_registry.get_project_todo(todo_id)
+    if not todo or todo["project_id"] != project["project_id"]:
+        return registry.tool_error(f"待办不在本项目: {todo_id}")
+    status = (args.get("status") or "").strip() or None
+    if status and status not in ("open", "in_progress", "done"):
+        return registry.tool_error("status 取值: open / in_progress / done")
+    ok = services_registry.update_project_todo(
+        todo_id,
+        title=(args.get("title") or "").strip() or None,
+        detail=(args.get("detail") or "").strip() or None,
+        assignee_id=(args.get("assignee_id") or "").strip() or None,
+        status=status,
+    )
+    return json.dumps({"updated": ok, "todo_id": todo_id}, ensure_ascii=False)
+
+
 # ── 注册 ──────────────────────────────────────────────────────────────
 
-registry.register(
-    name="sense_project_peers",
-    toolset="actions",
-    schema={
-        "name": "sense_project_peers",
-        "description": (
-            "查看本项目队友：项目名、当前阶段、全部角色服务（含自己）。"
-            "发协作消息前先调这个拿 peer_service_id。"
-        ),
-        "parameters": {"type": "object", "properties": {}, "required": []},
-    },
-    handler=_handle_sense_project_peers,
+
+def _reg(name: str, description: str, params: dict | None = None, required: list | None = None, emoji: str = "🔧") -> None:
+    schema = {
+        "name": name,
+        "description": description,
+        "parameters": {
+            "type": "object",
+            "properties": params or {},
+            "required": required or [],
+        },
+    }
+    registry.register(name=name, toolset="actions", schema=schema,
+                      handler=globals()[f"_handle_{name}"], emoji=emoji)
+
+
+_reg(
+    "sense_project_peers",
+    "查看本项目：项目名、PM、群 chat_id、全部角色服务（含自己）。发消息/派待办前先调这个。",
     emoji="👥",
 )
-
-registry.register(
-    name="send_to_peer",
-    toolset="actions",
-    schema={
-        "name": "send_to_peer",
-        "description": (
-            "给同项目另一个服务发协作消息（进对方事件队列，对方会被唤醒处理）。\n"
-            "适合：请队友做一件事、交付物交接、阶段流转通知。\n"
-            "注意：这是唯一的服务间通信方式——不要试图读对方私有记忆，"
-            "共享资料放项目工作区文件（project_file_write）。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "peer_service_id": {"type": "string", "description": "目标服务 ID（sense_project_peers 查）"},
-                "text": {"type": "string", "description": "协作消息内容（对方醒来直接看到）"},
-            },
-            "required": ["peer_service_id", "text"],
-        },
+_reg(
+    "send_chat_message",
+    "发消息到指定窗口。chat_id 三种：项目群（svcgroup:开头，全体成员可见）、"
+    "同伴私聊（对方的 service_id）、客户私聊（customer:开头，仅 PM 有）。"
+    "群消息会唤醒其他成员。",
+    params={
+        "chat_id": {"type": "string", "description": "目标窗口 ID"},
+        "text": {"type": "string", "description": "消息内容"},
     },
-    handler=_handle_send_to_peer,
+    required=["chat_id", "text"],
     emoji="📤",
 )
-
-registry.register(
-    name="project_file_list",
-    toolset="actions",
-    schema={
-        "name": "project_file_list",
-        "description": "列出项目共享工作区的文件/目录（可选 subpath 子目录）。",
-        "parameters": {
-            "type": "object",
-            "properties": {"subpath": {"type": "string", "default": "."}},
-            "required": [],
-        },
-    },
-    handler=_handle_project_file_list,
+_reg(
+    "project_file_list",
+    "列项目文件。scope: personal（我的个人区）/ shared（共享区）/ 空=两者。"
+    "返回的 path 可直接用于 read/write/deliver。",
+    params={"scope": {"type": "string", "description": "personal | shared | 空=两者"},
+            "subpath": {"type": "string", "description": "子目录（默认全部）"}},
     emoji="📂",
 )
-
-registry.register(
-    name="project_file_read",
-    toolset="actions",
-    schema={
-        "name": "project_file_read",
-        "description": "读项目共享工作区里的文件（客户资料、队友交付物）。path 为工作区相对路径。",
-        "parameters": {
-            "type": "object",
-            "properties": {"path": {"type": "string", "description": "工作区相对路径"}},
-            "required": ["path"],
-        },
-    },
-    handler=_handle_project_file_read,
+_reg(
+    "project_file_read",
+    "读项目文件。可读自己的个人区（members/我/…）与共享区（shared/…）；不能读他人个人区。",
+    params={"path": {"type": "string", "description": "list 返回的 path"}},
+    required=["path"],
     emoji="📄",
 )
-
-registry.register(
-    name="project_file_write",
-    toolset="actions",
-    schema={
-        "name": "project_file_write",
-        "description": (
-            "写文件到项目共享工作区（客户资料、研究底稿、阶段交付物）。"
-            "项目内所有服务可见。路径被锚定，越界（含 symlink 逃逸）会被拒绝。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "工作区相对路径"},
-                "content": {"type": "string", "description": "文件全文"},
-            },
-            "required": ["path", "content"],
-        },
-    },
-    handler=_handle_project_file_write,
+_reg(
+    "project_file_write",
+    "写文件到自己的个人区（草稿自由写）。path 相对项目根，形如 members/<我的id>/xxx.md；"
+    "通常只需写相对个人区的名字。写共享区必须走 project_deliver 转正。",
+    params={"path": {"type": "string", "description": "文件路径"},
+            "content": {"type": "string", "description": "文件全文"}},
+    required=["path", "content"],
     emoji="✍️",
+)
+_reg(
+    "project_deliver",
+    "把个人区的文件转正到共享区（显式交付动作，全员可读；shared 存最新、.versions 留历史）。"
+    "path 为个人区内相对路径。",
+    params={"path": {"type": "string", "description": "个人区内相对路径"}},
+    required=["path"],
+    emoji="📦",
+)
+_reg(
+    "project_todo_create",
+    "建项目待办（可挂 parent_todo_id 拆解子待办、可 assignee_id 派给队友）。",
+    params={
+        "title": {"type": "string", "description": "待办标题"},
+        "detail": {"type": "string", "description": "说明"},
+        "parent_todo_id": {"type": "string", "description": "父待办 ID（拆解用）"},
+        "assignee_id": {"type": "string", "description": "承办服务 ID（sense_project_peers 查）"},
+    },
+    required=["title"],
+    emoji="☑️",
+)
+_reg(
+    "project_todo_list",
+    "列项目待办。scope: open / in_progress / done / all / mine（我的全部）。",
+    params={"scope": {"type": "string", "description": "open|in_progress|done|all|mine"}},
+    emoji="📋",
+)
+_reg(
+    "project_todo_update",
+    "更新待办：改状态（open/in_progress/done）、改派单、补说明。",
+    params={
+        "todo_id": {"type": "string", "description": "待办 ID"},
+        "status": {"type": "string", "description": "open | in_progress | done"},
+        "assignee_id": {"type": "string", "description": "改派给谁"},
+        "title": {"type": "string", "description": "改标题"},
+        "detail": {"type": "string", "description": "补说明"},
+    },
+    required=["todo_id"],
+    emoji="🔄",
 )

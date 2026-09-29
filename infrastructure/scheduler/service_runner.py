@@ -109,6 +109,139 @@ def _fire_service_alarms(service_id: str) -> None:
         reset_current_instance_id(cfg_token)
 
 
+# ── 项目停滞看门狗（唯一特殊事件，项目级开关默认关） ────────────────
+
+STALL_ACTIVE_WINDOW_S = 600.0    # "活跃"：租约持有中，或最近 10 分钟内有 wake 结束
+STALL_PING_COOLDOWN_S = 1800.0   # 冷却 30 分钟：催过没动，不连催
+
+
+def _member_active(member_id: str, now: float) -> bool:
+    """成员服务是否活跃：租约持有中，或最近 N 分钟内有 wake 结束。"""
+    from infrastructure.persistence import services_registry
+
+    lease = services_registry.get_lease(member_id)
+    if lease is not None:
+        return True
+    # 最近 wake：runtime_log（服务私有库）
+    try:
+        db = service_state_db_path(member_id).parent / "runtime_log.db"
+        if not db.exists():
+            return False
+        conn = sqlite3.connect(str(db), timeout=3.0)
+        try:
+            row = conn.execute(
+                "SELECT MAX(COALESCE(ended_at, started_at)) FROM wake"
+            ).fetchone()
+        finally:
+            conn.close()
+        if row and row[0]:
+            import time as _t
+
+            ts = row[0]
+            # runtime_log 时间戳为 unix 秒（wake 表 started_at/ended_at 实存 REAL）
+            try:
+                return (now - float(ts)) < STALL_ACTIVE_WINDOW_S
+            except (TypeError, ValueError):
+                return False
+    except sqlite3.Error:
+        return False
+    return False
+
+
+def run_stall_watchdog(now: float | None = None) -> list[str]:
+    """扫 watchdog_enabled 且 active 的项目：待办未清 + 全员不活跃 → 催 PM。
+
+    返回本轮触发的 project_id 列表（测试/观测用）。PM 是服务走事件队列并
+    自动补订阅；PM 是实例只入队（实例自己的 cron 会取）。
+    """
+    now = now if now is not None else time.time()
+    from datetime import datetime, timezone
+
+    from infrastructure.persistence import services_registry
+
+    triggered: list[str] = []
+    for project in services_registry.list_projects(status="active"):
+        if not project.get("watchdog_enabled"):
+            continue
+        pid = project["project_id"]
+        open_todos = services_registry.list_project_todos(pid, status="open") + \
+            services_registry.list_project_todos(pid, status="in_progress")
+        if not open_todos:
+            continue
+        members = services_registry.list_services_by_project(pid, status="active")
+        stalled = [m["service_id"] for m in members if not _member_active(m["service_id"], now)]
+        if len(stalled) != len(members) or not members:
+            continue  # 有人在干活，不算停滞
+        # 冷却
+        last_ping = project.get("last_stall_ping_at")
+        if last_ping:
+            try:
+                last_dt = datetime.fromisoformat(last_ping)
+                if (now - last_dt.timestamp()) < STALL_PING_COOLDOWN_S:
+                    continue
+            except ValueError:
+                pass
+        pm_id = project.get("pm_id") or ""
+        if not pm_id:
+            continue
+        stalled_names = ", ".join(
+            (services_registry.lookup_service(s) or {}).get("display_name", s[:12])
+            for s in stalled
+        )
+        payload = {
+            "project_id": pid,
+            "project_name": project.get("name") or pid,
+            "open_todos": len(open_todos),
+            "stalled_members": stalled_names,
+        }
+        from domain.service.capabilities import capability_enabled  # noqa: F401
+        from infrastructure.persistence.services_registry import resolve_service_def
+
+        if resolve_service_def(pm_id):
+            from domain.service import emit_to_service
+            from infrastructure.persistence import services_registry as sr
+
+            pm = sr.lookup_service(pm_id) or {}
+            subs = pm.get("subscriptions") or []
+            if "project_stall" not in subs:
+                sr.update_service_fields(pm_id, subscriptions=list(subs) + ["project_stall"])
+            event_id = emit_to_service(pm_id, "project_stall", payload)
+            ok = event_id > 0
+        else:
+            # PM 是实例：只入队（该实例进程的 cron 会取走叫醒）
+            from domain.lifecycle.events import (
+                emit_event,
+                reset_instance_context,
+                reset_wake_suppressed,
+                set_instance_context,
+                set_wake_suppressed,
+            )
+            from infrastructure.config import (
+                reset_current_instance_id,
+                set_current_instance_id,
+            )
+
+            cfg = set_current_instance_id(pm_id)
+            evt = set_instance_context(pm_id)
+            sup = set_wake_suppressed(True)
+            try:
+                ok = emit_event("project_stall", payload) > 0
+            finally:
+                reset_wake_suppressed(sup)
+                reset_instance_context(evt)
+                reset_current_instance_id(cfg)
+        if ok:
+            services_registry.update_project_fields(
+                pid, last_stall_ping_at=datetime.now(timezone.utc).isoformat()
+            )
+            triggered.append(pid)
+            logger.warning(
+                "PROJECT_STALL_TRIGGERED project=%s open=%d pm=%s",
+                pid, len(open_todos), pm_id[:12],
+            )
+    return triggered
+
+
 class ServiceWorkerLoop:
     """单线程扫描循环。spawn 参数可注入（测试用假进程）。"""
 
@@ -160,11 +293,20 @@ class ServiceWorkerLoop:
             self._release(sid)
 
     def _run(self) -> None:
+        last_watchdog = 0.0
         while not self._stop.is_set():
             try:
                 self.tick()
             except Exception:
                 logger.exception("service worker loop tick failed")
+            # 项目停滞看门狗：每 60s 一轮（与 tick 的 10s 解耦）
+            now = time.time()
+            if now - last_watchdog >= 60.0:
+                last_watchdog = now
+                try:
+                    run_stall_watchdog(now)
+                except Exception:
+                    logger.exception("stall watchdog scan failed")
             self._stop.wait(self._scan_interval)
 
     # ── 单轮扫描 ──────────────────────────────────────────────────────

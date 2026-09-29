@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS services (
     status TEXT NOT NULL DEFAULT 'active',
     capabilities_json TEXT DEFAULT '{}',
     subscriptions_json TEXT DEFAULT '["message"]',
+    tools_json TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -73,7 +74,38 @@ CREATE TABLE IF NOT EXISTS projects (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_services_project ON services(project_id, status);
+CREATE TABLE IF NOT EXISTS project_members (
+    project_id TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    role TEXT DEFAULT '',
+    joined_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, member_id)
+);
+CREATE TABLE IF NOT EXISTS project_todos (
+    todo_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    parent_id TEXT DEFAULT '',
+    title TEXT NOT NULL,
+    detail TEXT DEFAULT '',
+    assignee_id TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open',
+    due_at TEXT,
+    created_by TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_project_todos ON project_todos(project_id, status);
 """
+
+# 旧库增量列（刀4b 轻量化：projects 补 pm/watchdog 字段——列存在则跳过）
+_MIGRATION_COLUMNS = {
+    "projects": {
+        "description": "TEXT DEFAULT ''",
+        "pm_id": "TEXT DEFAULT ''",
+        "watchdog_enabled": "INTEGER DEFAULT 0",
+        "last_stall_ping_at": "TEXT",
+    },
+}
 
 _SCHEMA_READY = False
 
@@ -107,6 +139,11 @@ def _ensure_schema() -> None:
         return
     with _connect() as conn:
         conn.executescript(_SCHEMA_SQL)
+        for table, cols in _MIGRATION_COLUMNS.items():
+            existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for col, decl in cols.items():
+                if col not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
     _SCHEMA_READY = True
 
 
@@ -118,13 +155,18 @@ def _now_iso() -> str:
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
-    for col in ("capabilities_json", "subscriptions_json"):
+    for col in ("capabilities_json", "subscriptions_json", "tools_json"):
         raw = data.pop(col, None)
         key = col.removesuffix("_json")
         try:
-            data[key] = json.loads(raw) if raw else ([] if key == "subscriptions" else {})
+            if key == "tools":
+                data[key] = json.loads(raw) if raw else None
+            elif key == "subscriptions":
+                data[key] = json.loads(raw) if raw else []
+            else:
+                data[key] = json.loads(raw) if raw else {}
         except (TypeError, ValueError):
-            data[key] = [] if key == "subscriptions" else {}
+            data[key] = None if key == "tools" else ([] if key == "subscriptions" else {})
     return data
 
 
@@ -141,18 +183,22 @@ def new_project_id() -> str:
     return f"prj-{uuid.uuid4().hex[:12]}"
 
 
-def create_project(name: str, template_id: str = "", workspace_path: str = "") -> dict:
-    """注册一个客户项目（CustomerProject）。workspace 目录由 domain 层创建。"""
+def create_project(name: str, template_id: str = "", description: str = "",
+                   pm_id: str = "", watchdog_enabled: bool = False) -> dict:
+    """注册一个客户项目（轻量：只有名分和开关，目录/成员/待办归 domain 层）。"""
     _ensure_schema()
     pid = new_project_id()
     now = _now_iso()
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO projects (project_id, name, template_id, status, stage,"
-            " workspace_path, created_at, updated_at) VALUES (?, ?, ?, 'active', '', ?, ?, ?)",
-            (pid, name, template_id, workspace_path, now, now),
+            "INSERT INTO projects (project_id, name, template_id, description, pm_id,"
+            " watchdog_enabled, status, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+            (pid, name, template_id, description, pm_id,
+             1 if watchdog_enabled else 0, now, now),
         )
-    logger.info("PROJECT_CREATED project_id=%s name=%r template=%s", pid, name, template_id)
+    logger.info("PROJECT_CREATED project_id=%s name=%r template=%s pm=%s",
+                pid, name, template_id, pm_id)
     row = lookup_project(pid)
     assert row is not None
     return row
@@ -181,7 +227,10 @@ def list_projects(status: str | None = None) -> list[dict]:
 
 
 def update_project_fields(project_id: str, *, name: str | None = None,
-                          status: str | None = None, stage: str | None = None) -> bool:
+                          status: str | None = None, stage: str | None = None,
+                          description: str | None = None, pm_id: str | None = None,
+                          watchdog_enabled: bool | None = None,
+                          last_stall_ping_at: str | None = None) -> bool:
     _ensure_schema()
     sets = ["updated_at = ?"]
     params: list[Any] = [_now_iso()]
@@ -191,10 +240,135 @@ def update_project_fields(project_id: str, *, name: str | None = None,
         sets.append("status = ?"); params.append(status)
     if stage is not None:
         sets.append("stage = ?"); params.append(stage)
+    if description is not None:
+        sets.append("description = ?"); params.append(description)
+    if pm_id is not None:
+        sets.append("pm_id = ?"); params.append(pm_id)
+    if watchdog_enabled is not None:
+        sets.append("watchdog_enabled = ?"); params.append(1 if watchdog_enabled else 0)
+    if last_stall_ping_at is not None:
+        sets.append("last_stall_ping_at = ?"); params.append(last_stall_ping_at)
     params.append(project_id)
     with _connect() as conn:
         cur = conn.execute(
             f"UPDATE projects SET {', '.join(sets)} WHERE project_id = ?", params
+        )
+    return cur.rowcount > 0
+
+
+# ── project members / todos（刀 4b 轻量化）────────────────────────────
+
+
+def add_project_member(project_id: str, member_id: str, role: str = "") -> None:
+    _ensure_schema()
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO project_members (project_id, member_id, role, joined_at)"
+            " VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(project_id, member_id) DO UPDATE SET role = excluded.role",
+            (project_id, member_id, role, _now_iso()),
+        )
+
+
+def remove_project_member(project_id: str, member_id: str) -> None:
+    _ensure_schema()
+    with _connect() as conn:
+        conn.execute(
+            "DELETE FROM project_members WHERE project_id = ? AND member_id = ?",
+            (project_id, member_id),
+        )
+
+
+def list_project_members(project_id: str) -> list[dict]:
+    _ensure_schema()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM project_members WHERE project_id = ? ORDER BY joined_at",
+            (project_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_project_members_of(service_id: str) -> list[dict]:
+    """某服务参加的全部项目成员关系（N:M）。"""
+    _ensure_schema()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM project_members WHERE member_id = ? ORDER BY joined_at",
+            (service_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def new_todo_id() -> str:
+    return f"ptodo-{uuid.uuid4().hex[:10]}"
+
+
+def create_project_todo(project_id: str, title: str, *, parent_id: str = "",
+                        detail: str = "", assignee_id: str = "",
+                        due_at: str | None = None, created_by: str = "") -> dict:
+    _ensure_schema()
+    tid = new_todo_id()
+    now = _now_iso()
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO project_todos (todo_id, project_id, parent_id, title, detail,"
+            " assignee_id, status, due_at, created_by, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)",
+            (tid, project_id, parent_id, title, detail, assignee_id, due_at,
+             created_by, now, now),
+        )
+    row = get_project_todo(tid)
+    assert row is not None
+    return row
+
+
+def get_project_todo(todo_id: str) -> Optional[dict]:
+    _ensure_schema()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM project_todos WHERE todo_id = ?", (todo_id,)
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def list_project_todos(project_id: str, *, status: str | None = None,
+                       assignee_id: str | None = None) -> list[dict]:
+    _ensure_schema()
+    q = "SELECT * FROM project_todos WHERE project_id = ?"
+    params: list[Any] = [project_id]
+    if status is not None:
+        q += " AND status = ?"
+        params.append(status)
+    if assignee_id is not None:
+        q += " AND assignee_id = ?"
+        params.append(assignee_id)
+    q += " ORDER BY created_at"
+    with _connect() as conn:
+        rows = conn.execute(q, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_project_todo(todo_id: str, *, title: str | None = None,
+                        detail: str | None = None, assignee_id: str | None = None,
+                        status: str | None = None, due_at: str | None = None) -> bool:
+    _ensure_schema()
+    sets = ["updated_at = ?"]
+    params: list[Any] = [_now_iso()]
+    if title is not None:
+        sets.append("title = ?"); params.append(title)
+    if detail is not None:
+        sets.append("detail = ?"); params.append(detail)
+    if assignee_id is not None:
+        sets.append("assignee_id = ?"); params.append(assignee_id)
+    if status is not None:
+        sets.append("status = ?"); params.append(status)
+    if due_at is not None:
+        sets.append("due_at = ?"); params.append(due_at)
+    params.append(todo_id)
+    with _connect() as conn:
+        cur = conn.execute(
+            f"UPDATE project_todos SET {', '.join(sets)} WHERE todo_id = ?", params
         )
     return cur.rowcount > 0
 
@@ -220,16 +394,20 @@ def create_service(
     display_name: str = "",
     capabilities: dict | None = None,
     subscriptions: list | None = None,
+    tools: list | None = None,
 ) -> dict:
-    """注册一个服务型运行体并返回完整行。不创建目录（目录骨架归 domain 层）。"""
+    """注册一个服务型运行体并返回完整行。不创建目录（目录骨架归 domain 层）。
+
+    tools：岗位工具面（模版角色 → 服务行，None=默认全量项目工具集）。
+    """
     _ensure_schema()
     sid = service_id or new_service_id()
     now = _now_iso()
     with _connect() as conn:
         conn.execute(
             "INSERT INTO services (service_id, agent_def_id, project_id, display_name,"
-            " status, capabilities_json, subscriptions_json, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " status, capabilities_json, subscriptions_json, tools_json, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 sid,
                 agent_def_id,
@@ -239,6 +417,7 @@ def create_service(
                 json.dumps(capabilities or {}, ensure_ascii=False),
                 json.dumps(subscriptions if subscriptions is not None else ["message"],
                            ensure_ascii=False),
+                json.dumps(tools, ensure_ascii=False) if tools is not None else None,
                 now,
                 now,
             ),
@@ -291,7 +470,8 @@ def set_service_status(service_id: str, status: str) -> bool:
 def update_service_fields(service_id: str, *, project_id: str | None = None,
                           display_name: str | None = None,
                           capabilities: dict | None = None,
-                          subscriptions: list | None = None) -> bool:
+                          subscriptions: list | None = None,
+                          tools: list | None = None) -> bool:
     """部分更新服务配置（刀 3 管理面的落点，先备好最小写入）。"""
     _ensure_schema()
     sets: list[str] = ["updated_at = ?"]
@@ -308,6 +488,9 @@ def update_service_fields(service_id: str, *, project_id: str | None = None,
     if subscriptions is not None:
         sets.append("subscriptions_json = ?")
         params.append(json.dumps(subscriptions, ensure_ascii=False))
+    if tools is not None:
+        sets.append("tools_json = ?")
+        params.append(json.dumps(tools, ensure_ascii=False))
     params.append(service_id)
     with _connect() as conn:
         cur = conn.execute(

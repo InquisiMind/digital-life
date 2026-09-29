@@ -781,3 +781,23 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: false
       include_vector_recall: false
+
+  project_stall:
+    display_name: 项目停滞预警
+    trigger_type: condition
+    trigger_description: 项目存在未完成待办但全员不活跃（无 worker 在跑且近期无唤醒）时，项目看门狗提醒项目经理推进或催办
+    priority: 6
+    payload_schema:
+      project_id: string
+      project_name: string?
+      open_todos: integer?
+      stalled_members: string?
+    description: 仅服务型项目启用（watchdog_enabled），冷却期内不重复触发
+    debounce_window_s: 0
+    merge_policy: latest
+    consumption_policy: on_trigger
+    wake_prompt: '🚨 项目停滞预警：项目「{project_name}」有 {open_todos} 项未完成待办，但当前没有任何成员在干活（停滞成员：{stalled_members}）。
+
+      作为项目经理，请检查：待办是否卡在没人认领？该派活的派活（send_chat_message 在群里@队友），该调整的调整（project_todo_update），确实无事可做就收尾关闭。
+
+      '

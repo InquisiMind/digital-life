@@ -47,15 +47,21 @@ CAPABILITY_GATED_TOOLS: dict[str, str] = {
     "project_bootstrap": "projects",
 }
 
-# 服务型专属工具（刀 4 协作原语）：实例不装载——实例间协作走 broadcast
-# 对等链，语义不同（send_to_peer 塞进实例会把对等链搅浑）。
-SERVICE_ONLY_TOOLS: frozenset[str] = frozenset({
+# 服务型专属工具（刀 4b 项目协作原语）：实例默认不装载（工程可放行）——
+# 实例间协作走 broadcast 对等链，语义不同。
+SERVICE_PROJECT_TOOLS: frozenset[str] = frozenset({
     "sense_project_peers",
-    "send_to_peer",
+    "send_chat_message",
     "project_file_list",
     "project_file_read",
     "project_file_write",
+    "project_deliver",
+    "project_todo_create",
+    "project_todo_list",
+    "project_todo_update",
 })
+
+SERVICE_ONLY_TOOLS = SERVICE_PROJECT_TOOLS
 
 
 def service_only_tools_hidden(runtime_id: str | None = None) -> bool:
@@ -67,6 +73,28 @@ def service_only_tools_hidden(runtime_id: str | None = None) -> bool:
     if not rid:
         return True
     return resolve_service_def(rid) is None
+
+
+def project_tools_allowed(runtime_id: str | None = None) -> set[str] | None:
+    """当前服务的岗位工具面（模版角色 → services.tools_json）。
+
+    None = 未配置（默认全量项目工具集）；集合 = 只留交集内的项目工具。
+    实例返回 None（配合 service_only_tools_hidden 整组隐藏）。
+    """
+    from infrastructure.config import get_app_instance_id
+    from infrastructure.persistence.services_registry import (
+        lookup_service,
+        resolve_service_def,
+    )
+
+    rid = runtime_id or get_app_instance_id()
+    if not rid or resolve_service_def(rid) is None:
+        return None
+    svc = lookup_service(rid) or {}
+    tools = svc.get("tools")
+    if isinstance(tools, list) and tools:
+        return set(tools)
+    return None
 
 
 def capability_enabled(cap: str, runtime_id: str | None = None) -> bool:

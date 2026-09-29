@@ -173,12 +173,27 @@ async def handle_get_messages(request: web.Request) -> web.Response:
     })
 
 
+async def handle_activity(request: web.Request) -> web.Response:
+    """GET /api/customer/sessions/{cid}/activity — 过程动态（转译层 C14）+ 阶段步骤。"""
+    customer_id = request.match_info["customer_id"]
+    project = _find_project(customer_id, request.query.get("project_id", ""))
+    if project is None:
+        return _json({"ok": False, "error": "会话不存在"}, 404)
+    from domain.project.activity import build_project_activity
+
+    data = build_project_activity(project["project_id"])
+    return _json({"ok": True, "project_id": project["project_id"], **data})
+
+
 async def handle_list_sessions(request: web.Request) -> web.Response:
-    """GET /api/customer/sessions?customer_id=… → 客户的项目列表（demo 管理用）。"""
+    """GET /api/customer/sessions?customer_id=… → 该客户的项目列表（多委托切换 C2）。"""
     from infrastructure.persistence import services_registry
 
+    want = request.query.get("customer_id", "").strip()
     rows = []
     for p in services_registry.list_projects():
+        if want and p.get("customer_id") != want:
+            continue
         rows.append({
             "project_id": p["project_id"],
             "name": p["name"],
@@ -194,7 +209,7 @@ async def handle_team(request: web.Request) -> web.Response:
     customer_id = request.match_info["customer_id"]
     from infrastructure.persistence import services_registry
 
-    project = _find_project(customer_id)
+    project = _find_project(customer_id, request.query.get("project_id", ""))
     if project is None:
         return _json({"ok": False, "error": "会话不存在"}, 404)
     messages = []
@@ -230,7 +245,7 @@ async def handle_files(request: web.Request) -> web.Response:
     rel = request.query.get("path", "").strip()
     from infrastructure.config import get_project_root
 
-    project = _find_project(customer_id)
+    project = _find_project(customer_id, request.query.get("project_id", ""))
     if project is None:
         return _json({"ok": False, "error": "会话不存在"}, 404)
     base = (get_project_root() / "projects" / project["project_id"] / "shared").resolve()
@@ -257,7 +272,7 @@ async def handle_member_detail(request: web.Request) -> web.Response:
     """GET /api/customer/sessions/{cid}/members/{sid} — 团队成员运行明细（下钻）。"""
     customer_id = request.match_info["customer_id"]
     sid = request.match_info["service_id"]
-    project = _find_project(customer_id)
+    project = _find_project(customer_id, request.query.get("project_id", ""))
     if project is None:
         return _json({"ok": False, "error": "会话不存在"}, 404)
     from infrastructure.persistence import services_registry
@@ -303,13 +318,21 @@ async def handle_member_detail(request: web.Request) -> web.Response:
     })
 
 
-def _find_project(customer_id: str):
+def _find_project(customer_id: str, project_id: str = ""):
+    """客户的当前项目；带 project_id 时可选中已完成项目（多委托切换 C2）。"""
     from infrastructure.persistence import services_registry
 
+    if project_id:
+        p = services_registry.lookup_project(project_id)
+        if p and p.get("customer_id") == customer_id:
+            return p
+        return None
     for p in services_registry.list_projects(status="active"):
         if p.get("customer_id") == customer_id:
             return p
-    return None
+    # 无 active 时回退最近一个（看历史）
+    rows = [p for p in services_registry.list_projects() if p.get("customer_id") == customer_id]
+    return rows[-1] if rows else None
 
 
 _ROUTER.router.add_post("/sessions", handle_start_session)
@@ -320,6 +343,7 @@ _ROUTER.router.add_get("/sessions/{customer_id}/files", handle_files)
 _ROUTER.router.add_get(
     "/sessions/{customer_id}/members/{service_id}", handle_member_detail
 )
+_ROUTER.router.add_get("/sessions/{customer_id}/activity", handle_activity)
 
 
 async def _serve_page(_request: web.Request) -> web.Response:

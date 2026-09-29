@@ -784,3 +784,54 @@ def test_loop_fires_due_alarms_respects_subscription(service_env):
     sr.update_service_fields(sid, subscriptions=["message", "timer"])
     assert loop.tick() == [sid]
     assert spawned == [sid]
+
+
+# ── C14 转译层（PRD v0.2 场景走查头号漏项） ───────────────────────────
+
+
+def test_activity_translation(service_env, project_template):
+    from domain.project.customer import deliver_file
+    from domain.project.activity import build_project_activity
+    from domain.service.social import _service_context, group_chat_id, send_chat_message
+
+    result = _create_duo(service_env, customer={"id": "cust-9", "name": "测试"})
+    pid = result["project"]["project_id"]
+    a, b = result["services"]
+
+    g = group_chat_id(pid)
+    send_chat_message(a["service_id"], g, "【交付】@乙 《行业研究报告》已完成，路径 shared/研究/x.md，ptodo-abc 置 done")
+    send_chat_message(a["service_id"], g, "【验收】《行业研究报告》验收通过 ✅")
+    send_chat_message(a["service_id"], g, "【质控审查】结论：⚠️ 需修改，逐条列出")
+    send_chat_message(a["service_id"], g, "【闭环】本轮分析完成")
+
+    d = build_project_activity(pid)
+    kinds = [x["kind"] for x in d["activities"]]
+    assert "deliver" in kinds and "accept" in kinds and "qc" in kinds and "done" in kinds
+    deliver = next(x for x in d["activities"] if x["kind"] == "deliver")
+    assert "行业研究报告" in deliver["text"] and "甲" in deliver["actor"]  # 发送者是甲
+    assert "ptodo-" not in deliver["text"] and "shared/" not in deliver["text"]  # 黑话清洗
+    assert d["current_stage"], d
+    assert all(st["state"] in ("pending", "doing", "done") for st in d["steps"])
+
+
+def test_activity_with_deliver_versions(service_env, project_template):
+    from domain.project.activity import build_project_activity
+    from domain.project.customer import deliver_file
+
+    result = _create_duo(service_env)
+    pid = result["project"]["project_id"]
+    a = result["services"][0]
+
+    from domain.project.customer import resolve_workspace_path
+
+    p = resolve_workspace_path(a["service_id"], f"members/{a['service_id']}/草稿.md", for_write=True)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("v1", encoding="utf-8")
+    deliver_file(a["service_id"], "草稿.md")
+    p.write_text("v2", encoding="utf-8")
+    deliver_file(a["service_id"], "草稿.md")
+
+    d = build_project_activity(pid)
+    file_acts = [x for x in d["activities"] if x["kind"] == "file"]
+    assert len(file_acts) == 1  # 二次转正留档 → 版本动态
+    assert "草稿.md" in file_acts[0]["text"]

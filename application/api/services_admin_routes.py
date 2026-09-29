@@ -254,6 +254,16 @@ _ROUTER.router.add_get("/projects/{project_id}/group", handle_project_group)
 _ROUTER.router.add_get("/projects/{project_id}/files", handle_project_files)
 
 
+async def handle_project_activity(request: web.Request) -> web.Response:
+    """GET /api/admin/projects/{pid}/activity — 转译动态流 + 阶段步骤（C14）。"""
+    from domain.project.activity import build_project_activity
+
+    return _json({"ok": True, **build_project_activity(request.match_info["project_id"])})
+
+
+_ROUTER.router.add_get("/projects/{project_id}/activity", handle_project_activity)
+
+
 async def _serve_page(_request: web.Request) -> web.Response:
     from infrastructure.config import get_project_root
 

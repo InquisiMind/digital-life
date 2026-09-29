@@ -78,6 +78,37 @@ input,textarea{font-size:14px;font-family:var(--font);border:1px solid var(--bd)
 input:focus,textarea:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--glow)}
 button{background:var(--primary);color:#fff;border:none;cursor:pointer;padding:12px 22px;border-radius:10px;font-size:14px;font-weight:600}
 button:disabled{background:var(--tmut)}
+/* 步骤条 C16 */
+.steps{display:flex;align-items:center;gap:0;padding:14px 4px 6px;flex-wrap:wrap}
+.step{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--tmut)}
+.step .dot2{width:22px;height:22px;border-radius:50%;border:1.5px solid var(--bd);display:flex;align-items:center;justify-content:center;font-size:11px;flex:none;background:var(--card)}
+.step.doing{color:var(--primary);font-weight:600}
+.step.doing .dot2{border-color:var(--primary);background:var(--glow);animation:pulse 1.6s infinite}
+.step.done{color:var(--ok)}
+.step.done .dot2{border-color:var(--ok);background:var(--ok);color:#fff}
+.step-line{width:34px;height:1.5px;background:var(--bd);margin:0 6px}
+.step.done+.step-line{background:var(--ok)}
+/* 动态流 C14 */
+.act{display:flex;gap:10px;padding:9px 4px;font-size:13.5px;align-items:flex-start}
+.act .ico{flex:none;width:26px;height:26px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:13px;background:var(--soft);border:1px solid var(--bd)}
+.act.k-deliver .ico,.act.k-file .ico,.act.k-revise .ico{background:rgba(37,99,235,.08);border-color:transparent}
+.act.k-accept .ico{background:rgba(5,150,105,.1);border-color:transparent}
+.act.k-qc .ico{background:rgba(217,119,6,.1);border-color:transparent}
+.act.k-done .ico{background:rgba(5,150,105,.15);border-color:transparent}
+.act .t{color:var(--tmut);font-size:11px;margin-left:auto;flex:none;padding-top:2px}
+.act .sub{color:var(--td);font-size:12px;margin-top:3px;display:none}
+.act.open .sub{display:block}
+.act .txt{cursor:default}
+.raw{background:var(--soft);border-radius:10px;padding:10px 14px;font-size:12.5px;color:var(--td);border-left:3px solid var(--bd);margin-bottom:8px}
+/* 可信度标记 C18 */
+.mk{display:inline-block;font-size:10.5px;padding:1px 7px;border-radius:6px;font-weight:600;vertical-align:1px}
+.mk-inf{background:rgba(217,119,6,.12);color:var(--warn)}
+.mk-todo{background:rgba(107,114,128,.12);color:var(--td)}
+.mk-draft{background:rgba(37,99,235,.1);color:var(--primary)}
+/* 未读红点 */
+.reddot{width:8px;height:8px;background:#dc2626;border-radius:50%;display:inline-block;margin-left:5px}
+.rawtoggle{font-size:12px;color:var(--td);cursor:pointer;padding:6px 10px;border-radius:8px;background:var(--soft);align-self:flex-start;margin-bottom:10px}
+.rawtoggle:hover{color:var(--primary)}
 @media(max-width:900px){#side{display:none!important}}
 </style>
 </head>
@@ -85,13 +116,14 @@ button:disabled{background:var(--tmut)}
 <header>
   <div class="logo">YL</div>
   <div class="brand"><b>元理 AI 战略咨询</b><small>合伙人受理 · 团队协作 · 质控把关</small></div>
+  <select id="proj-sel" style="display:none;margin-left:auto;font-size:13px;border:1px solid var(--bd);border-radius:8px;padding:7px 10px;background:var(--card)"></select>
   <div id="stage"></div>
 </header>
 <main>
  <div id="center">
   <div class="tabs">
     <div class="tab on" data-p="chat">💬 对话</div>
-    <div class="tab" data-p="team" id="tab-team" style="display:none">👥 团队协作</div>
+    <div class="tab" data-p="team" id="tab-team" style="display:none">👥 团队动态</div>
     <div class="tab" data-p="files" id="tab-files" style="display:none">📁 交付物</div>
   </div>
   <div class="pane on" id="p-chat"><div id="chat">
@@ -118,7 +150,14 @@ button:disabled{background:var(--tmut)}
 const $=id=>document.getElementById(id);
 const chatEl=$('chat'),nameEl=$('name'),textEl=$('text'),sendBtn=$('send');
 let cid=localStorage.getItem('yl_customer_id')||'';
-let sig={chat:'',team:'',files:''}; let filePath='';
+let projSel=localStorage.getItem('yl_proj_'+cid)||'';
+let sig={chat:'',team:'',act:'',files:''}; let filePath=''; let rawMode=false;
+const KIND_ICO={assign:'📋',deliver:'📦',accept:'✅',qc:'🔍',revise:'✏️',done:'🏁',note:'💬',file:'📄'};
+function trustMd(h){
+  return h.replace(/【推断】/g,'<span class="mk mk-inf">推断</span>')
+          .replace(/待验证/g,'<span class="mk mk-todo">待验证</span>')
+          .replace(/初稿/g,'<span class="mk mk-draft">初稿</span>');
+}
 document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));
   document.querySelectorAll('.pane').forEach(x=>x.classList.remove('on'));
@@ -134,12 +173,27 @@ function md(t){let h=esc(t);
 function bubble(m){const w=document.createElement('div');w.className='msg '+(m.from==='customer'?'customer':'consultant');
   const meta=document.createElement('div');meta.className='meta';meta.textContent=m.sender_name||(m.from==='customer'?'我':'咨询合伙人');
   const b=document.createElement('div');b.className='body';
-  b.innerHTML=m.from==='customer'?esc(m.text).replace(/\n/g,'<br>'):md(m.text);
+  b.innerHTML=m.from==='customer'?esc(m.text).replace(/\n/g,'<br>'):trustMd(md(m.text));
   w.append(meta,b);chatEl.appendChild(w);}
 function typing(){const w=document.createElement('div');w.className='msg consultant';
   w.innerHTML='<div class="meta">咨询团队</div><div class="body" style="color:#6b7280"><span class="dot"></span><span class="dot"></span><span class="dot"></span> 团队工作中</div>';
   chatEl.appendChild(w);chatEl.scrollTop=chatEl.scrollHeight;}
-async function jget(u){const r=await fetch(u);return r.json()}
+async function jget(u){
+  if(projSel&&u.includes('/api/customer/sessions/')&&!u.includes('project_id=')){
+    const [path,q]=u.split('?');u=path+'?'+((q?q+'&':'')+'project_id='+encodeURIComponent(projSel));}
+  const r=await fetch(u);return r.json()}
+async function loadProjects(){
+  if(!cid)return;
+  try{const d=await jget('/api/customer/sessions?customer_id='+encodeURIComponent(cid));
+    if(d.projects&&d.projects.length>1){
+      const sel=$('proj-sel');sel.style.display='block';sel.style.marginLeft='auto';
+      $('stage').style.marginLeft='0';
+      sel.innerHTML=d.projects.map(p=>`<option value="${p.project_id}" ${p.project_id===projSel?'selected':''}>${esc(p.name)}${p.status!=='active'?'（'+p.status+'）':''}</option>`).join('');
+      if(!projSel){projSel=d.projects[0].project_id;localStorage.setItem('yl_proj_'+cid,projSel);}
+      sel.onchange=()=>{projSel=sel.value;localStorage.setItem('yl_proj_'+cid,projSel);
+        sig={chat:'',team:'',act:'',files:''};filePath='';chatEl.innerHTML='';poll();pollTeam();pollFiles();};
+    }
+  }catch(e){}}
 /* 对话 */
 async function poll(){
   if(!cid)return;try{
@@ -153,15 +207,32 @@ async function poll(){
       $('team-list').innerHTML=d.team.map(t=>`<div class="member" onclick="memberDetail('${t.sid}')"><div class="avatar ${t.is_pm?'pm':''}">${(t.role||'?')[0]}</div>${t.role}${t.is_pm?'<span class="tag">PM</span>':''}</div>`).join('');
       $('todos').innerHTML=(d.todos||[]).map(t=>`<div class="todo ${t.status}"><div class="st"></div><div>${t.title}<small>${t.assignee||''}</small></div></div>`).join('');}
   }catch(e){}}
-/* 团队协作 */
+/* 团队动态（C14 转译层默认视图；原始记录折叠） */
 async function pollTeam(force){
   if(!cid)return;try{
-    const d=await jget(`/api/customer/sessions/${cid}/team`);
-    const s=JSON.stringify(d.messages);
-    if(force||s!==sig.team){sig.team=s;
-      $('team').innerHTML=d.messages.map(m=>`<div class="tmsg ${m.from==='self'?'self':''}" onclick="findMember('${esc(m.sender_name)}')">
-        <div class="m"><span class="av">${(m.sender_name||'?')[0]}</span><b>${esc(m.sender_name)}</b>· ${esc(m.ts)} <span style="margin-left:auto">点看成员明细 ›</span></div>${esc(m.text)}</div>`).join('')||'<div style="text-align:center;color:#9ca3af;padding:40px">团队尚未开始沟通</div>';
-      $('team').scrollTop=$('team').scrollHeight;}
+    const d=await jget(`/api/customer/sessions/${cid}/activity`);
+    const sigs=JSON.stringify([d.activities,d.steps,d.current_stage]);
+    if(force||sigs!==sig.act){sig.act=sigs;
+      const steps=`<div class="steps">${d.steps.map((st,i)=>`${i?'<div class="step-line"></div>':''}<div class="step ${st.state}"><div class="dot2">${st.state==='done'?'✓':i+1}</div>${st.name}</div>`).join('')}<div style="margin-left:auto;font-size:11px;color:#9ca3af">${d.current_stage?'当前：'+esc(d.current_stage):''}</div></div>`;
+      let body;
+      if(rawMode){
+        const t=await jget(`/api/customer/sessions/${cid}/team`);
+        body=`<div class="rawtoggle" onclick="rawMode=false;sig.act='';pollTeam(true)">‹ 返回动态视图</div>`+
+          t.messages.map(m=>`<div class="raw"><b>${esc(m.sender_name)}</b> · ${esc(m.ts)}<br>${esc(m.text)}</div>`).join('');
+      }else{
+        body=`<div class="rawtoggle" onclick="rawMode=true;sig.act='';pollTeam(true)">查看原始协作记录 ›</div>`+
+          d.activities.map(a=>`<div class="act k-${a.kind}" onclick="this.classList.toggle('open')">
+            <div class="ico">${KIND_ICO[a.kind]||'💬'}</div>
+            <div class="txt">${esc(a.text)}${a.detail&&a.kind!=='note'?`<div class="sub">${esc(a.detail.slice(0,120))}${a.detail.length>120?'…':''}</div>`:''}</div>
+            <div class="t">${esc(a.ts)}</div></div>`).join('')||'<div style="text-align:center;color:#9ca3af;padding:40px">团队正在组建…</div>';
+      }
+      $('team').innerHTML=steps+`<div style="margin-top:8px">${body}</div>`;
+      // 红点：动态数比上次看的多 → 标记未读
+      const seen=+localStorage.getItem('yl_seen_'+cid)||0;
+      if(d.activities.length>seen && !$('p-team').classList.contains('on')){
+        if(!$('tab-team').querySelector('.reddot'))$('tab-team').insertAdjacentHTML('beforeend','<span class="reddot"></span>');
+      } else if($('p-team').classList.contains('on')){localStorage.setItem('yl_seen_'+cid,d.activities.length);const r=$('tab-team').querySelector('.reddot');r&&r.remove();}
+    }
   }catch(e){}}
 let memberSid={};
 function findMember(name){const sid=memberSid[name];if(sid)memberDetail(sid);}
@@ -202,7 +273,7 @@ sendBtn.onclick=async()=>{
   textEl.value='';sendBtn.disabled=false;poll();};
 textEl.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendBtn.click();}});
 setInterval(()=>{poll();pollTeam();},5000);
-if(cid){jget(`/api/customer/sessions/${cid}/messages`).then(m=>{(m.team||[]).forEach(t=>memberSid[t.role]=t.sid);});poll();}
+if(cid){loadProjects();jget(`/api/customer/sessions/${cid}/messages`).then(m=>{(m.team||[]).forEach(t=>memberSid[t.role]=t.sid);});poll();pollTeam();}
 </script>
 </body>
 </html>

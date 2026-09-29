@@ -97,6 +97,11 @@ def _rebuild_registry_from_apps() -> dict[str, dict]:
         try:
             cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
             if isinstance(cfg, dict):
+                # agent 定义目录（runtime_kind: definition）不是可运行实例：
+                # 不进实例注册表（前端实例卡片/发现/ supervisor 都不该看到它）。
+                # 其下的 services/ 子目录才是运行体，且服务目录没有 config/app.yaml。
+                if str(cfg.get("runtime_kind") or "").strip() == "definition":
+                    continue
                 if cfg.get("display_name"):
                     display_name = cfg["display_name"]
                 avatar = str(cfg.get("avatar") or "").strip()
@@ -181,16 +186,21 @@ def _default_instance_id() -> str:
 
 
 def is_registered_instance(iid: str | None) -> bool:
-    """是否为注册实例（apps/<iid>/config/app.yaml 存在）。
+    """是否为合法运行时身份：注册实例（app.yaml 存在）或注册服务（services 表有行）。
 
     9/17 影子目录防护的共享校验函数：resolve_instance_id 对不认识的串原样返回，
     env/ContextVar 中的变形 id（截断/去横杠/前代化石）一旦流到 mkdir/DB 初始化，
     就会凭空出生 apps/<怪名>/ 目录。所有会创建 apps/<iid>/ 子目录的代码
     （workspace 兜底、todo workspace、InstanceDB）都必须先过这道闸。
+    服务型运行体没有 apps/<sid>/config/app.yaml（服务目录无此文件），靠
+    services 注册表放行——服务的 state.db 在 apps/{def}/services/{sid}/ 树内，
+    同样受 InstanceDB 的影子目录闸保护。
     """
     if not iid:
         return False
-    return (get_project_root() / "apps" / iid / "config" / "app.yaml").exists()
+    if (get_project_root() / "apps" / iid / "config" / "app.yaml").exists():
+        return True
+    return _service_def_id(iid) is not None
 
 
 def resolve_instance_id(raw: str) -> str:
@@ -359,9 +369,39 @@ def get_project_root() -> Path:
 # ── Instance-scoped paths (canonical) ──────────────────────────────────
 
 
+def _service_def_id(runtime_id: str) -> str | None:
+    """runtime_id 是服务型运行体时返回其 agent_def_id，否则 None。
+
+    查询走 services.db 的 mtime 缓存（resolve_service_def）；表不存在 /
+    id 不在表中一律 None——存量实例零额外开销、行为零变化（2026-09-29
+    服务型改造，设计文档 v1.1 收束一：下游只认运行时身份，读配置时才
+    service_id → agent_def_id 二跳）。
+    """
+    if not runtime_id:
+        return None
+    try:
+        from infrastructure.persistence.services_registry import resolve_service_def
+        return resolve_service_def(runtime_id)
+    except Exception:
+        return None
+
+
+def resolve_runtime_dir(runtime_id: str) -> Path:
+    """运行时身份 → 目录。
+
+    实例型：apps/{id}/（原有布局）。
+    服务型：apps/{agent_def_id}/services/{service_id}/（设计文档 D1=B：
+    同一定义的服务共享定义层资产，服务目录只放运行时数据）。
+    """
+    def_id = _service_def_id(runtime_id)
+    if def_id:
+        return get_project_root() / "apps" / def_id / "services" / runtime_id
+    return get_project_root() / "apps" / runtime_id
+
+
 def get_instance_dir(instance_id: str | None = None) -> Path:
-    """Return the app directory for a digital employee instance: apps/{uuid}/"""
-    return get_project_root() / "apps" / get_app_instance_id(instance_id)
+    """Return the runtime directory: apps/{uuid}/（实例）or apps/{def}/services/{sid}/（服务）"""
+    return resolve_runtime_dir(get_app_instance_id(instance_id))
 
 
 def get_instance_data_dir(instance_id: str | None = None) -> Path:
@@ -444,6 +484,20 @@ def get_workspace_dir(instance_id: str | None = None, *, only_probe: bool = Fals
     log = logging.getLogger("digital_life.config")
     iid = get_app_instance_id(instance_id)
 
+    # 服务型：工作区固定在服务目录内（服务间绝不共享，隔离优先于浅层模板）。
+    # 不能读 def 的 app.yaml workspace_root——那是定义层配置，会被同定义的
+    # 所有服务共享，直接破坏隔离。
+    if _service_def_id(iid):
+        svc_ws = resolve_runtime_dir(iid) / "workspace"
+        if only_probe:
+            return svc_ws
+        try:
+            svc_ws.mkdir(parents=True, exist_ok=True)
+            return svc_ws
+        except OSError as exc:
+            log.warning("workspace: service dir %s unusable (%s)", svc_ws, exc)
+            return svc_ws
+
     if not is_registered_instance(iid):
         policy = str(
             _workspace_global_cfg().get("unregistered_fallback") or "warn_repo_root"
@@ -504,14 +558,26 @@ def get_instance_memories_dir(instance_id: str | None = None) -> Path:
     return get_instance_data_dir(instance_id) / "memories"
 
 
+def _definition_dir(runtime_id: str) -> Path | None:
+    """服务型运行体的定义层目录 apps/{def}/；实例返回自身目录（退化二跳跳到自己）。
+
+    persona/skills/app.yaml/secrets 都是定义层资产：同一 agent 定义派生的
+    所有服务共享一份（设计文档 v1.1 收束二"要读配置的二跳"）。
+    """
+    def_id = _service_def_id(runtime_id)
+    if def_id:
+        return get_project_root() / "apps" / def_id
+    return resolve_runtime_dir(runtime_id)
+
+
 def get_instance_persona_path(instance_id: str | None = None) -> Path:
-    """Return the runtime persona prompt path: apps/{uuid}/persona/LIFE_PERSONA.md"""
-    return get_instance_dir(instance_id) / "persona" / "LIFE_PERSONA.md"
+    """Return the runtime persona prompt path: apps/{uuid}/persona/LIFE_PERSONA.md（服务二跳到定义层）"""
+    return _definition_dir(get_app_instance_id(instance_id)) / "persona" / "LIFE_PERSONA.md"
 
 
 def get_instance_skills_dir(instance_id: str | None = None) -> Path:
-    """Return the skills directory: apps/{uuid}/skills/"""
-    return get_instance_dir(instance_id) / "skills"
+    """Return the skills directory: apps/{uuid}/skills/（服务二跳到定义层共享技能）"""
+    return _definition_dir(get_app_instance_id(instance_id)) / "skills"
 
 
 def get_instance_config_path(instance_id: str | None = None) -> Path:
@@ -520,8 +586,10 @@ def get_instance_config_path(instance_id: str | None = None) -> Path:
     2026-06-17 重构后实例配置统一在 config/app.yaml（旧的 data/config.yaml 已废弃并删除）。
     读写都指向这里——prompts_override / set_instance_active / config_center 写到这里，
     load_runtime_config(path) / 日志读这里。维持单一信息源，避免再分裂。
+    服务型二跳到定义层 app.yaml（模型/提示词覆盖等配置共享自 agent 定义）；
+    服务级差异（capabilities/subscriptions）在 services 注册表，不在这里。
     """
-    return get_instance_dir(instance_id) / "config" / "app.yaml"
+    return _definition_dir(get_app_instance_id(instance_id)) / "config" / "app.yaml"
 
 
 def get_instance_app_config_path(instance_id: str | None = None) -> Path:
@@ -536,11 +604,13 @@ def get_instance_env_path(instance_id: str | None = None) -> Path:
     infrastructure/ai/config.py:60 / digital-life init / 各处 worker loader 共同
     认定的事实源。之前这里误返 data/.env，导致 ConfigCenter 写 GLM_API_KEY /
     FEISHU_APP_SECRET 等凭证时落到不存在的路径 → 改了不生效。
+    服务型二跳到定义层 secrets.env（同一 agent 定义的服务共享密钥）。
     """
     iid = instance_id or get_app_instance_id()
+    def_dir = _definition_dir(iid) if iid else None
+    if def_dir is not None:
+        return def_dir / "config" / "secrets.env"
     apps_root = get_project_root() / "apps"
-    if iid:
-        return apps_root / iid / "config" / "secrets.env"
     return apps_root / "default" / "config" / "secrets.env"
 
 
@@ -650,13 +720,29 @@ def is_instance_active(instance_id: str) -> bool:
 
     Single source of truth: apps/<id>/config/app.yaml → active field.
     Default True if instance dir exists (未显式置 active 的老实例回退为启用)。
+    服务型运行体的判活源是 services 注册表 status（active/archived）——
+    不能读定义层 app.yaml（runtime_kind: definition 会误判）。
+    agent 定义目录永远 False——定义不是可运行实例，InstanceSupervisor 不
+    拉起它；它的运行体是 services 表里的服务，由服务调度循环按需拉起。
     """
+    if _service_def_id(instance_id):
+        try:
+            from infrastructure.persistence import services_registry
+
+            svc = services_registry.lookup_service(instance_id)
+            return bool(svc) and svc["status"] == services_registry.SERVICE_STATUS_ACTIVE
+        except Exception:
+            return False
+
     app_yaml = get_instance_config_path(instance_id)
     if app_yaml.exists():
         try:
             cfg = yaml.safe_load(app_yaml.read_text(encoding="utf-8")) or {}
-            if isinstance(cfg, dict) and "active" in cfg:
-                return bool(cfg["active"])
+            if isinstance(cfg, dict):
+                if str(cfg.get("runtime_kind") or "").strip() == "definition":
+                    return False
+                if "active" in cfg:
+                    return bool(cfg["active"])
         except Exception:
             pass
 

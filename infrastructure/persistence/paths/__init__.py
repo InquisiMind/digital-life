@@ -18,8 +18,23 @@ class RuntimePaths:
 
     @property
     def data(self) -> Path:
-        """apps/{id}/data/ — canonical runtime data root."""
-        return self.root / "apps" / _instance_id() / "data"
+        """apps/{id}/data/ — canonical runtime data root（服务型二跳，2026-09-29）。
+
+        此前直接拼 apps/{env_id}/data，绕过路径中枢：服务 worker 的
+        execution traces 会写进 apps/{service_id}/data 影子目录（被
+        InstanceDB db-guard 拒绝 → wake 内崩溃）。服务型运行体的 data
+        在 apps/{agent_def_id}/services/{service_id}/data/（D1=B）。
+        """
+        rid = _instance_id()
+        try:
+            from infrastructure.persistence.services_registry import resolve_service_def
+
+            def_id = resolve_service_def(rid)
+            if def_id:
+                return self.root / "apps" / def_id / "services" / rid / "data"
+        except Exception:
+            pass
+        return self.root / "apps" / rid / "data"
 
     @property
     def db(self) -> Path:

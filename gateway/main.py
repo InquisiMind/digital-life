@@ -1,8 +1,10 @@
-"""Gateway 入口 — 支持 master / instance 两种角色。
+"""Gateway 入口 — 支持 master / instance / service 三种角色。
 
 启动模式：
   1. master 模式（默认）：HTTP server + InstanceSupervisor（管理子进程）
+     + 服务调度循环（扫服务队列 → 抢 lease → spawn 服务 worker）
   2. instance 模式（--instance <uuid>）：只跑这一个实例的 FeishuAdapter + Cron
+  3. service 模式（--service <sid>）：一次性 worker，处理该服务到期事件后退出
 
 master 不连飞书 WS、不跑 cron；instance 不起 HTTP server。
 """
@@ -182,15 +184,27 @@ def run_instance(instance_id: str) -> None:
             pass
 
 
+def run_service(service_id: str) -> None:
+    """服务 worker 子进程：处理该服务的到期事件后退出（ephemeral，不留常驻）。"""
+    from gateway.service_worker import run_service_worker
+
+    code = run_service_worker(service_id)
+    if code:
+        raise SystemExit(code)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Digital Life gateway")
     parser.add_argument("--instance", default="", help="实例 UUID（不传则跑 master）")
+    parser.add_argument("--service", default="", help="服务 ID（一次性 worker：处理到期事件后退出）")
     args = parser.parse_args()
 
     _load_dotenv()
-    _setup_logging(instance_id=args.instance)
+    _setup_logging(instance_id=args.service or args.instance)
 
-    if args.instance:
+    if args.service:
+        run_service(args.service)
+    elif args.instance:
         run_instance(args.instance)
     else:
         run_master()

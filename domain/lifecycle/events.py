@@ -70,6 +70,23 @@ def _get_instance_channel() -> str:
     return _instance_channel_var.get()
 
 
+# 2026-09-29 服务型改造：emit_to_service 写服务队列时抑制 _wake_or_inject——
+# 服务没有常驻进程承载 wake 线程，叫醒由服务调度循环负责（扫队列→抢 lease→
+# spawn worker）。默认 False，普通 emit 路径行为零变化。
+_wake_suppressed_var: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "wake_suppressed", default=False
+)
+
+
+def set_wake_suppressed(suppressed: bool = True) -> contextvars.Token:
+    """抑制 emit 后的进程内叫醒（服务事件投递专用）。"""
+    return _wake_suppressed_var.set(suppressed)
+
+
+def reset_wake_suppressed(token: contextvars.Token) -> None:
+    _wake_suppressed_var.reset(token)
+
+
 # ==== 实例级事件订阅闸 (2026-09-28, zhp 指令: 非消息事件按实例订阅) ====
 # 配置文件: apps/{instance_id}/config/event_subscriptions.yaml
 #   subscribed: all          → 全量订阅(18 种)
@@ -356,7 +373,8 @@ def emit_event(
 
     # ⭐ 唯一叫醒入口:新建事件(fire_at is None)→ 立刻决定 wake / inject。
     #    定时事件(fire_at ≠ None)走 alarm 通道,到期时由 cron 取走叫醒。
-    if fire_at is None:
+    #    服务事件(set_wake_suppressed)例外:服务无常驻进程,由服务调度循环叫醒。
+    if fire_at is None and not _wake_suppressed_var.get():
         try:
             _wake_or_inject(new_id)
         except Exception as exc:

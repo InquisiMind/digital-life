@@ -1009,6 +1009,17 @@ async def run_master_gateway() -> None:
     app["supervisor"] = supervisor  # 暴露给 HTTP routes，用于 toggle active 时联动 spawn/stop
     await supervisor.start()
 
+    # 服务调度循环（2026-09-29 服务型改造）：扫 active 服务的到期事件 →
+    # 抢 DB lease → spawn 一次性 worker。服务无常驻进程，本循环是它唯一的
+    # "cron"；失败不阻塞 master（无服务注册时循环空转，开销一次 stat）。
+    service_loop = None
+    try:
+        from infrastructure.scheduler.service_runner import start_service_worker_loop
+
+        service_loop = start_service_worker_loop()
+    except Exception as exc:
+        logger.warning("Service worker loop failed to start (non-fatal): %s", exc)
+
     # 启动 AudioSenseService（持续语音感知，master 级，可选）
     # 读 config/voice_sense.yaml，enabled=false 时跳过
     voice_sense_svc = None
@@ -1103,6 +1114,11 @@ async def run_master_gateway() -> None:
     if voice_sense_svc:
         try:
             voice_sense_svc.stop()
+        except Exception:
+            pass
+    if service_loop:
+        try:
+            service_loop.stop()
         except Exception:
             pass
     await supervisor.stop()

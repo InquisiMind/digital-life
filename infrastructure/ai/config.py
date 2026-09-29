@@ -22,7 +22,6 @@ import yaml
 from infrastructure.config import (
     get_global_default_config_path,
     get_project_root,
-    get_app_instance_id,
 )
 
 
@@ -51,15 +50,22 @@ def _load_yaml_file(path: Path) -> dict[str, Any]:
 
 
 def _get_instance_config_path() -> Path:
-    """apps/<id>/config/app.yaml"""
-    iid = get_app_instance_id() or ""
-    return get_project_root() / "apps" / iid / "config" / "app.yaml"
+    """apps/<id>/config/app.yaml — 统一走路径中枢（2026-09-29 服务型改造）。
+
+    此前这里直接拼 apps/{id}，绕过了中枢；服务 worker 的模型/提示词配置
+    会解析到不存在的 apps/{service_id}/config/。中枢版本对服务型二跳到
+    定义层 apps/{agent_def_id}/config/app.yaml，实例行为零变化。
+    """
+    from infrastructure.config import get_instance_config_path
+
+    return get_instance_config_path()
 
 
 def _get_instance_secrets_path() -> Path:
-    """apps/<id>/config/secrets.env"""
-    iid = get_app_instance_id() or ""
-    return get_project_root() / "apps" / iid / "config" / "secrets.env"
+    """apps/<id>/config/secrets.env — 统一走路径中枢（服务二跳到定义层密钥）。"""
+    from infrastructure.config import get_instance_env_path
+
+    return get_instance_env_path()
 
 
 # 关键环境变量强制清单：永远以配置文件为准，shell export 也覆盖不了。

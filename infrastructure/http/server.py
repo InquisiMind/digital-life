@@ -975,6 +975,10 @@ async def run_master_gateway() -> None:
     from application.api.customer_routes import add_customer_routes
     add_customer_routes(app)
 
+    # 服务台（管理视角）：/services 页 + /api/admin/*
+    from application.api.services_admin_routes import add_services_admin_routes
+    add_services_admin_routes(app)
+
     # 感知 endpoint:接收感知 daemon(独立子进程)的录屏录音理解结果
     # (feature 003-perception;spec FR-010/FR-012)。daemon 只打 master 8642。
     try:

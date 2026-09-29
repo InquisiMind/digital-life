@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>服务台 · 元理</title>
+<style>
+:root{--primary:#2563eb;--glow:rgba(37,99,235,.10);--ok:#059669;--warn:#d97706;--bg:#f6f7fb;--card:#fff;--soft:#f9fafb;--bd:#e5e7eb;--tm:#111827;--td:#6b7280;--shadow:0 1px 2px rgba(15,23,42,.04),0 12px 32px rgba(15,23,42,.05);--font:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font);background:var(--bg);color:var(--tm)}
+header{background:rgba(255,255,255,.92);border-bottom:1px solid var(--bd);padding:14px 24px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:5;backdrop-filter:blur(8px)}
+.logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700}
+h1{font-size:16px}h1 small{color:var(--td);font-weight:400;font-size:12px;margin-left:8px}
+.tabs{margin:18px 24px 0;display:flex;gap:8px}
+.tab{padding:8px 18px;border-radius:10px;font-size:14px;cursor:pointer;background:var(--card);border:1px solid var(--bd);font-weight:600;color:var(--td)}
+.tab.on{background:var(--primary);color:#fff;border-color:var(--primary)}
+.wrap{padding:18px 24px}
+table{width:100%;border-collapse:collapse;background:var(--card);border-radius:14px;overflow:hidden;box-shadow:var(--shadow);font-size:13px}
+th{background:var(--soft);color:var(--td);text-align:left;padding:10px 14px;font-size:12px;letter-spacing:.5px}
+td{padding:11px 14px;border-top:1px solid var(--bd);vertical-align:top}
+tr:hover td{background:#fafbfd}
+.mono{font-family:ui-monospace,monospace;font-size:12px;color:var(--td)}
+.badge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600}
+.b-green{background:rgba(5,150,105,.1);color:var(--ok)}
+.b-gray{background:#f3f4f6;color:var(--td)}
+.b-blue{background:var(--glow);color:var(--primary)}
+.b-amber{background:rgba(217,119,6,.1);color:var(--warn)}
+.btn{border:1px solid var(--bd);background:var(--card);border-radius:8px;padding:5px 12px;font-size:12px;cursor:pointer;margin-right:6px}
+.btn:hover{border-color:var(--primary);color:var(--primary)}
+.hint{color:var(--td);font-size:12px;margin:8px 2px}
+/* 抽屉 */
+#drawer{position:fixed;top:0;right:-460px;width:440px;height:100vh;background:var(--card);box-shadow:-12px 0 40px rgba(15,23,42,.12);transition:right .2s;z-index:20;display:flex;flex-direction:column}
+#drawer.open{right:0}
+.dh{padding:16px 20px;border-bottom:1px solid var(--bd);display:flex;justify-content:space-between;align-items:center}
+.dh b{font-size:15px}.dh .x{cursor:pointer;color:var(--td);font-size:16px;border:none;background:none}
+.db{flex:1;overflow-y:auto;padding:16px 20px;font-size:13px}
+.wake{border:1px solid var(--bd);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--soft)}
+.wake b{font-size:12px}.wake .m{color:var(--td);font-size:11px;margin-top:3px}
+.kv{display:flex;gap:8px;margin:4px 0}.kv i{width:88px;color:var(--td);font-style:normal;font-size:12px;flex:none}
+.msg{border-left:3px solid var(--primary);background:var(--soft);border-radius:8px;padding:8px 12px;margin-bottom:8px;font-size:13px}
+.msg .m{font-size:11px;color:var(--td);margin-bottom:3px}
+.msg.self{border-left-color:var(--ok)}
+.file{cursor:pointer;padding:8px 12px;border-radius:8px;display:flex;gap:8px;align-items:center}
+.file:hover{background:var(--glow)}
+pre.doc{background:var(--soft);border:1px solid var(--bd);border-radius:10px;padding:14px;white-space:pre-wrap;font-size:12.5px;line-height:1.7;max-height:60vh;overflow:auto}
+.back{cursor:pointer;color:var(--primary);font-size:12px;margin-bottom:8px}
+.empty{text-align:center;color:var(--td);padding:60px 0;font-size:13px}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">SV</div>
+  <h1>服务台<small>服务型 agent 运行过程 · 项目群 · 配置</small></h1>
+  <span style="margin-left:auto" class="badge b-blue" id="sync">—</span>
+</header>
+<div class="tabs">
+  <div class="tab on" data-t="services">🤖 服务</div>
+  <div class="tab" data-t="projects">📁 项目</div>
+</div>
+<div class="wrap" id="main"></div>
+<div id="drawer"><div class="dh"><b id="d-title">详情</b><button class="x" onclick="closeDrawer()">✕</button></div><div class="db" id="d-body"></div></div>
+<script>
+const $=s=>document.querySelector(s); const main=$('#main'); const db_=$('#d-body');
+const esc=t=>(t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+let TAB='services';
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');TAB=t.dataset.t;render();});
+function closeDrawer(){$('#drawer').classList.remove('open')}
+function openDrawer(title,html){$('#d-title').textContent=title;db_.innerHTML=html;$('#drawer').classList.add('open')}
+
+async function jget(u){const r=await fetch(u);return r.json()}
+
+async function render(){
+  $('#sync').textContent='加载中…';
+  if(TAB==='services'){
+    const d=await jget('/api/admin/services');
+    if(!d.services.length){main.innerHTML='<div class="empty">暂无服务——到 <a href="/customer" target="_blank">客户入口</a> 发起一单</div>';$('#sync').textContent='就绪';return;}
+    main.innerHTML=`<table><tr><th>角色</th><th>服务 ID</th><th>定义</th><th>项目</th><th>状态</th><th>唤醒</th><th>最近唤醒</th><th>积压</th><th>消息</th><th>订阅</th><th>操作</th></tr>`+
+    d.services.map(s=>`<tr>
+      <td><b>${esc(s.role)}</b></td>
+      <td class="mono">${s.service_id.slice(0,14)}…</td>
+      <td class="mono">${esc(s.agent_def_id.replace('consulting-','').replace('-def',''))}</td>
+      <td>${esc(s.project_name||'—')}</td>
+      <td><span class="badge ${s.status==='active'?'b-green':'b-gray'}">${s.status==='active'?'运行':'归档'}</span></td>
+      <td>${s.wakes}</td><td class="mono">${s.last_wake_at||'—'}</td>
+      <td>${s.open_events?`<span class="badge b-amber">${s.open_events}</span>`:'0'}</td>
+      <td>${s.messages}</td>
+      <td class="mono" style="max-width:140px">${(s.subscriptions||[]).join(',')}</td>
+      <td><button class="btn" onclick="detail('${s.service_id}')">明细</button>
+      <button class="btn" onclick="toggle('${s.service_id}','${s.status==='active'?'archived':'active'}')">${s.status==='active'?'归档':'恢复'}</button></td>
+    </tr>`).join('')+`</table><div class="hint">点「明细」看该服务的唤醒记录与运行统计</div>`;
+  } else {
+    const d=await jget('/api/admin/projects');
+    if(!d.projects.length){main.innerHTML='<div class="empty">暂无项目</div>';$('#sync').textContent='就绪';return;}
+    main.innerHTML=`<table><tr><th>项目</th><th>状态</th><th>PM</th><th>成员</th><th>待办</th><th>客户</th><th>看门狗</th><th>创建</th><th>操作</th></tr>`+
+    d.projects.map(p=>`<tr>
+      <td><b>${esc(p.name)}</b><div class="mono">${p.project_id}</div></td>
+      <td><span class="badge ${p.status==='active'?'b-green':'b-gray'}">${p.status}</span></td>
+      <td class="mono">${esc((p.members[0]||'').slice(0,8))}</td>
+      <td>${p.members.map(m=>esc(m)).join('、')}</td>
+      <td>${p.todos_done}/${p.todos_total}</td>
+      <td class="mono">${esc(p.customer_id||'—')}</td>
+      <td>${p.watchdog?'<span class="badge b-amber">on</span>':'—'}</td>
+      <td class="mono">${p.created_at}</td>
+      <td><button class="btn" onclick="group('${p.project_id}','${esc(p.name)}')">群沟通</button>
+      <button class="btn" onclick="files('${p.project_id}','')">交付物</button></td>
+    </tr>`).join('')+`</table><div class="hint">群沟通=项目内服务间的协作直播 · 交付物=共享区文件</div>`;
+  }
+  $('#sync').textContent='就绪';
+}
+
+async function detail(sid){
+  const d=await jget('/api/admin/services/'+sid);
+  const s=d.service;
+  openDrawer(s.role+' · 明细',`
+    <div class="kv"><i>服务 ID</i><span class="mono">${s.service_id}</span></div>
+    <div class="kv"><i>定义</i><span class="mono">${esc(s.agent_def_id)}</span></div>
+    <div class="kv"><i>状态</i>${s.status}</div>
+    <div class="kv"><i>订阅</i><span class="mono">${(s.subscriptions||[]).join(', ')}</span></div>
+    <div class="kv"><i>工具面</i><span class="mono">${s.tools?esc(s.tools.join(', ')):'默认全量'}</span></div>
+    <div class="kv"><i>capabilities</i><span class="mono">${esc(JSON.stringify(s.capabilities||{}))}</span></div>
+    <div class="kv"><i>统计</i>唤醒 ${s.wakes} · 消息 ${s.messages} · 积压 ${s.open_events}</div>
+    <div style="margin:14px 0 8px;font-weight:600">最近唤醒（新→旧）</div>
+    ${d.wakes.map(w=>`<div class="wake"><b>#${w.seq} ${esc(w.reason||'')}</b><div class="m">${esc(w.started_at||'')} · ${esc(w.session_id)} ${w.tokens?'· '+w.tokens+' tok':''}</div></div>`).join('')||'<div class="empty">无唤醒记录</div>'}
+  `);
+}
+async function toggle(sid,status){await fetch(`/api/admin/services/${sid}/status`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});render()}
+async function group(pid,name){
+  const d=await jget(`/api/admin/projects/${pid}/group`);
+  openDrawer(name+' · 群沟通',d.messages.map(m=>`
+    <div class="msg ${m.from==='self'?'self':''}"><div class="m">${esc(m.sender_name)} · ${esc(m.ts)}</div>${esc(m.text)}</div>`).join('')||'<div class="empty">暂无群消息</div>');
+}
+async function files(pid,path){
+  const d=await jget(`/api/admin/projects/${pid}/files?path=${encodeURIComponent(path)}`);
+  if(d.kind==='dir'){
+    openDrawer('交付物 · '+(path||'shared/'),(path?`<div class="back" onclick="files('${pid}','${path.split('/').slice(0,-1).join('/')}')">‥ 上级</div>`:'')+
+      d.entries.map(e=>e.type==='dir'
+        ?`<div class="file" onclick="files('${pid}','${e.rel}')">📂 <b>${esc(e.name)}</b>/</div>`
+        :`<div class="file" onclick="files('${pid}','${e.rel}')">📄 ${esc(e.name)} <span style="margin-left:auto;color:var(--td)">${(e.size/1000).toFixed(1)}k</span></div>`).join('')||'<div class="empty">空</div>');
+  } else {
+    openDrawer('📄 '+path,`<div class="back" onclick="files('${pid}','${path.split('/').slice(0,-1).join('/')}')">‥ 上级</div><pre class="doc">${esc(d.content)}</pre>`);
+  }
+}
+render(); setInterval(render, 15000);
+</script>
+</body>
+</html>

@@ -5,105 +5,109 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>元理 AI 战略咨询</title>
 <style>
-:root {
-  --primary: #2563eb; --primary-glow: rgba(37,99,235,.10);
-  --secondary: #059669; --warning: #d97706;
-  --bg-app: #f6f7fb; --bg-card: #ffffff; --bg-soft: #f9fafb;
-  --border: #e5e7eb; --text-main: #111827; --text-dim: #6b7280; --text-muted: #9ca3af;
-  --shadow: 0 1px 2px rgba(15,23,42,.04), 0 12px 32px rgba(15,23,42,.05);
-  --font: -apple-system, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-}
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: var(--font); background: var(--bg-app); color: var(--text-main); height: 100vh; display: flex; flex-direction: column; }
-
-header { background: rgba(255,255,255,.92); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; gap: 12px; }
-.logo { width: 34px; height: 34px; border-radius: 9px; background: linear-gradient(135deg,#2563eb,#059669); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px; }
-.brand b { font-size: 15px; display: block; }
-.brand small { color: var(--text-dim); font-size: 12px; }
-#stage-badge { margin-left: auto; font-size: 12px; padding: 5px 12px; border-radius: 999px; background: var(--primary-glow); color: var(--primary); font-weight: 600; }
-
-main { flex: 1; display: flex; min-height: 0; }
-#chat { flex: 1; overflow-y: auto; padding: 28px 32px; display: flex; flex-direction: column; gap: 18px; }
-
-/* 欢迎态 */
-#welcome { margin: auto; max-width: 640px; text-align: center; padding: 24px; }
-#welcome h1 { font-size: 26px; margin-bottom: 10px; letter-spacing: .5px; }
-#welcome h1 span { color: var(--primary); }
-#welcome p { color: var(--text-dim); font-size: 14px; line-height: 1.8; margin-bottom: 22px; }
-#welcome .cards { display: flex; gap: 12px; justify-content: center; margin-bottom: 26px; flex-wrap: wrap; }
-#welcome .cards div { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 18px; font-size: 13px; color: var(--text-dim); box-shadow: var(--shadow); }
-#welcome .cards b { display: block; color: var(--text-main); font-size: 14px; margin-bottom: 3px; }
-
+:root{--primary:#2563eb;--glow:rgba(37,99,235,.10);--ok:#059669;--warn:#d97706;--bg:#f6f7fb;--card:#fff;--soft:#f9fafb;--bd:#e5e7eb;--tm:#111827;--td:#6b7280;--tmut:#9ca3af;--shadow:0 1px 2px rgba(15,23,42,.04),0 12px 32px rgba(15,23,42,.05);--font:-apple-system,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font);background:var(--bg);color:var(--tm);height:100vh;display:flex;flex-direction:column}
+header{background:rgba(255,255,255,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--bd);padding:10px 20px;display:flex;align-items:center;gap:12px}
+.logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#2563eb,#059669);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px}
+.brand b{font-size:15px;display:block}.brand small{color:var(--td);font-size:12px}
+#stage{margin-left:auto;font-size:12px;padding:5px 12px;border-radius:999px;background:var(--glow);color:var(--primary);font-weight:600;display:none}
+main{flex:1;display:flex;min-height:0}
+/* 左：主区 tabs */
+#center{flex:1;display:flex;flex-direction:column;min-width:0}
+.tabs{display:flex;gap:6px;padding:12px 20px 0}
+.tab{padding:8px 16px;border-radius:10px 10px 0 0;font-size:13px;cursor:pointer;color:var(--td);font-weight:600;border:1px solid transparent;border-bottom:none}
+.tab.on{background:var(--card);color:var(--primary);border-color:var(--bd)}
+.pane{flex:1;min-height:0;background:var(--card);border-top:1px solid var(--bd);display:none;flex-direction:column}
+.pane.on{display:flex}
+#chat,#team,#files{flex:1;overflow-y:auto;padding:22px 26px;display:flex;flex-direction:column;gap:16px}
+/* 欢迎页 */
+#welcome{margin:auto;max-width:620px;text-align:center;padding:20px}
+#welcome h1{font-size:25px;margin-bottom:10px}#welcome h1 span{color:var(--primary)}
+#welcome p{color:var(--td);font-size:14px;line-height:1.8;margin-bottom:20px}
+#welcome .cards{display:flex;gap:12px;justify-content:center;margin-bottom:24px;flex-wrap:wrap}
+#welcome .cards div{background:var(--soft);border:1px solid var(--bd);border-radius:12px;padding:12px 18px;font-size:13px;color:var(--td)}
+#welcome .cards b{display:block;color:var(--tm);margin-bottom:3px}
 /* 消息 */
-.msg { max-width: 76%; display: flex; flex-direction: column; }
-.msg .meta { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
-.msg .body { padding: 12px 16px; border-radius: 14px; font-size: 14px; line-height: 1.7; white-space: normal; word-break: break-word; }
-.msg.customer { align-self: flex-end; align-items: flex-end; }
-.msg.customer .body { background: var(--primary); color: #fff; border-bottom-right-radius: 4px; }
-.msg.consultant { align-self: flex-start; }
-.msg.consultant .body { background: var(--bg-card); border: 1px solid var(--border); border-bottom-left-radius: 4px; box-shadow: var(--shadow); }
-.msg.consultant.system .body { background: var(--bg-soft); color: var(--text-dim); font-size: 13px; }
-.body b { font-weight: 650; }
-.body ul, .body ol { margin: 6px 0 6px 20px; }
-.body li { margin: 3px 0; }
-.body h3 { font-size: 14px; margin: 10px 0 4px; }
-.dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 4px; animation: blink 1.2s infinite; }
-.dot:nth-child(2){ animation-delay:.2s } .dot:nth-child(3){ animation-delay:.4s }
-@keyframes blink { 0%,80%,100%{opacity:.25} 40%{opacity:1} }
-
-/* 进展侧栏 */
-#side { width: 280px; border-left: 1px solid var(--border); background: var(--bg-card); padding: 20px 18px; overflow-y: auto; display: none; }
-#side h4 { font-size: 12px; color: var(--text-muted); letter-spacing: 1px; margin: 18px 0 10px; }
-#side h4:first-child { margin-top: 0; }
-.member { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 8px; font-size: 13px; }
-.member:hover { background: var(--bg-soft); }
-.avatar { width: 28px; height: 28px; border-radius: 8px; background: var(--primary-glow); color: var(--primary); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; flex: none; }
-.avatar.pm { background: rgba(5,150,105,.12); color: var(--secondary); }
-.member .tag { margin-left: auto; font-size: 10px; color: var(--secondary); background: rgba(5,150,105,.1); padding: 2px 7px; border-radius: 999px; }
-.todo { font-size: 13px; padding: 8px 10px; border-radius: 8px; display: flex; gap: 8px; align-items: flex-start; }
-.todo:hover { background: var(--bg-soft); }
-.todo .st { flex: none; width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--border); margin-top: 2px; }
-.todo.open .st { border-color: var(--warning); }
-.todo.in_progress .st { border-color: var(--primary); background: var(--primary-glow); animation: pulse 1.6s infinite; }
-.todo.done .st { border-color: var(--secondary); background: var(--secondary); position: relative; }
-.todo.done .st::after { content: '✓'; color: #fff; font-size: 10px; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
-.todo.done { color: var(--text-muted); text-decoration: line-through; }
-.todo small { display: block; color: var(--text-muted); font-size: 11px; margin-top: 2px; }
-@keyframes pulse { 0%,100%{box-shadow:0 0 0 0 rgba(37,99,235,.25)} 50%{box-shadow:0 0 0 5px rgba(37,99,235,0)} }
-
-footer { background: #fff; border-top: 1px solid var(--border); padding: 14px 20px; display: flex; gap: 10px; align-items: flex-end; }
-#name { width: 120px; }
-textarea { flex: 1; resize: none; height: 46px; max-height: 120px; font-family: var(--font); }
-input, textarea { font-size: 14px; font-family: var(--font); border: 1px solid var(--border); border-radius: 10px; padding: 11px 14px; outline: none; transition: border .15s; }
-input:focus, textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-glow); }
-button { background: var(--primary); color: #fff; border: none; cursor: pointer; padding: 12px 22px; border-radius: 10px; font-size: 14px; font-weight: 600; transition: all .15s; }
-button:hover { filter: brightness(1.08); }
-button:disabled { background: var(--text-muted); cursor: default; }
-@media (max-width: 860px) { #side { display: none !important; } }
+.msg{max-width:78%;display:flex;flex-direction:column}
+.msg .meta{font-size:11px;color:var(--tmut);margin-bottom:4px}
+.msg .body{padding:12px 16px;border-radius:14px;font-size:14px;line-height:1.7;word-break:break-word}
+.msg.customer{align-self:flex-end;align-items:flex-end}
+.msg.customer .body{background:var(--primary);color:#fff;border-bottom-right-radius:4px}
+.msg.consultant{align-self:flex-start}
+.msg.consultant .body{background:var(--soft);border:1px solid var(--bd);border-bottom-left-radius:4px}
+.body b{font-weight:650}.body ul{margin:6px 0 6px 20px}.body li{margin:3px 0}.body h3{font-size:14px;margin:10px 0 4px}
+.dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:currentColor;margin-right:4px;animation:blink 1.2s infinite}
+.dot:nth-child(2){animation-delay:.2s}.dot:nth-child(3){animation-delay:.4s}
+@keyframes blink{0%,80%,100%{opacity:.25}40%{opacity:1}}
+/* 团队沟通 */
+.tmsg{border-left:3px solid var(--bd);background:var(--soft);border-radius:10px;padding:10px 14px;font-size:13px;cursor:pointer}
+.tmsg.self{border-left-color:var(--primary)}
+.tmsg:hover{background:var(--glow)}
+.tmsg .m{font-size:11px;color:var(--td);margin-bottom:4px;display:flex;gap:8px;align-items:center}
+.av{width:22px;height:22px;border-radius:6px;background:var(--glow);color:var(--primary);display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:600}
+/* 文件 */
+.frow{display:flex;gap:10px;align-items:center;padding:10px 14px;border-radius:10px;cursor:pointer;font-size:14px}
+.frow:hover{background:var(--glow)}
+.frow .sz{margin-left:auto;color:var(--tmut);font-size:12px}
+pre.doc{background:var(--soft);border:1px solid var(--bd);border-radius:12px;padding:18px;white-space:pre-wrap;font-size:13px;line-height:1.75}
+.back{color:var(--primary);font-size:13px;cursor:pointer;margin-bottom:10px}
+/* 右：进展侧栏 */
+#side{width:270px;border-left:1px solid var(--bd);background:var(--card);padding:18px 16px;overflow-y:auto;display:none}
+#side h4{font-size:12px;color:var(--tmut);letter-spacing:1px;margin:16px 0 8px}
+#side h4:first-child{margin-top:0}
+.member{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:8px;font-size:13px;cursor:pointer}
+.member:hover{background:var(--glow)}
+.avatar{width:28px;height:28px;border-radius:8px;background:var(--glow);color:var(--primary);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex:none}
+.avatar.pm{background:rgba(5,150,105,.12);color:var(--ok)}
+.tag{margin-left:auto;font-size:10px;color:var(--ok);background:rgba(5,150,105,.1);padding:2px 7px;border-radius:999px}
+.todo{font-size:13px;padding:7px 9px;border-radius:8px;display:flex;gap:8px}
+.todo:hover{background:var(--soft)}
+.todo .st{flex:none;width:15px;height:15px;border-radius:50%;border:1.5px solid var(--bd);margin-top:2px}
+.todo.open .st{border-color:var(--warn)}
+.todo.in_progress .st{border-color:var(--primary);background:var(--glow);animation:pulse 1.6s infinite}
+.todo.done .st{border-color:var(--ok);background:var(--ok);position:relative}
+.todo.done .st::after{content:'✓';color:#fff;font-size:9px;position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
+.todo.done{color:var(--tmut);text-decoration:line-through}
+.todo small{display:block;color:var(--tmut);font-size:11px;margin-top:2px}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(37,99,235,.25)}50%{box-shadow:0 0 0 5px rgba(37,99,235,0)}}
+footer{background:#fff;border-top:1px solid var(--bd);padding:12px 18px;display:flex;gap:10px;align-items:flex-end}
+#name{width:110px}
+textarea{flex:1;resize:none;height:46px;font-family:var(--font)}
+input,textarea{font-size:14px;font-family:var(--font);border:1px solid var(--bd);border-radius:10px;padding:11px 14px;outline:none;transition:border .15s}
+input:focus,textarea:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--glow)}
+button{background:var(--primary);color:#fff;border:none;cursor:pointer;padding:12px 22px;border-radius:10px;font-size:14px;font-weight:600}
+button:disabled{background:var(--tmut)}
+@media(max-width:900px){#side{display:none!important}}
 </style>
 </head>
 <body>
 <header>
   <div class="logo">YL</div>
   <div class="brand"><b>元理 AI 战略咨询</b><small>合伙人受理 · 团队协作 · 质控把关</small></div>
-  <div id="stage-badge" style="display:none"></div>
+  <div id="stage"></div>
 </header>
 <main>
-  <div id="chat">
+ <div id="center">
+  <div class="tabs">
+    <div class="tab on" data-p="chat">💬 对话</div>
+    <div class="tab" data-p="team" id="tab-team" style="display:none">👥 团队协作</div>
+    <div class="tab" data-p="files" id="tab-files" style="display:none">📁 交付物</div>
+  </div>
+  <div class="pane on" id="p-chat"><div id="chat">
     <div id="welcome">
       <h1>一句话，启动一支<span>咨询团队</span></h1>
-      <p>告诉我们您的企业和想解决的问题。系统将自动组建团队（合伙人 + 行业研究员 + 企业研究员 + 质控审查员），完成研究、质控与结论汇报——全程在右侧可见。</p>
-      <div class="cards">
-        <div><b>🔍 双线研究</b>行业趋势 × 企业经营</div>
-        <div><b>✅ 独立质控</b>事实与结论逐项把关</div>
-        <div><b>📋 结论汇报</b>判断·依据·优先级</div>
-      </div>
+      <p>告诉我们您的企业和想解决的问题。团队自动组建（合伙人+双研究员+质控），完成研究、质控与汇报——过程在「团队协作」实时可见，成果在「交付物」随时查阅。</p>
+      <div class="cards"><div><b>🔍 双线研究</b>行业趋势 × 企业经营</div><div><b>✅ 独立质控</b>事实与结论逐项把关</div><div><b>📋 结论汇报</b>判断·依据·优先级</div></div>
     </div>
-  </div>
-  <aside id="side">
-    <h4>项目团队</h4><div id="team"></div>
-    <h4>任务进展</h4><div id="todos"></div>
-  </aside>
+  </div></div>
+  <div class="pane" id="p-team"><div id="team"></div></div>
+  <div class="pane" id="p-files"><div id="files"></div></div>
+ </div>
+ <aside id="side">
+  <h4>项目团队</h4><div id="team-list"></div>
+  <h4>任务进展</h4><div id="todos"></div>
+ </aside>
 </main>
 <footer>
   <input id="name" placeholder="您的称呼">
@@ -111,86 +115,94 @@ button:disabled { background: var(--text-muted); cursor: default; }
   <button id="send">发 送</button>
 </footer>
 <script>
-const $ = id => document.getElementById(id);
-const chat = $('chat'), nameEl = $('name'), textEl = $('text'), sendBtn = $('send');
-let customerId = localStorage.getItem('yl_customer_id') || '';
-let signature = '';
-
-function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function md(t){
-  let h = esc(t);
-  h = h.replace(/^###?\s*(.+)$/gm,'<h3>$1</h3>');
-  h = h.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>');
-  h = h.replace(/^\s*[-•]\s+(.+)$/gm,'<li>$1</li>');
-  h = h.replace(/^\s*\d+[.、]\s+(.+)$/gm,'<li>$1</li>');
-  h = h.replace(/(<li>[\s\S]*?<\/li>)(?!\s*<li>)/g, m => '<ul>'+m+'</ul>');
-  h = h.split(/\n{2,}/).map(p => /^<(h3|ul|li)/.test(p.trim()) ? p : '<p>'+p.replace(/\n/g,'<br>')+'</p>').join('');
-  return h;
-}
-function bubble(m){
-  const w = document.createElement('div');
-  w.className = 'msg ' + (m.from === 'customer' ? 'customer' : 'consultant');
-  const meta = document.createElement('div'); meta.className = 'meta';
-  meta.textContent = m.sender_name || (m.from === 'customer' ? '我' : '咨询合伙人');
-  const body = document.createElement('div'); body.className = 'body';
-  body.innerHTML = m.from === 'customer' ? esc(m.text).replace(/\n/g,'<br>') : md(m.text);
-  w.append(meta, body); chat.appendChild(w);
-}
-function typing(){
-  const w = document.createElement('div'); w.className = 'msg consultant';
-  w.id = 'typing';
-  w.innerHTML = '<div class="meta">咨询团队</div><div class="body" style="color:#6b7280"><span class="dot"></span><span class="dot"></span><span class="dot"></span> 团队工作中</div>';
-  chat.appendChild(w); chat.scrollTop = chat.scrollHeight;
-}
-function renderSide(d){
-  if (!d.team) return;
-  $('side').style.display = 'block';
-  const badge = $('stage-badge'); badge.style.display = 'inline-block'; badge.textContent = d.stage || '';
-  $('team').innerHTML = d.team.map(t =>
-    `<div class="member"><div class="avatar ${t.is_pm?'pm':''}">${(t.role||'?')[0]}</div>${t.role}${t.is_pm?'<span class="tag">PM</span>':''}</div>`).join('');
-  $('todos').innerHTML = (d.todos||[]).map(t =>
-    `<div class="todo ${t.status}"><div class="st"></div><div>${t.title}<small>${t.assignee||''}</small></div></div>`).join('');
-}
+const $=id=>document.getElementById(id);
+const chatEl=$('chat'),nameEl=$('name'),textEl=$('text'),sendBtn=$('send');
+let cid=localStorage.getItem('yl_customer_id')||'';
+let sig={chat:'',team:'',files:''}; let filePath='';
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));
+  document.querySelectorAll('.pane').forEach(x=>x.classList.remove('on'));
+  t.classList.add('on');$('p-'+t.dataset.p).classList.add('on');
+  if(t.dataset.p==='team')pollTeam(true); if(t.dataset.p==='files')pollFiles(true);
+});
+const esc=s=>(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+function md(t){let h=esc(t);
+  h=h.replace(/^###?\s*(.+)$/gm,'<h3>$1</h3>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>');
+  h=h.replace(/^\s*[-•]\s+(.+)$/gm,'<li>$1</li>').replace(/^\s*\d+[.、]\s+(.+)$/gm,'<li>$1</li>');
+  h=h.replace(/(<li>[\s\S]*?<\/li>)(?!\s*<li>)/g,m=>'<ul>'+m+'</ul>');
+  return h.split(/\n{2,}/).map(p=>/^<(h3|ul)/.test(p.trim())?p:'<p>'+p.replace(/\n/g,'<br>')+'</p>').join('');}
+function bubble(m){const w=document.createElement('div');w.className='msg '+(m.from==='customer'?'customer':'consultant');
+  const meta=document.createElement('div');meta.className='meta';meta.textContent=m.sender_name||(m.from==='customer'?'我':'咨询合伙人');
+  const b=document.createElement('div');b.className='body';
+  b.innerHTML=m.from==='customer'?esc(m.text).replace(/\n/g,'<br>'):md(m.text);
+  w.append(meta,b);chatEl.appendChild(w);}
+function typing(){const w=document.createElement('div');w.className='msg consultant';
+  w.innerHTML='<div class="meta">咨询团队</div><div class="body" style="color:#6b7280"><span class="dot"></span><span class="dot"></span><span class="dot"></span> 团队工作中</div>';
+  chatEl.appendChild(w);chatEl.scrollTop=chatEl.scrollHeight;}
+async function jget(u){const r=await fetch(u);return r.json()}
+/* 对话 */
 async function poll(){
-  if (!customerId) return;
-  try {
-    const r = await fetch(`/api/customer/sessions/${customerId}/messages`);
-    if (!r.ok) return;
-    const d = await r.json();
-    const sig = JSON.stringify([d.messages, d.todos, d.stage]);
-    if (sig !== signature) {
-      signature = sig;
-      chat.innerHTML = '';
-      if (!d.messages.length) chat.innerHTML = '';
-      d.messages.forEach(bubble);
-      const waiting = d.messages.length && d.messages[d.messages.length-1].from === 'customer';
-      if (waiting && d.stage !== '已完成') typing();
-      chat.scrollTop = chat.scrollHeight;
-      renderSide(d);
-    }
-  } catch(e) {}
+  if(!cid)return;try{
+    const d=await jget(`/api/customer/sessions/${cid}/messages`);
+    const s=JSON.stringify(d.messages);
+    if(s!==sig.chat){sig.chat=s;chatEl.innerHTML='';d.messages.forEach(bubble);
+      if(d.messages.length&&d.messages[d.messages.length-1].from==='customer'&&d.stage!=='已完成')typing();
+      chatEl.scrollTop=chatEl.scrollHeight;}
+    if(d.team){$('side').style.display='block';$('stage').style.display='inline-block';$('stage').textContent=d.stage;
+      $('tab-team').style.display='block';$('tab-files').style.display='block';
+      $('team-list').innerHTML=d.team.map(t=>`<div class="member" onclick="memberDetail('${t.sid}')"><div class="avatar ${t.is_pm?'pm':''}">${(t.role||'?')[0]}</div>${t.role}${t.is_pm?'<span class="tag">PM</span>':''}</div>`).join('');
+      $('todos').innerHTML=(d.todos||[]).map(t=>`<div class="todo ${t.status}"><div class="st"></div><div>${t.title}<small>${t.assignee||''}</small></div></div>`).join('');}
+  }catch(e){}}
+/* 团队协作 */
+async function pollTeam(force){
+  if(!cid)return;try{
+    const d=await jget(`/api/customer/sessions/${cid}/team`);
+    const s=JSON.stringify(d.messages);
+    if(force||s!==sig.team){sig.team=s;
+      $('team').innerHTML=d.messages.map(m=>`<div class="tmsg ${m.from==='self'?'self':''}" onclick="findMember('${esc(m.sender_name)}')">
+        <div class="m"><span class="av">${(m.sender_name||'?')[0]}</span><b>${esc(m.sender_name)}</b>· ${esc(m.ts)} <span style="margin-left:auto">点看成员明细 ›</span></div>${esc(m.text)}</div>`).join('')||'<div style="text-align:center;color:#9ca3af;padding:40px">团队尚未开始沟通</div>';
+      $('team').scrollTop=$('team').scrollHeight;}
+  }catch(e){}}
+let memberSid={};
+function findMember(name){const sid=memberSid[name];if(sid)memberDetail(sid);}
+async function memberDetail(sid){
+  const d=await jget(`/api/customer/sessions/${cid}/members/${sid}`);
+  if(!d.ok)return;
+  $('team').innerHTML=`<div class="back" onclick="pollTeam(true)">‥ 返回团队沟通</div>
+   <div style="font-size:17px;font-weight:700;margin-bottom:4px">${esc(d.role)}</div>
+   <div style="color:#6b7280;font-size:12px;margin-bottom:16px" class="mono">${sid}</div>
+   <div style="font-weight:600;margin-bottom:8px">唤醒记录（新→旧）</div>`+
+   d.wakes.map(w=>`<div class="tmsg"><div class="m"><b>#${w.seq}</b> ${esc(w.reason)} · ${esc(w.at)}</div><span class="mono" style="font-size:11px;color:#9ca3af">${esc(w.session)}</span></div>`).join('')||'<div style="color:#9ca3af">尚无唤醒</div>';
 }
-sendBtn.onclick = async () => {
-  const text = textEl.value.trim(); if (!text) return;
-  const customer_name = nameEl.value.trim() || '客户';
-  if (!customerId) chat.innerHTML = '';
-  bubble({from:'customer', sender_name: customer_name, text});
-  typing();
-  sendBtn.disabled = true;
-  try {
-    const r = await fetch('/api/customer/sessions', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({customer_name, text, customer_id: customerId, template:'ai_strategy'}),
-    });
-    const d = await r.json();
-    if (d.ok){ customerId = d.customer_id; localStorage.setItem('yl_customer_id', customerId); }
-    else { chat.lastChild && chat.lastChild.remove(); bubble({from:'consultant', sender_name:'系统', text:'发送失败：'+(d.error||'未知错误')}); }
-  } catch(e){ bubble({from:'consultant', sender_name:'系统', text:'网络错误，请重试'}); }
-  textEl.value=''; sendBtn.disabled = false; poll();
-};
-textEl.addEventListener('keydown', e => { if (e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendBtn.click(); } });
-setInterval(poll, 5000);
-if (customerId) poll();
+/* 交付物 */
+async function pollFiles(force){
+  if(!cid)return;try{
+    const d=await jget(`/api/customer/sessions/${cid}/files?path=${encodeURIComponent(filePath)}`);
+    if(force||JSON.stringify(d)!==sig.files){sig.files=JSON.stringify(d);
+      if(d.kind==='dir'){
+        $('files').innerHTML=(filePath?`<div class="back" onclick="goPath('${filePath.split('/').slice(0,-1).join('/')}')">‥ 上级</div>`:'')+
+        d.entries.map(e=>`<div class="frow" onclick="goPath('${e.rel}')">${e.type==='dir'?'📂':'📄'} <b>${esc(e.name)}</b>${e.type==='dir'?'/':''}<span class="sz">${e.size?(e.size/1000).toFixed(1)+'k':''}</span></div>`).join('')||'<div style="text-align:center;color:#9ca3af;padding:40px">团队尚未交付文件</div>';
+      }else{
+        $('files').innerHTML=`<div class="back" onclick="goPath('${filePath.split('/').slice(0,-1).join('/')}')">‥ 上级</div><pre class="doc">${esc(d.content)}</pre>`;
+      }}
+  }catch(e){}}
+function goPath(p){filePath=p;sig.files='';pollFiles(true);}
+sendBtn.onclick=async()=>{
+  const text=textEl.value.trim();if(!text)return;
+  const customer_name=nameEl.value.trim()||'客户';
+  if(!cid)chatEl.innerHTML='';
+  bubble({from:'customer',sender_name:customer_name,text});typing();sendBtn.disabled=true;
+  try{const r=await fetch('/api/customer/sessions',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({customer_name,text,customer_id:cid,template:'ai_strategy'})});
+    const d=await r.json();
+    if(d.ok){cid=d.customer_id;localStorage.setItem('yl_customer_id',cid);
+      jget(`/api/customer/sessions/${cid}/messages`).then(m=>{(m.team||[]).forEach(t=>memberSid[t.role]=t.sid);});}
+    else{chatEl.lastChild&&chatEl.lastChild.remove();bubble({from:'consultant',sender_name:'系统',text:'发送失败：'+(d.error||'未知错误')});}
+  }catch(e){bubble({from:'consultant',sender_name:'系统',text:'网络错误，请重试'});}
+  textEl.value='';sendBtn.disabled=false;poll();};
+textEl.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendBtn.click();}});
+setInterval(()=>{poll();pollTeam();},5000);
+if(cid){jget(`/api/customer/sessions/${cid}/messages`).then(m=>{(m.team||[]).forEach(t=>memberSid[t.role]=t.sid);});poll();}
 </script>
 </body>
 </html>

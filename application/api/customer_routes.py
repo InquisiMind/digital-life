@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import uuid
@@ -146,6 +147,7 @@ async def handle_get_messages(request: web.Request) -> web.Response:
         sid_to_role[svc["service_id"]] = svc.get("display_name") or ""
         team.append({
             "role": svc.get("display_name") or "",
+            "sid": svc["service_id"],
             "is_pm": svc["service_id"] == project.get("pm_id"),
         })
     todos = [
@@ -187,9 +189,137 @@ async def handle_list_sessions(request: web.Request) -> web.Response:
     return _json({"ok": True, "projects": rows})
 
 
+async def handle_team(request: web.Request) -> web.Response:
+    """GET /api/customer/sessions/{cid}/team — 项目群沟通回放（过程透明选项）。"""
+    customer_id = request.match_info["customer_id"]
+    from infrastructure.persistence import services_registry
+
+    project = _find_project(customer_id)
+    if project is None:
+        return _json({"ok": False, "error": "会话不存在"}, 404)
+    messages = []
+    db = _pm_messages_db(project["pm_id"]) 
+    if db.exists():
+        conn = sqlite3.connect(str(db), timeout=3.0)
+        try:
+            rows = conn.execute(
+                "SELECT ts, direction, sender_name, text FROM messages"
+                " WHERE chat_id = ? ORDER BY id LIMIT 500",
+                (f"svcgroup:{project['project_id']}",),
+            ).fetchall()
+        finally:
+            conn.close()
+        from datetime import datetime
+
+        def _fmt(ts):
+            try:
+                return datetime.fromtimestamp(float(ts)).strftime("%m-%d %H:%M")
+            except (TypeError, ValueError):
+                return ""
+        messages = [
+            {"ts": _fmt(ts), "from": "self" if d == "out" else "peer",
+             "sender_name": s or "", "text": t or ""}
+            for ts, d, s, t in rows
+        ]
+    return _json({"ok": True, "messages": messages})
+
+
+async def handle_files(request: web.Request) -> web.Response:
+    """GET /api/customer/sessions/{cid}/files?path= — 交付物浏览/读取（只读 shared）。"""
+    customer_id = request.match_info["customer_id"]
+    rel = request.query.get("path", "").strip()
+    from infrastructure.config import get_project_root
+
+    project = _find_project(customer_id)
+    if project is None:
+        return _json({"ok": False, "error": "会话不存在"}, 404)
+    base = (get_project_root() / "projects" / project["project_id"] / "shared").resolve()
+    target = (base / rel).resolve() if rel else base
+    if target != base and base not in target.parents:
+        return _json({"ok": False, "error": "越界拒绝"}, 403)
+    if not target.exists():
+        return _json({"ok": False, "error": "路径不存在"}, 404)
+    if target.is_file():
+        return _json({
+            "ok": True, "kind": "file", "path": rel,
+            "content": target.read_text(encoding="utf-8", errors="replace")[:100_000],
+        })
+    entries = [
+        {"name": p.name, "type": "dir" if p.is_dir() else "file",
+         "size": p.stat().st_size if p.is_file() else 0,
+         "rel": str(p.relative_to(base))}
+        for p in sorted(target.iterdir()) if not p.name.startswith(".")
+    ]
+    return _json({"ok": True, "kind": "dir", "path": rel, "entries": entries})
+
+
+async def handle_member_detail(request: web.Request) -> web.Response:
+    """GET /api/customer/sessions/{cid}/members/{sid} — 团队成员运行明细（下钻）。"""
+    customer_id = request.match_info["customer_id"]
+    sid = request.match_info["service_id"]
+    project = _find_project(customer_id)
+    if project is None:
+        return _json({"ok": False, "error": "会话不存在"}, 404)
+    from infrastructure.persistence import services_registry
+
+    members = services_registry.list_services_by_project(
+        project["project_id"], status="active"
+    )
+    if sid not in {m["service_id"] for m in members}:
+        return _json({"ok": False, "error": "成员不在本项目"}, 403)
+
+    from infrastructure.config import resolve_runtime_dir
+
+    wakes = []
+    db = resolve_runtime_dir(sid) / "data" / "runtime_log.db"
+    if db.exists():
+        from datetime import datetime
+
+        conn = sqlite3.connect(str(db), timeout=3.0)
+        try:
+            rows = conn.execute(
+                "SELECT wake_seq, session_id, started_at, meta_json FROM wake"
+                " ORDER BY wake_seq DESC LIMIT 10"
+            ).fetchall()
+        finally:
+            conn.close()
+        for seq, session_id, started, meta in rows:
+            try:
+                m = json.loads(meta) if meta else {}
+            except ValueError:
+                m = {}
+            try:
+                ts = datetime.fromtimestamp(float(started)).strftime("%m-%d %H:%M")
+            except (TypeError, ValueError):
+                ts = ""
+            wakes.append({"seq": seq, "session": (session_id or "")[:30],
+                          "reason": (m.get("reason") or "")[:40], "at": ts})
+    svc = services_registry.lookup_service(sid) or {}
+    return _json({
+        "ok": True,
+        "role": svc.get("display_name") or "",
+        "service_id": sid,
+        "wakes": wakes,
+    })
+
+
+def _find_project(customer_id: str):
+    from infrastructure.persistence import services_registry
+
+    for p in services_registry.list_projects(status="active"):
+        if p.get("customer_id") == customer_id:
+            return p
+    return None
+
+
 _ROUTER.router.add_post("/sessions", handle_start_session)
 _ROUTER.router.add_get("/sessions", handle_list_sessions)
 _ROUTER.router.add_get("/sessions/{customer_id}/messages", handle_get_messages)
+_ROUTER.router.add_get("/sessions/{customer_id}/team", handle_team)
+_ROUTER.router.add_get("/sessions/{customer_id}/files", handle_files)
+_ROUTER.router.add_get(
+    "/sessions/{customer_id}/members/{service_id}", handle_member_detail
+)
 
 
 async def _serve_page(_request: web.Request) -> web.Response:

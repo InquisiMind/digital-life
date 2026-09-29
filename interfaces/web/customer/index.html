@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>元理 AI 战略咨询</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "PingFang SC", sans-serif; background: #f2f4f8; height: 100vh; display: flex; flex-direction: column; }
+  header { background: #1f2937; color: #fff; padding: 14px 20px; font-size: 16px; display: flex; justify-content: space-between; align-items: center; }
+  header small { color: #9ca3af; font-weight: normal; }
+  #chat { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+  .msg { max-width: 78%; padding: 10px 14px; border-radius: 12px; white-space: pre-wrap; line-height: 1.55; font-size: 14px; }
+  .customer { align-self: flex-end; background: #2563eb; color: #fff; border-bottom-right-radius: 4px; }
+  .consultant { align-self: flex-start; background: #fff; color: #111827; border: 1px solid #e5e7eb; border-bottom-left-radius: 4px; }
+  .meta { font-size: 11px; color: #9ca3af; margin-bottom: 2px; }
+  footer { background: #fff; border-top: 1px solid #e5e7eb; padding: 12px 16px; display: flex; gap: 10px; }
+  #name { width: 130px; }
+  input, textarea, button { font-size: 14px; border: 1px solid #d1d5db; border-radius: 8px; padding: 9px 12px; outline: none; }
+  textarea { flex: 1; resize: none; height: 44px; }
+  button { background: #2563eb; color: #fff; border: none; cursor: pointer; padding: 9px 18px; }
+  button:disabled { background: #9ca3af; }
+  #hint { font-size: 12px; color: #6b7280; padding: 0 20px 6px; background: #fff; }
+</style>
+</head>
+<body>
+<header>元理 AI 战略咨询 <small>咨询团队 · 自动建项 · 多角色协作</small></header>
+<div id="chat"></div>
+<div id="hint">首次发言将自动创建咨询项目（合伙人接单 → 研究员执行 → 合伙人汇报）。回复需要几十秒，请稍候。</div>
+<footer>
+  <input id="name" placeholder="您的称呼">
+  <textarea id="text" placeholder="一句话说明您的企业和想解决的问题…"></textarea>
+  <button id="send">发送</button>
+</footer>
+<script>
+const chat = document.getElementById('chat');
+const nameEl = document.getElementById('name');
+const textEl = document.getElementById('text');
+const sendBtn = document.getElementById('send');
+let customerId = localStorage.getItem('yl_customer_id') || '';
+let lastCount = -1;
+
+function bubble(m) {
+  const wrap = document.createElement('div');
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  meta.style.textAlign = m.from === 'customer' ? 'right' : 'left';
+  meta.textContent = (m.sender_name || (m.from === 'customer' ? '我' : '咨询合伙人'));
+  const b = document.createElement('div');
+  b.className = 'msg ' + m.from;
+  b.textContent = m.text;
+  wrap.appendChild(meta); wrap.appendChild(b);
+  chat.appendChild(wrap);
+}
+
+async function poll() {
+  if (!customerId) return;
+  try {
+    const r = await fetch(`/api/customer/sessions/${customerId}/messages`);
+    const d = await r.json();
+    if (d.ok && d.messages.length !== lastCount) {
+      lastCount = d.messages.length;
+      chat.innerHTML = '';
+      d.messages.forEach(bubble);
+      chat.scrollTop = chat.scrollHeight;
+    }
+  } catch (e) { /* 轮询失败静默重试 */ }
+}
+
+sendBtn.onclick = async () => {
+  const text = textEl.value.trim();
+  if (!text) return;
+  const customer_name = nameEl.value.trim() || '客户';
+  sendBtn.disabled = true;
+  bubble({from: 'customer', sender_name: customer_name, text});
+  try {
+    const r = await fetch('/api/customer/sessions', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({customer_name, text, customer_id: customerId, template: 'ai_strategy'}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      customerId = d.customer_id;
+      localStorage.setItem('yl_customer_id', customerId);
+    } else {
+      bubble({from: 'consultant', sender_name: '系统', text: '发送失败：' + (d.error || '未知错误')});
+    }
+  } catch (e) {
+    bubble({from: 'consultant', sender_name: '系统', text: '网络错误，请重试'});
+  }
+  textEl.value = '';
+  sendBtn.disabled = false;
+  poll();
+};
+textEl.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendBtn.click(); } });
+setInterval(poll, 5000);
+poll();
+</script>
+</body>
+</html>

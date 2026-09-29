@@ -971,6 +971,10 @@ async def run_master_gateway() -> None:
     from application.api.broadcast_routes import add_broadcast_routes
     add_broadcast_routes(app)
 
+    # 客户会话通道（刀3 最小闭环）：/customer 聊天页 + /api/customer/*
+    from application.api.customer_routes import add_customer_routes
+    add_customer_routes(app)
+
     # 感知 endpoint:接收感知 daemon(独立子进程)的录屏录音理解结果
     # (feature 003-perception;spec FR-010/FR-012)。daemon 只打 master 8642。
     try:

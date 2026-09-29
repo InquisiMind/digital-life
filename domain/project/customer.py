@@ -114,6 +114,7 @@ def create_project_from_template(
         description=description,
         pm_id="",  # 服务创建完才能定 PM，下面补
         watchdog_enabled=template["watchdog"],
+        customer_id=(customer or {}).get("id", ""),
     )
     pid = pid_row["project_id"]
     for svc, role in zip(created, template["roles"]):

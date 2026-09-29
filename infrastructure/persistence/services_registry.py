@@ -104,6 +104,7 @@ _MIGRATION_COLUMNS = {
         "pm_id": "TEXT DEFAULT ''",
         "watchdog_enabled": "INTEGER DEFAULT 0",
         "last_stall_ping_at": "TEXT",
+        "customer_id": "TEXT DEFAULT ''",
     },
     "services": {
         "tools_json": "TEXT",
@@ -187,7 +188,8 @@ def new_project_id() -> str:
 
 
 def create_project(name: str, template_id: str = "", description: str = "",
-                   pm_id: str = "", watchdog_enabled: bool = False) -> dict:
+                   pm_id: str = "", watchdog_enabled: bool = False,
+                   customer_id: str = "") -> dict:
     """注册一个客户项目（轻量：只有名分和开关，目录/成员/待办归 domain 层）。"""
     _ensure_schema()
     pid = new_project_id()
@@ -195,10 +197,10 @@ def create_project(name: str, template_id: str = "", description: str = "",
     with _connect() as conn:
         conn.execute(
             "INSERT INTO projects (project_id, name, template_id, description, pm_id,"
-            " watchdog_enabled, status, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+            " watchdog_enabled, customer_id, status, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
             (pid, name, template_id, description, pm_id,
-             1 if watchdog_enabled else 0, now, now),
+             1 if watchdog_enabled else 0, customer_id, now, now),
         )
     logger.info("PROJECT_CREATED project_id=%s name=%r template=%s pm=%s",
                 pid, name, template_id, pm_id)

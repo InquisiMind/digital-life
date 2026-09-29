@@ -352,7 +352,9 @@ async def _serve_page(_request: web.Request) -> web.Response:
     page = get_project_root() / "interfaces" / "web" / "customer" / "index.html"
     if not page.exists():
         return web.Response(status=404, text="customer page missing")
-    return web.FileResponse(page)
+    resp = web.FileResponse(page)
+    resp.headers["Cache-Control"] = "no-cache"  # 内联脚本的零构建页：旧缓存会让用户看不到新版
+    return resp
 
 
 def add_customer_routes(app: web.Application) -> None:

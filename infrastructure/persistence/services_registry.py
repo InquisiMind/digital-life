@@ -105,6 +105,9 @@ _MIGRATION_COLUMNS = {
         "watchdog_enabled": "INTEGER DEFAULT 0",
         "last_stall_ping_at": "TEXT",
     },
+    "services": {
+        "tools_json": "TEXT",
+    },
 }
 
 _SCHEMA_READY = False

@@ -268,8 +268,86 @@ async def handle_files(request: web.Request) -> web.Response:
     return _json({"ok": True, "kind": "dir", "path": rel, "entries": entries})
 
 
+_TRACE_STEP_CAP = 220
+
+
+def _member_trace(sid: str, limit_wakes: int = 3) -> list[dict]:
+    """成员最近 N 次唤醒的执行轨迹：唤醒上下文 → 思考/工具调用/工具结果/发言 → 休息。
+
+    数据源即审计真相（该服务私有库的 wake × session messages），不另建结构。
+    """
+    from infrastructure.config import resolve_runtime_dir
+
+    out: list[dict] = []
+    rdb = resolve_runtime_dir(sid) / "data" / "runtime_log.db"
+    if not rdb.exists():
+        return out
+    from datetime import datetime
+
+    conn = sqlite3.connect(str(rdb), timeout=3.0)
+    try:
+        wakes = conn.execute(
+            "SELECT wake_seq, session_id, started_at, meta_json FROM wake"
+            " ORDER BY wake_seq DESC LIMIT ?",
+            (limit_wakes,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    sdb = resolve_runtime_dir(sid) / "data" / "state.db"
+    for seq, session_id, started, meta in wakes:
+        try:
+            m = json.loads(meta) if meta else {}
+        except ValueError:
+            m = {}
+        try:
+            at = datetime.fromtimestamp(float(started)).strftime("%m-%d %H:%M")
+        except (TypeError, ValueError):
+            at = ""
+        trace: dict = {
+            "seq": seq, "reason": (m.get("reason") or "")[:30], "at": at,
+            "context": "", "steps": [],
+        }
+        if session_id and sdb.exists():
+            c2 = sqlite3.connect(str(sdb), timeout=3.0)
+            try:
+                rows = c2.execute(
+                    "SELECT role, content, tool_calls, tool_name, reasoning FROM messages"
+                    " WHERE session_id = ? ORDER BY id",
+                    (session_id,),
+                ).fetchall()
+            finally:
+                c2.close()
+            for role, content, tool_calls, tool_name, reasoning in rows:
+                content = content or ""
+                if role == "user":
+                    trace["context"] = content[:400]
+                elif role == "assistant":
+                    if reasoning:
+                        trace["steps"].append({"kind": "think", "text": reasoning[:_TRACE_STEP_CAP]})
+                    if tool_calls:
+                        try:
+                            calls = json.loads(tool_calls)
+                            names = "、".join(
+                                (c.get("function", {}) or {}).get("name", "?") for c in calls
+                            ) or (tool_name or "工具")
+                        except (ValueError, TypeError):
+                            names = tool_name or "工具"
+                        trace["steps"].append({"kind": "tool", "text": f"调用 {names}"})
+                    if content.strip():
+                        trace["steps"].append({"kind": "say", "text": content[:_TRACE_STEP_CAP]})
+                elif role == "tool":
+                    if "__l4_block__" in content:
+                        trace["steps"].append({"kind": "rest", "text": "进入休息，等待下次唤醒"})
+                    else:
+                        trace["steps"].append({"kind": "result", "text": content[:_TRACE_STEP_CAP]})
+            trace["steps"] = trace["steps"][:60]
+        out.append(trace)
+    return out
+
+
 async def handle_member_detail(request: web.Request) -> web.Response:
-    """GET /api/customer/sessions/{cid}/members/{sid} — 团队成员运行明细（下钻）。"""
+    """GET /api/customer/sessions/{cid}/members/{sid} — 成员明细 + 最近唤醒执行轨迹。"""
     customer_id = request.match_info["customer_id"]
     sid = request.match_info["service_id"]
     project = _find_project(customer_id, request.query.get("project_id", ""))
@@ -283,39 +361,58 @@ async def handle_member_detail(request: web.Request) -> web.Response:
     if sid not in {m["service_id"] for m in members}:
         return _json({"ok": False, "error": "成员不在本项目"}, 403)
 
-    from infrastructure.config import resolve_runtime_dir
-
-    wakes = []
-    db = resolve_runtime_dir(sid) / "data" / "runtime_log.db"
-    if db.exists():
-        from datetime import datetime
-
-        conn = sqlite3.connect(str(db), timeout=3.0)
-        try:
-            rows = conn.execute(
-                "SELECT wake_seq, session_id, started_at, meta_json FROM wake"
-                " ORDER BY wake_seq DESC LIMIT 10"
-            ).fetchall()
-        finally:
-            conn.close()
-        for seq, session_id, started, meta in rows:
-            try:
-                m = json.loads(meta) if meta else {}
-            except ValueError:
-                m = {}
-            try:
-                ts = datetime.fromtimestamp(float(started)).strftime("%m-%d %H:%M")
-            except (TypeError, ValueError):
-                ts = ""
-            wakes.append({"seq": seq, "session": (session_id or "")[:30],
-                          "reason": (m.get("reason") or "")[:40], "at": ts})
     svc = services_registry.lookup_service(sid) or {}
+    traces = _member_trace(sid)
     return _json({
         "ok": True,
         "role": svc.get("display_name") or "",
         "service_id": sid,
-        "wakes": wakes,
+        "wakes": [{"seq": t["seq"], "reason": t["reason"], "at": t["at"]} for t in traces],
+        "traces": traces,
     })
+
+
+async def handle_attachment(request: web.Request) -> web.Response:
+    """POST /api/customer/sessions/{cid}/attachments（multipart file）
+
+    客户上传材料 → 存项目 shared/需求附件/ → 以一条消息通知 PM（含文件名）。
+    """
+    customer_id = request.match_info["customer_id"]
+    project = _find_project(customer_id, request.query.get("project_id", ""))
+    if project is None:
+        return _json({"ok": False, "error": "会话不存在"}, 404)
+    reader = await request.multipart()
+    field = await reader.next()
+    if field is None or field.name != "file":
+        return _json({"ok": False, "error": "multipart 字段名须为 file"}, 400)
+    import re as _re
+    import uuid as _uuid
+
+    raw_name = field.filename or "材料"
+    safe = _re.sub(r"[^\w\u4e00-\u9fa5.-]+", "_", raw_name)[:60] or "材料"
+    fname = f"{_uuid.uuid4().hex[:6]}_{safe}"
+    from infrastructure.config import get_project_root
+
+    dst = get_project_root() / "projects" / project["project_id"] / "shared" / "需求附件" / fname
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    size = 0
+    with open(dst, "wb") as fh:
+        while True:
+            chunk = await field.read_chunk(64 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > 20 * 1024 * 1024:
+                return _json({"ok": False, "error": "文件超过 20MB 限制"}, 413)
+            fh.write(chunk)
+    from domain.service.social import customer_message_to_pm
+
+    eid = customer_message_to_pm(
+        project["pm_id"], {"id": customer_id, "name": "客户"},
+        f"我上传了材料《{raw_name}》（{size/1000:.0f} KB），已存入项目需求附件，请在分析中使用。",
+    )
+    return _json({"ok": True, "file": raw_name, "path": f"需求附件/{fname}", "size": size,
+                  "event_id": eid})
 
 
 def _find_project(customer_id: str, project_id: str = ""):
@@ -344,6 +441,7 @@ _ROUTER.router.add_get(
     "/sessions/{customer_id}/members/{service_id}", handle_member_detail
 )
 _ROUTER.router.add_get("/sessions/{customer_id}/activity", handle_activity)
+_ROUTER.router.add_post("/sessions/{customer_id}/attachments", handle_attachment)
 
 
 async def _serve_page(_request: web.Request) -> web.Response:

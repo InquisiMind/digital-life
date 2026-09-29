@@ -2,7 +2,7 @@
 
 把"媒体 → 预处理 → 视觉理解"串成一条管线，供：
   - daemon（人类快捷键触发，spec US1）
-  - 模型主动观察工具（sense_screen 等，spec US2）
+  - 模型主动观察工具（sense_audio / sense_media，spec US2）
   共用。
 
 降级策略（spec FR-006）：视觉失败但 ASR 成功 → 只用转写；
@@ -80,7 +80,7 @@ def run_pipeline(
 
     Args:
         instance_id: 目标实例（决定读谁的 audit + 用谁的凭据）。
-        source: 感知来源标记（如 ``hotkey_screen``、``sense_screen``、``hotkey_both``）。
+        source: 感知来源标记（如 ``hotkey_screen``、``sense_audio``、``hotkey_both``）。
         frame_image_paths: daemon 已抽好的图片帧文件列表。
             为空则跳过视觉（纯音频路径，spec FR-006 降级）。
         audio_path: 原始音频文件（若 audio_segment_paths 给定则仅用于记录）。

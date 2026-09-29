@@ -32,7 +32,7 @@ async def _handle_perception_trigger(request: web.Request) -> web.Response:
 
     Body(JSON):
         instance_id?: str     目标实例（空→默认实例）
-        source: str           感知来源（hotkey_screen/hotkey_audio/hotkey_both/sense_screen/...）
+        source: str           感知来源（hotkey_screen/hotkey_audio/hotkey_both/...）
         frame_paths?: list[str]   daemon 已抽好的图片帧文件绝对路径
         audio_path?: str          原始音频文件路径
         audio_segment_paths?: list[str]  已切好的分段 wav 路径

@@ -109,7 +109,7 @@ def test_media_mode_runs_pipeline(isolated_env, monkeypatch):
 
     body = {
         "instance_id": "explicit-iid",
-        "source": "sense_screen",
+        "source": "hotkey_screen",
         "frame_paths": ["/tmp/a.png", "/tmp/b.png"],
         "media_path": "/tmp/a.png",
     }

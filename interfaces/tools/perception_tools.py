@@ -4,14 +4,14 @@
 与快捷键触发的区别：这些是**模型主动发起、同步执行、结果作为工具返回值**
 回到思考流——不产生新事件（spec FR-015）。
 
-三个工具：
-  - sense_screen  — 截一张当前屏幕图 → 视觉模型描述
+两个工具：
   - sense_audio   — 录一段麦克风音频 → ASR 转写
   - sense_media   — 回看已落盘的原始媒体（快捷键触发时 media_path 指向的文件）
 
 外部依赖（按需 import，缺失时返回友好错误）：
-  - ``mss``：屏幕截图（sense_screen）
   - ``sounddevice`` + ``soundfile`` / ``wave``：录音（sense_audio）
+
+（sense_screen 已废弃删除——2026-09-29；屏幕感知走快捷键触发的 daemon 链路。）
 """
 from __future__ import annotations
 
@@ -35,22 +35,6 @@ logger = logging.getLogger(__name__)
 # ── 采集原语（可选依赖，缺失降级）─────────────────────────────────────────────
 
 
-def _capture_screen_once(dest_path: Path) -> bool:
-    """截一张屏幕图到 dest_path，成功返回 True。需要 mss。"""
-    try:
-        import subprocess
-
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(
-            ["screencapture", "-x", str(dest_path)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
-        )
-        return result.returncode == 0 and dest_path.exists()
-    except Exception as exc:
-        logger.warning("capture screen failed: %s", exc)
-        return False
-
-
 def _record_audio(dest_path: Path, *, seconds: float, sample_rate: int = 16000) -> bool:
     """录一段音频到 dest_path（wav），成功返回 True。需要 sounddevice。"""
     try:
@@ -70,49 +54,6 @@ def _record_audio(dest_path: Path, *, seconds: float, sample_rate: int = 16000) 
     except Exception as exc:
         logger.warning("record audio failed: %s", exc)
         return False
-
-
-# ── sense_screen ─────────────────────────────────────────────────────────────
-
-
-def _handle_sense_screen(args: Dict[str, Any], **kwargs) -> str:
-    """sense_screen —— 截当前屏幕一张图，让视觉模型描述。"""
-    iid = get_app_instance_id() or ""
-    if not iid:
-        return registry.tool_error("无法确定当前实例 ID（ContextVar 未设）")
-
-    cfg = load_config(iid)
-    question = (args.get("question") or "").strip() or "简要描述当前屏幕上有什么值得注意的内容。"
-
-    # 截图落盘到 media_dir
-    ts = int(time.time())
-    shot_path = media_dir(iid) / f"screen_{ts}.png"
-    if not _capture_screen_once(shot_path):
-        return registry.tool_error(
-            "屏幕截图失败：缺少 mss 依赖，或未授予屏幕录制权限。"
-            "请 `pip install mss` 并在系统设置中授权。"
-        )
-
-    # 编码 + 调视觉模型（带精简上下文）
-    try:
-        from infrastructure.perception.context import build_slim_context
-
-        data_uri = encode_image_file(shot_path, max_width=cfg.frame_max_width)
-        history = build_slim_context(iid, recent_turns=cfg.context_recent_turns)
-        vis = call_vision(
-            image_data_uris=[data_uri],
-            transcript="",
-            history_messages=history,
-            config=cfg,
-            instance_id=iid,
-            question_prompt=question + "\n直接用中文描述，不要输出 JSON。",
-        )
-    except Exception as exc:
-        return registry.tool_error(f"视觉调用失败: {exc}")
-
-    if not vis.get("ok"):
-        return registry.tool_error(f"视觉模型调用失败: {vis.get('error')}")
-    return vis.get("raw") or "(视觉模型返回空)"
 
 
 # ── sense_audio ──────────────────────────────────────────────────────────────
@@ -209,38 +150,6 @@ def _handle_sense_media(args: Dict[str, Any], **kwargs) -> str:
 
 
 # ── 注册 ─────────────────────────────────────────────────────────────────────
-
-
-registry.register(
-    name="sense_screen",
-    toolset="actions",
-    schema={
-        "name": "sense_screen",
-        "description": (
-            "截一张当前屏幕的画面，让视觉模型描述上面有什么。\n"
-            "\n"
-            "什么时候调：\n"
-            "  - 你想知道用户当前在做什么、屏幕上显示了什么\n"
-            "  - 用户说「看看我屏幕」「帮我看看这个」时\n"
-            "\n"
-            "注意：需要运行环境装有 mss 且授予屏幕录制权限；本机不可用时返回错误。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "question": {
-                    "type": "string",
-                    "description": "向视觉模型提的问题。空时默认「描述当前屏幕值得注意的内容」。",
-                    "default": "",
-                },
-            },
-            "required": [],
-        },
-    },
-    handler=_handle_sense_screen,
-    check_fn=lambda: True,
-    emoji="🖥️",
-)
 
 
 registry.register(

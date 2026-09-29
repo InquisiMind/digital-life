@@ -76,7 +76,7 @@ def _resize_encode(
 def encode_image_file(path: str | Path, *, max_width: int = 1280) -> str:
     """读单张图片文件 → data URI（缩放降质）。
 
-    供"模型主动观察"（sense_screen 截一张图）和 daemon 抽帧后单图使用。
+    供"模型主动观察"（sense_media 图片回看）和 daemon 抽帧后单图使用。
     """
     p = Path(path)
     img_bytes = p.read_bytes()

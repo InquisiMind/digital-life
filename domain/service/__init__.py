@@ -10,6 +10,8 @@ from domain.service.registry import (
     activate_service,
     archive_service,
     create_service,
+    get_service,
+    list_services,
     service_allows_kind,
 )
 from domain.service.messaging import emit_to_service
@@ -20,5 +22,7 @@ __all__ = [
     "archive_service",
     "create_service",
     "emit_to_service",
+    "get_service",
+    "list_services",
     "service_allows_kind",
 ]

@@ -225,48 +225,52 @@ def update_service_fields(service_id: str, *, project_id: str | None = None,
     return cur.rowcount > 0
 
 
-# ── id → def 二跳（路径中枢热路径，带 mtime 缓存） ──────────────────────
+# ── id → def 二跳（路径中枢热路径，正命中缓存） ────────────────────────
 
-_def_cache: tuple[float, dict[str, str]] | None = None
+# 只增不减：service_id → agent_def_id 在 create_service 后不可变（无删除/
+# 改挂路径），正命中永不失效。mtime 缓存方案已被证伪：WAL 模式下写进
+# -wal 文件时主库 mtime 不变，master 曾因此 3 分钟"看不见"新建的服务，
+# has_due_events 把它解析到不存在的 apps/{sid}/ 而静默跳过（2026-09-29
+# 双服务验收现场抓获）。
+_def_cache: dict[str, str] = {}
 
 
 def resolve_service_def(service_id: str) -> Optional[str]:
     """service_id → agent_def_id；非服务（含表不存在）返回 None。
 
-    被 infrastructure/config 的 get_instance_dir 在每次路径解析时调用，
-    用 services.db 的 mtime 做缓存失效——stat 一次换掉整表扫描。
+    正命中走内存 dict（热路径，每次路径解析都会过这里）；未命中（新服务/
+    陌生 id）直查注册表一次并入缓存——新服务对其后第一次解析即生效。
     """
-    global _def_cache
-    path = _db_path()
+    hit = _def_cache.get(service_id)
+    if hit:
+        return hit
     try:
-        mtime = path.stat().st_mtime
-    except OSError:
+        _ensure_schema()
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT agent_def_id FROM services WHERE service_id = ?",
+                (service_id,),
+            ).fetchone()
+    except Exception as exc:
+        logger.warning("services registry lookup failed for %r: %s", service_id, exc)
         return None
-    if _def_cache is None or _def_cache[0] != mtime:
-        try:
-            _ensure_schema()
-            with _connect() as conn:
-                rows = conn.execute(
-                    "SELECT service_id, agent_def_id FROM services"
-                ).fetchall()
-            _def_cache = (mtime, {r["service_id"]: r["agent_def_id"] for r in rows})
-        except Exception as exc:
-            logger.warning("services registry read failed (treat as empty): %s", exc)
-            _def_cache = (mtime, {})
-    return _def_cache[1].get(service_id)
+    if row is None:
+        return None
+    _def_cache[service_id] = row["agent_def_id"]
+    return row["agent_def_id"]
 
 
 def reset_cache_for_test() -> None:
-    """测试专用：清掉 mtime 缓存（测试内多次改库后调用）。"""
+    """测试专用：清掉映射缓存（测试内多次建/换库后调用）。"""
     global _def_cache
-    _def_cache = None
+    _def_cache = {}
 
 
 def reset_for_test() -> None:
     """测试专用：连 schema 就绪标记一起重置（切换 DIGITAL_LIFE_SERVICES_DB 后调用）。"""
     global _SCHEMA_READY, _def_cache
     _SCHEMA_READY = False
-    _def_cache = None
+    _def_cache = {}
 
 
 # ── 服务串行执行闸（DB lease） ─────────────────────────────────────────

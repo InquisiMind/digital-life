@@ -19,6 +19,10 @@ SERVICE_DEFAULT_CAPABILITIES: dict[str, bool] = {
     "vitals": False,
     "routines": False,
     "perception": False,
+    # 内部项目 + 全局待办是实例型的（设计文档 D2/6.3）：服务型项目是
+    # CustomerProject（刀 4 引入，届时按项目打开）。未闸时服务的记忆索引
+    # 会吸进全部内部项目与跨实例待办（9/29 双服务审计现场抓获）。
+    "projects": False,
 }
 
 # 工具名 → 所属 capability：该能力关闭时，工具不出现在 tools 数组
@@ -27,6 +31,20 @@ CAPABILITY_GATED_TOOLS: dict[str, str] = {
     "sense_vitals": "vitals",
     "sense_nurture_log": "vitals",
     "sense_schedule": "routines",
+    # todo/project 全家（domain/todos/tools.py + domain/project/tools.py）
+    "todo": "projects",
+    "todo_plan": "projects",
+    "todo_note": "projects",
+    "todo_trigger": "projects",
+    "sense_todos": "projects",
+    "task_from_deliverable": "projects",
+    "sense_projects": "projects",
+    "sense_project_detail": "projects",
+    "sense_project_todos": "projects",
+    "project_todo": "projects",
+    "project_deliver": "projects",
+    "project_info": "projects",
+    "project_bootstrap": "projects",
 }
 
 

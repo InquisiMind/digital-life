@@ -450,8 +450,32 @@ def test_gated_tools_hidden_for_service(service_env):
 
     blocked = gated_tool_names(sid)
     assert {"sense_vitals", "sense_nurture_log", "sense_schedule"} <= blocked
+    # 内部项目/全局待办全家（D2：实例型共享面，服务默认不见）
+    assert {
+        "todo", "todo_plan", "todo_note", "todo_trigger", "sense_todos",
+        "sense_projects", "project_todo", "project_deliver", "project_bootstrap",
+    } <= blocked
     # 实例型：恒空集（零行为变化）
     assert gated_tool_names("11111111-1111-1111-1111-111111111111") == set()
+
+
+def test_memory_index_skips_internal_projects_for_service(service_env):
+    from domain.service import create_service
+
+    _make_def(service_env)
+    sid = create_service("echo-def")["service_id"]
+
+    from infrastructure.config import set_current_instance_id, reset_current_instance_id
+
+    token = set_current_instance_id(sid)
+    try:
+        from domain.memory.memory.recall.unified.normalizers import (
+            index_projects_and_todos,
+        )
+
+        assert index_projects_and_todos() == 0  # 闸关：不读不写
+    finally:
+        reset_current_instance_id(token)
 
 
 def test_loop_fires_due_alarms_respects_subscription(service_env):

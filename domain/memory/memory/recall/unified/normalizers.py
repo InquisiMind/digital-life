@@ -163,6 +163,17 @@ def index_projects_and_todos(*, max_total: int = 60, now: float | None = None) -
     每个 project / todo 一个 Slice。chunk_hash 用 stable id,保证多次调用幂等。
     返回写入/更新的行数。
     """
+    # capability 闸（D2：内部项目/全局待办是实例型共享面）：服务型默认不索引
+    # ——否则 zero 的项目与跨实例待办会被吸进服务的记忆（9/29 服务审计抓获，
+    # 三号曾索引 project:personal_assistant + 31 条全局待办）。
+    try:
+        from domain.service.capabilities import capability_enabled
+
+        if not capability_enabled("projects"):
+            return 0
+    except Exception:
+        pass
+
     if now is None:
         now = time.time()
 

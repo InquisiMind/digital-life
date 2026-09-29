@@ -55,6 +55,15 @@ class VitalsDB(InstanceDB):
         existing = self.fetchone("SELECT id FROM vitals WHERE id = 1")
         if existing:
             return
+        # capability 闸：服务型 vitals 关时不种子行（bundle eager 建库免不了，
+        # 但"不生效而非没有"——零数据行；实例行为不变）
+        try:
+            from domain.service.capabilities import capability_enabled
+
+            if not capability_enabled("vitals", self.instance_id):
+                return
+        except Exception:
+            pass
         self.execute(
             "INSERT INTO vitals (id, instance_id, energy, updated_at) VALUES (1, ?, ?, ?)",
             (self.instance_id, 70.0, time.time()),

@@ -384,3 +384,120 @@ def test_loop_spawn_failure_releases_lease(service_env):
     assert loop.tick() == []
     # spawn 失败必须放回租约，下一轮还能重试
     assert services_registry.get_lease(sid) is None
+
+
+# ── 刀 2：capability 闸 + 服务闹钟 ────────────────────────────────────
+
+
+def test_capability_resolution(service_env):
+    from domain.service import capability_enabled, create_service
+    from infrastructure.persistence import services_registry as sr
+
+    _make_def(service_env)
+    # 实例型：全部能力恒开
+    assert capability_enabled("vitals", "11111111-1111-1111-1111-111111111111") is True
+    assert capability_enabled("routines", "11111111-1111-1111-1111-111111111111") is True
+
+    svc = create_service("echo-def")
+    sid = svc["service_id"]
+    # 服务默认关
+    assert capability_enabled("vitals", sid) is False
+    assert capability_enabled("routines", sid) is False
+    # 显式打开（将来"拟人化节奏"只改配置）
+    sr.update_service_fields(sid, capabilities={"vitals": True})
+    assert capability_enabled("vitals", sid) is True
+    assert capability_enabled("routines", sid) is False  # 未声明仍默认关
+
+
+def test_vitals_disabled_no_write(service_env):
+    from domain.service import create_service
+    from domain.vital.state import consume_energy, get_current_vitals, touch_activity
+
+    root = service_env
+    _make_def(root)
+    sid = create_service("echo-def")["service_id"]
+
+    from infrastructure.config import set_current_instance_id, reset_current_instance_id
+
+    token = set_current_instance_id(sid)
+    try:
+        snap = consume_energy(500.0, reason="llm_call")
+        assert snap.energy == 70.0  # 恒定默认快照
+        get_current_vitals(persist=True)  # tick 路径也不落盘
+        touch_activity()
+    finally:
+        reset_current_instance_id(token)
+
+    db = root / "apps" / "echo-def" / "services" / sid / "data" / "state.db"
+    conn = sqlite3.connect(str(db))
+    tables = {
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    # 表结构随 state.db 标准建表（affairs init_db）存在是正常的——闸的语义是
+    # "不生效而非没有"：零数据行（真实验收：刀2前三号位 vitals 1 行+nurture_log
+    # 27 行，刀2后全部为 0）
+    if "vitals" in tables:
+        assert conn.execute("SELECT COUNT(*) FROM vitals").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM nurture_log").fetchone()[0] == 0
+    conn.close()
+
+
+def test_gated_tools_hidden_for_service(service_env):
+    from domain.service import create_service, gated_tool_names
+
+    _make_def(service_env)
+    sid = create_service("echo-def")["service_id"]
+
+    blocked = gated_tool_names(sid)
+    assert {"sense_vitals", "sense_nurture_log", "sense_schedule"} <= blocked
+    # 实例型：恒空集（零行为变化）
+    assert gated_tool_names("11111111-1111-1111-1111-111111111111") == set()
+
+
+def test_loop_fires_due_alarms_respects_subscription(service_env):
+    from domain.lifecycle.clock import now_dt
+    from domain.service import create_service
+    from infrastructure.persistence import services_registry as sr
+    from infrastructure.scheduler.service_runner import ServiceWorkerLoop, _fire_service_alarms
+
+    root = service_env
+    _make_def(root)
+    sid = create_service("echo-def")["service_id"]
+
+    # 在服务上下文里设一个已到期的 timer（模拟 agent 自设 rest 闹钟到点）
+    from infrastructure.config import set_current_instance_id, reset_current_instance_id
+    from domain.lifecycle.events import set_instance_context, reset_instance_context
+
+    cfg = set_current_instance_id(sid)
+    evt = set_instance_context(sid)
+    try:
+        from domain.lifecycle.affairs.runtime import init_db
+
+        init_db()
+        from domain.lifecycle.alarms import set_alarm
+
+        set_alarm("timer", fire_at=now_dt().isoformat(timespec="seconds"), payload={"note": "到点"})
+    finally:
+        reset_instance_context(evt)
+        reset_current_instance_id(cfg)
+
+    # 闹钟转换：timer → events 表新事件
+    _fire_service_alarms(sid)
+    db = root / "apps" / "echo-def" / "services" / sid / "data" / "state.db"
+    conn = sqlite3.connect(str(db))
+    timer_events = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='timer' AND consumed_at IS NULL"
+    ).fetchone()[0]
+    conn.close()
+    assert timer_events == 1
+
+    # 订阅闸（默认只认消息类）：timer 到期也不拉起
+    spawned: list[str] = []
+    loop = ServiceWorkerLoop(stale_seconds=3600, spawn=lambda s: (spawned.append(s), _FakeProc())[1])
+    assert loop.tick() == []
+    assert spawned == []
+
+    # 订阅 timer 后 → 拉起
+    sr.update_service_fields(sid, subscriptions=["message", "timer"])
+    assert loop.tick() == [sid]
+    assert spawned == [sid]

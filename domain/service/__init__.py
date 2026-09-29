@@ -15,13 +15,23 @@ from domain.service.registry import (
     service_allows_kind,
 )
 from domain.service.messaging import emit_to_service
+from domain.service.capabilities import (
+    CAPABILITY_GATED_TOOLS,
+    SERVICE_DEFAULT_CAPABILITIES,
+    capability_enabled,
+    gated_tool_names,
+)
 
 __all__ = [
+    "CAPABILITY_GATED_TOOLS",
+    "SERVICE_DEFAULT_CAPABILITIES",
     "SERVICE_PASSTHROUGH_KINDS",
     "activate_service",
     "archive_service",
+    "capability_enabled",
     "create_service",
     "emit_to_service",
+    "gated_tool_names",
     "get_service",
     "list_services",
     "service_allows_kind",

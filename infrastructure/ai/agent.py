@@ -1031,6 +1031,17 @@ class AIAgent:
                 for n in base
                 if n in wl or registry.get_toolset_for_tool(n) in wl
             ]
+        # capability 闸（设计文档 v1.1 特性 4）：服务型默认无精力/作息"躯体"，
+        # 对应感知工具不出现在 tools 数组——不靠提示词自觉，装配层就不给。
+        # 实例型 gated_tool_names() 恒空集，零行为变化。
+        try:
+            from domain.service.capabilities import gated_tool_names
+
+            blocked = gated_tool_names()
+            if blocked:
+                base = [n for n in base if n not in blocked]
+        except Exception:
+            pass
         # V6: 合并条件暴露工具 (rest preview 后动态加入)
         # 在白名单之后——条件暴露是躯体机制(rest/preview)，不受业务白名单管。
         base.extend(self._conditionally_revealed_tools)

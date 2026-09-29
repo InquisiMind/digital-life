@@ -35,6 +35,20 @@ from domain.lifecycle.affairs.runtime import (
 )
 
 
+def _vitals_enabled() -> bool:
+    """capability 闸（设计文档 v1.1 特性 4）：服务型默认 vitals 关。
+
+    关 = "不生效"而非"没有"：所有变更/持久化跳过，读返回恒定默认快照，
+    不建 vitals 表（服务 data 目录零精力痕迹）；实例型恒 True，零变化。
+    """
+    try:
+        from domain.service.capabilities import capability_enabled
+
+        return capability_enabled("vitals")
+    except Exception:
+        return True
+
+
 # ---------------- schema ----------------
 VITALS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS vitals (
@@ -126,6 +140,9 @@ def get_current_vitals(state: str = "BLOCKED", persist: bool = False) -> VitalSn
             cron tick 应传 True(每次 tick 重置锚,防止 energy 重复累加)。
             API 读路径默认 False(纯显示,不污染 DB,不在高频轮询时反复写盘)。
     """
+    if not _vitals_enabled():
+        # capability 关：恒定默认快照，不 init 不落盘（字段保留不读）
+        return VitalSnapshot(energy=70.0, updated_at=now_iso(), last_activity_at=now_iso())
     init_vitals_db()
     with _conn() as c:
         row = c.execute("SELECT * FROM vitals WHERE id = 1").fetchone()
@@ -182,6 +199,8 @@ def touch_activity() -> None:
     替代旧 scheduler.py:581-601 的 UPDATE vitals SET updated_at hack。
     一行一事——以前那个 hack 被骂"绑在事件机制上"因为它偷偷改了 recovery 计时锚。
     """
+    if not _vitals_enabled():
+        return
     init_vitals_db()
     with _conn() as c:
         c.execute("UPDATE vitals SET last_activity_at=? WHERE id=1", (now_iso(),))
@@ -206,6 +225,8 @@ def _persist_snapshot(snap: VitalSnapshot, last_nurture: Optional[str] = None) -
 def apply_nurture(kind: str, deltas: Dict[str, float],
                   raw_text: str = "", source: str = "") -> VitalSnapshot:
     """外部养育操作（管理台加鸡腿等）。更新 updated_at + last_activity_at。"""
+    if not _vitals_enabled():
+        return get_current_vitals(persist=False)
     init_vitals_db()
     current = get_current_vitals()
     now = now_iso()

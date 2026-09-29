@@ -39,19 +39,32 @@ def service_state_db_path(service_id: str) -> Path:
     return resolve_runtime_dir(service_id) / "data" / "state.db"
 
 
-def has_due_events(service_id: str) -> bool:
-    """只读探测服务的到期未消费事件（SQL 语义对齐 legacy_bus.pop_due_events）。"""
+def has_due_events(service_id: str, kinds: tuple[str, ...] | None = None) -> bool:
+    """只读探测服务的到期未消费事件（SQL 语义对齐 legacy_bus.pop_due_events）。
+
+    kinds: 订阅过滤（特性 3——闹钟等未订阅 kind 到期也不触发拉起）。
+    None = 不过滤（订阅 all 或测试直查）。
+    """
     db_path = service_state_db_path(service_id)
     if not db_path.exists():
         return False
+    kind_clause = ""
+    params: list[str] = []
+    if kinds is not None:
+        if not kinds:
+            return False
+        kind_clause = " AND kind IN (%s)" % ",".join("?" * len(kinds))
+        params.extend(kinds)
     try:
+        from domain.lifecycle.clock import now_iso
+
         conn = sqlite3.connect(str(db_path), timeout=3.0)
         try:
             row = conn.execute(
                 "SELECT 1 FROM events WHERE consumed_at IS NULL"
-                " AND (fire_at IS NULL OR fire_at <= datetime('now'))"
-                " AND channel LIKE ? LIMIT 1",
-                (f"instance:{service_id}%",),
+                " AND (fire_at IS NULL OR fire_at <= ?)"
+                " AND channel LIKE ?" + kind_clause + " LIMIT 1",
+                [now_iso(), f"instance:{service_id}%"] + params,
             ).fetchone()
         finally:
             conn.close()
@@ -59,6 +72,41 @@ def has_due_events(service_id: str) -> bool:
     except sqlite3.Error as exc:
         logger.debug("service %s state.db probe failed: %s", service_id[:12], exc)
         return False
+
+
+def _fire_service_alarms(service_id: str) -> None:
+    """把服务的到期 timer 转成事件——对齐实例 cron tick 的 fire_due_alarms 职责。
+
+    服务无常驻 cron，调度循环是它唯一的 tick。上下文与叫醒抑制跟
+    emit_to_service 同一姿势：事件落服务私有库，wake 决策归本循环。
+    转换出的 kind 是否触发拉起由订阅闸（has_due_events 的 kinds）决定。
+    """
+    from domain.lifecycle.events import (
+        reset_instance_context,
+        reset_wake_suppressed,
+        set_instance_context,
+        set_wake_suppressed,
+    )
+    from infrastructure.config import (
+        reset_current_instance_id,
+        set_current_instance_id,
+    )
+
+    cfg_token = set_current_instance_id(service_id)
+    evt_token = set_instance_context(service_id)
+    sup_token = set_wake_suppressed(True)
+    try:
+        from domain.lifecycle.alarms import fire_due_alarms
+
+        fired = fire_due_alarms()
+        if fired:
+            logger.info(
+                "SERVICE_ALARMS_FIRED service_id=%s count=%d", service_id, len(fired)
+            )
+    finally:
+        reset_wake_suppressed(sup_token)
+        reset_instance_context(evt_token)
+        reset_current_instance_id(cfg_token)
 
 
 class ServiceWorkerLoop:
@@ -134,7 +182,18 @@ class ServiceWorkerLoop:
             running = self._procs.get(sid)
             if running is not None and running.poll() is None:
                 continue
-            if not has_due_events(sid):
+            try:
+                _fire_service_alarms(sid)
+            except Exception as exc:
+                logger.warning(
+                    "service alarm fire failed service_id=%s: %s", sid, exc
+                )
+            # 订阅闸（特性 3）：默认只认消息类 kind；订阅 all 则不过滤
+            subs = svc.get("subscriptions")
+            kinds = None if subs == "all" else tuple(
+                {"message", "group_message"} | set(subs or [])
+            )
+            if not has_due_events(sid, kinds=kinds):
                 continue
             if not services_registry.try_acquire_lease(sid, self._holder, self._stale_seconds):
                 logger.info(

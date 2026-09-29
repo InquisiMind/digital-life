@@ -91,18 +91,19 @@ async function render(){
   } else {
     const d=await jget('/api/admin/projects');
     if(!d.projects.length){main.innerHTML='<div class="empty">暂无项目</div>';$('#sync').textContent='就绪';return;}
-    main.innerHTML=`<table><tr><th>项目</th><th>状态</th><th>PM</th><th>成员</th><th>待办</th><th>客户</th><th>看门狗</th><th>创建</th><th>操作</th></tr>`+
+    main.innerHTML=`<table><tr><th>项目</th><th>进度</th><th>PM</th><th>成员</th><th>待办</th><th>客户</th><th>看门狗</th><th>创建</th><th>操作</th></tr>`+
     d.projects.map(p=>`<tr>
-      <td><b>${esc(p.name)}</b><div class="mono">${p.project_id}</div></td>
-      <td><span class="badge ${p.status==='active'?'b-green':'b-gray'}">${p.status}</span></td>
+      <td><b>${esc(p.name)}</b></td>
+      <td><span class="badge ${p.status==='active'?'b-green':'b-gray'}">${p.status==='active'?'运行中':'已归档'}</span></td>
       <td class="mono">${esc((p.members[0]||'').slice(0,8))}</td>
       <td>${p.members.map(m=>esc(m)).join('、')}</td>
-      <td>${p.todos_done}/${p.todos_total}</td>
+      <td>${p.todos_done}/${p.todos_total}</<td>
       <td class="mono">${esc(p.customer_id||'—')}</td>
       <td>${p.watchdog?'<span class="badge b-amber">on</span>':'—'}</td>
       <td class="mono">${p.created_at}</td>
       <td><button class="btn" onclick="group('${p.project_id}','${esc(p.name)}')">群沟通</button>
-      <button class="btn" onclick="files('${p.project_id}','')">交付物</button></td>
+      <button class="btn" onclick="files('${p.project_id}','')">交付物</button>
+      <button class="btn" onclick="projCfg('${p.project_id}','${esc(p.name)}')">配置</button></td>
     </tr>`).join('')+`</table><div class="hint">群沟通=项目内服务间的协作直播 · 交付物=共享区文件</div>`;
   }
   $('#sync').textContent='就绪';
@@ -124,6 +125,78 @@ async function detail(sid){
   `);
 }
 async function toggle(sid,status){await fetch(`/api/admin/services/${sid}/status`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});render()}
+/* ── 项目/agent 配置 ── */
+const ALL_TOOLS=['sense_project_peers','send_chat_message','project_file_list','project_file_read','project_file_write','deliver_to_shared','project_todo_create','project_todo_list','project_todo_update'];
+const ALL_SUBS=['message','group_message','timer','project_stall'];
+const ALL_CAPS=['vitals','routines','perception','projects'];
+async function projCfg(pid,name){
+  const [projList,defs,svcs]=await Promise.all([
+    jget('/api/admin/projects'), jget('/api/admin/defs'), jget('/api/admin/services')]);
+  const proj=projList.projects.find(x=>x.project_id===pid);
+  const members=(svcs.services||[]).filter(s=>s.project_id===pid);
+  openDrawer(name+' · 项目配置',`
+   <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+     <span class="badge ${proj&&proj.watchdog?'b-amber':'b-gray'}">看门狗 ${proj&&proj.watchdog?'开':'关'}</span>
+     <button class="btn" onclick="toggleWd('${pid}')">${proj&&proj.watchdog?'关闭':'开启'}</button>
+     <span style="font-size:12px;color:var(--td)">有未完成待办但全员停摆时，自动提醒项目经理</span>
+   </div>
+   <div style="font-weight:600;margin:14px 0 6px">成员（${members.length}）· 点配置可调角色/工具/订阅</div>
+   ${members.map(s=>`
+   <div style="border:1px solid var(--bd);border-radius:10px;padding:10px 12px;margin-bottom:8px">
+    <div style="display:flex;align-items:center;gap:8px">
+      <b>${esc(s.role)}</b>
+      <span class="mono" style="color:var(--td);font-size:11px">${esc(s.agent_def_id.replace('consulting-','').replace('-def',''))}</span>
+      <span class="badge ${s.status==='active'?'b-green':'b-gray'}">${s.status==='active'?'运行':'归档'}</span>
+      <span style="font-size:11px;color:var(--td)">唤醒 ${s.wakes} · 消息 ${s.messages}</span>
+      <button class="btn" style="margin-left:auto" onclick="svcCfg('${s.service_id}')">配置</button>
+    </div>
+   </div>`).join('')||'<div class="empty">无成员</div>'}
+   <div style="font-weight:600;margin:16px 0 6px">增加成员</div>
+   <div style="display:flex;gap:8px">
+     <input id="add-role" placeholder="角色名，如：数据分析师" style="flex:1;font-size:13px;border:1px solid var(--bd);border-radius:8px;padding:8px 10px">
+     <select id="add-def" class="btn" style="font-size:13px">${(defs.defs||[]).map(d=>`<option value="${d.def_id}">${esc(d.display_name)}</option>`).join('')}</select>
+     <button class="btn" style="background:#2563eb;color:#fff;border:none" onclick="addMember('${pid}')">加入项目</button>
+   </div>`);
+}
+
+async function svcCfg(sid){
+  const d=await jget('/api/admin/services/'+sid);
+  const s=d.service;
+  const chk=(list,all)=>all.map(x=>`<label style="display:inline-flex;gap:5px;align-items:center;margin:2px 8px 2px 0;font-size:12.5px"><input type="checkbox" value="${x}" ${(list||[]).includes(x)?'checked':''}>${x}</label>`).join('');
+  openDrawer(s.role+' · agent 配置',`
+   <div class="kv"><i>角色名</i><input id="cfg-name" value="${esc(s.role)}" style="font-size:13px;border:1px solid var(--bd);border-radius:8px;padding:6px 10px;flex:1"></div>
+   <div class="kv"><i>定义</i><span class="mono">${esc(s.agent_def_id)}</span></div>
+   <div style="font-weight:600;margin:12px 0 4px">事件订阅</div><div>${chk(s.subscriptions,ALL_SUBS)}</div>
+   <div style="font-weight:600;margin:12px 0 4px">工具面 ${s.tools?'（按模版收紧）':'（默认全量）'}</div><div>${chk(s.tools||ALL_TOOLS,ALL_TOOLS)}</div>
+   <div style="font-weight:600;margin:12px 0 4px">能力开关</div><div>${ALL_CAPS.map(c=>`<label style="display:inline-flex;gap:5px;margin:2px 10px 2px 0;font-size:12.5px"><input type="checkbox" data-cap="${c}" ${((s.capabilities||{})[c]===true)?'checked':''}>${c}</label>`).join('')}</div>
+   <button class="btn" style="margin-top:14px;background:#2563eb;color:#fff;border:none;padding:8px 18px" onclick="saveCfg('${sid}')">保存配置</button>`);
+}
+async function saveCfg(sid){
+  const subs=[...document.querySelectorAll('.drawer input[type=checkbox]:not([data-cap])')].filter(c=>c.closest('div')&&c.closest('div').previousElementSibling===null);
+  // 简化：按区域收集
+  const boxes=[...document.querySelectorAll('#d-body input[type=checkbox]')];
+  const caps={};boxes.filter(b=>b.dataset.cap).forEach(b=>caps[b.dataset.cap]=b.checked);
+  const checkedTools=boxes.filter(b=>!b.dataset.cap&&ALL_TOOLS.includes(b.value)).map(b=>b.value);
+  const checkedSubs=boxes.filter(b=>!b.dataset.cap&&ALL_SUBS.includes(b.value)).map(b=>b.value);
+  await fetch(`/api/admin/services/${sid}/config`,{method:'PATCH',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({display_name:document.getElementById('cfg-name').value,
+      subscriptions:checkedSubs,tools:checkedTools,capabilities:caps})});
+  alert('已保存（工具面/订阅/能力即时生效于下次唤醒）');
+}
+async function toggleWd(pid){
+  const d=await jget('/api/admin/projects');const pr=d.projects.find(x=>x.project_id===pid);
+  await fetch(`/api/admin/projects/${pid}/watchdog`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!pr.watchdog})});
+  projCfg(pid,pr.name);
+}
+async function addMember(pid){
+  const role=document.getElementById('add-role').value.trim();
+  const def=document.getElementById('add-def').value;
+  if(!role){alert('角色名必填');return;}
+  const r=await fetch(`/api/admin/projects/${pid}/members`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({def,role})});
+  const d=await r.json();
+  if(d.ok){const pl=await jget('/api/admin/projects');projCfg(pid,pl.projects.find(x=>x.project_id===pid).name);}else alert(d.error);
+}
+
 async function group(pid,name){
   const d=await jget(`/api/admin/projects/${pid}/group`);
   openDrawer(name+' · 群沟通',d.messages.map(m=>`

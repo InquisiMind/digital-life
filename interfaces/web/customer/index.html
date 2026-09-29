@@ -63,7 +63,8 @@ button{font-family:var(--font)}
 .seg{margin-left:auto;display:flex;gap:2px;padding:3px;background:var(--bg-sunken);border-radius:11px}
 .seg button{display:flex;align-items:center;gap:6px;border:none;background:transparent;padding:6px 14px;border-radius:9px;font-size:12.5px;font-weight:550;color:var(--tx-2);cursor:pointer;transition:all .15s;position:relative;white-space:nowrap}
 .seg button svg{width:14px;height:14px;opacity:.8}
-.seg button.on{background:var(--bg);color:var(--tx);box-shadow:var(--sh-1)}
+.seg button.on{background:var(--bg);color:var(--pri-deep);box-shadow:var(--sh-1);font-weight:650}
+.seg button.on svg{opacity:1;color:var(--pri)}
 .seg .dot{position:absolute;top:5px;right:7px;width:6px;height:6px;border-radius:50%;background:#e5484d}
 .pill{margin-left:10px;flex:none;display:inline-flex;padding:5px 12px;border-radius:999px;font-size:12px;font-weight:600;background:var(--pri-weak);color:var(--pri-deep)}
 
@@ -79,14 +80,14 @@ button{font-family:var(--font)}
 .msg-u{align-self:flex-end;max-width:82%;display:flex;flex-direction:column;align-items:flex-end;gap:5px}
 .msg-u .who{font-size:11px;color:var(--tx-3)}
 .msg-u .bub{background:var(--pri-weak);padding:11px 16px;border-radius:16px 16px 4px 16px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
-.msg-a{display:flex;gap:12px}
-.msg-a .ava{flex:none;width:30px;height:30px;border-radius:9px;color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:650;margin-top:2px}
-.msg-a .hd{display:flex;align-items:baseline;gap:8px;margin-bottom:5px}
-.msg-a .hd b{font-size:13px}
-.msg-a .hd span{font-size:11px;color:var(--tx-3)}
-.doc .body{font-size:14.5px;line-height:1.9;max-width:calc(100vw - 460px);min-width:0}
-@media(max-width:1160px){.doc .body{max-width:680px}}
-@media(max-width:880px){.doc .body{max-width:none}}
+.msg-a{display:flex;gap:10px;max-width:92%}
+.msg-a .ava{flex:none;width:30px;height:30px;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:650;margin-top:20px;cursor:pointer}
+.msg-a .c{min-width:0}
+.msg-a .hd{display:flex;align-items:baseline;gap:7px;margin:2px 0 4px 2px}
+.msg-a .hd b{font-size:12.5px;font-weight:600}
+.msg-a .hd span{font-size:10.5px;color:var(--tx-3)}
+.msg-a .bub{background:var(--bg-subtle);border:1px solid var(--bd);border-radius:4px 14px 14px 14px;padding:10px 15px}
+.msg-a .body,.msg-a .bub .body{font-size:14px;line-height:1.8}
 .doc .body p{margin:0 0 .7em}.doc .body p:last-child{margin:0}
 .doc .body h3{font-size:14.5px;margin:1em 0 .4em;font-weight:650}
 .doc .body ul{margin:.3em 0 .8em;padding-left:1.3em}.doc .body li{margin:.25em 0}
@@ -155,8 +156,8 @@ button{font-family:var(--font)}
 .ev.k-assign .n{color:var(--tx-2)}.ev.k-note .n{color:var(--tx-3)}
 .ev .c{flex:1;min-width:0;padding-top:4px}
 .ev .l1{display:flex;align-items:baseline;gap:8px}
-.ev .l1 b{font-size:13.5px;font-weight:600}
-.ev .l1 .act-t{font-size:13px;color:var(--tx-2)}
+.ev .l1 b{font-size:13.5px;font-weight:600;white-space:nowrap;flex:none}
+.ev .l1 .act-t{font-size:13px;color:var(--tx-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ev .l1 .t{margin-left:auto;font-size:11px;color:var(--tx-3);flex:none}
 .ev .sub{font-size:12.5px;color:var(--tx-3);line-height:1.6;margin-top:4px;cursor:pointer}
 .sk{display:flex;gap:12px;padding-bottom:18px}
@@ -176,6 +177,10 @@ button{font-family:var(--font)}
 .frow .sz{margin-left:auto;font-size:11px;color:var(--tx-3)}
 .fdoc{border:1px solid var(--bd);border-radius:var(--r-m);overflow:hidden}
 .fdoc .fh{display:flex;align-items:center;gap:8px;padding:11px 16px;border-bottom:1px solid var(--bd);background:var(--bg-subtle);font-size:13px;font-weight:600}
+.fdoc .fh .ops{margin-left:auto;display:flex;gap:6px}
+.fdoc .fh .ops button{border:1px solid var(--bd-2);background:var(--bg);border-radius:7px;font-size:11.5px;padding:4px 10px;cursor:pointer;color:var(--tx-2)}
+.fdoc .fh .ops button:hover{border-color:var(--pri);color:var(--pri)}
+.fdoc .mdb{margin:0 auto}
 .fdoc .fh svg{width:15px;height:15px;color:var(--tx-3)}
 .fdoc pre{padding:18px 20px;font-family:var(--font);font-size:13.5px;line-height:1.85;white-space:pre-wrap;word-break:break-word;max-height:60vh;overflow:auto}
 
@@ -200,7 +205,7 @@ button{font-family:var(--font)}
 .gm .c{max-width:86%;min-width:0}
 .gm .h{display:flex;align-items:baseline;gap:7px;margin-bottom:3px}
 .gm .h b{font-size:12.5px;font-weight:600}
-.gm .h span{font-size:10.5px;color:var(--tx-3)}
+.gm .h span{font-size:11.5px;color:var(--tx-2)}
 .gm .b{background:var(--bg-subtle);border:1px solid var(--bd);border-radius:4px 14px 14px 14px;padding:9px 14px;font-size:13.5px;line-height:1.75;word-break:break-word}
 .gm .b p{margin:0 0 .5em}.gm .b p:last-child{margin:0}
 .gm.me{flex-direction:row-reverse}
@@ -234,6 +239,7 @@ button{font-family:var(--font)}
   .hero h1{font-size:22px}
 }
 </style>
+<script src="/customer/vendor/marked.min.js"></script>
 </head>
 <body>
 <div class="veil" id="veil" onclick="toggleRail()"></div>
@@ -248,7 +254,7 @@ button{font-family:var(--font)}
     <div class="rail-cap">咨询记录</div>
     <div class="rail-list" id="hist"></div>
     <div class="rail-foot">
-      <div class="rail-cfg" onclick="promptName()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>称呼：<b id="who-name">未设置</b></span></div>
+      <div class="rail-cfg" onclick="promptName()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>称呼：${myName?'<b id="who-name">'+esc(myName)+'</b>':'<span style="color:var(--tx-3)">点击设置</span>'}</span></div>
       <div class="rail-cfg danger" onclick="resetAll()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>清空本地会话</div>
     </div>
   </aside>
@@ -276,10 +282,10 @@ button{font-family:var(--font)}
         <div class="comp">
           <button class="attach" id="attach" title="添加附件" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.05 12.25 20.2a6 6 0 0 1-8.49-8.49l8.57-8.57a4 4 0 1 1 5.66 5.66l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
           <input type="file" id="file-in" style="display:none" multiple>
-          <textarea id="text" placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"></textarea>
+          <textarea id="text" placeholder="输入消息…"></textarea>
           <button id="send" class="send" title="发送"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
         </div>
-        <div class="foot-note" id="comp-note"></div>
+        <div class="foot-note" id="comp-note"> </div>
       </div>
     </div>
     <div class="pane" id="p-comm"><div class="scroll"><div class="grp" id="grp"></div></div></div>
@@ -306,6 +312,7 @@ if(myName)nameEl.value=myName;
 let sig={chat:'',act:'',files:''};let filePath='';let rawMode=false;let projCache=[];
 const AVA=['#2f6bff','#0e9f6e','#c2790a','#7a5cff','#e0526d'];
 const esc=s=>(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+const cleanId=t=>esc(t).replace(/\b(svc|ptodo|prj|cust)-[0-9a-f]{6,}\b/g,'').replace(/\s{2,}/g,' ');
 const icoN={
  assign:'<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
  deliver:'<path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/>',
@@ -324,7 +331,11 @@ const icoN={
 };
 const svg=(n,w=15)=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:${w}px;height:${w}px">${icoN[n]}</svg>`;
 const avc=n=>{let s=0;for(const c of(n||'x'))s+=c.charCodeAt(0);return AVA[s%AVA.length]};
-function md(t){let h=esc(t);
+const MD=(window.marked?window.marked.parse:null);
+function md(t){
+ if(MD){try{return MD(esc(t));}catch(e){}}
+ return mdFallback(t);}
+function mdFallback(t){let h=esc(t);
  h=h.replace(/^####?\s*(.+)$/gm,'<h3>$1</h3>').replace(/^##\s+(.+)$/gm,'<h2>$1</h2>').replace(/^#\s+(.+)$/gm,'<h1>$1</h1>');
  h=h.replace(/^---+$/gm,'<hr>');
  h=h.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>');
@@ -354,7 +365,7 @@ function renderHist(){
  if(!projCache.length){el.innerHTML='<div class="rail-empty">还没有咨询记录<br>一句话开始第一单 →</div>';return;}
  el.innerHTML=projCache.map(p=>`<div class="sess ${p.project_id===projSel?'on':''}" onclick="switchProj('${p.project_id}')">
    <div class="t">${esc(p.name)}</div>
-   <div class="m"><span class="dot-st ${p.status!=='active'?'fin':''}"></span>${p.status==='active'?'进行中':'已完成'} · ${esc((p.created_at||'').slice(5,10))}</div></div>`).join('');
+   <div class="m"><span class="dot-st ${p.stage==='已完成'||p.stage==='已归档'?'fin':''}"></span>${esc(p.stage||'…')} · ${esc((p.created_at||'').slice(5,10))}</div></div>`).join('');
 }
 function switchProj(pid){projSel=pid;localStorage.setItem('yl_proj_'+cid,projSel);
  sig={chat:'',act:'',files:''};commSig='';filePath='';chatEl.innerHTML='';
@@ -398,9 +409,9 @@ function bubble(m){
  if(m.from==='customer'){
   chatEl.insertAdjacentHTML('beforeend',`<div class="msg-u"><div class="who">${esc(m.sender_name||'我')}</div><div class="bub">${esc(m.text)}</div></div>`);return;}
  chatEl.insertAdjacentHTML('beforeend',`<div class="msg-a">
-  <div class="ava" style="background:${avc(m.sender_name)}">${esc((m.sender_name||'咨')[0])}</div>
-  <div class="doc"><div class="hd"><b>${esc(m.sender_name||'咨询合伙人')}</b><span>元理咨询</span></div>
-  <div class="body">${docify(trust(md(m.text)))}</div></div></div>`);}
+  <div class="ava" style="background:${avc(m.sender_name)}" onclick="openMember('${esc(m.sender_name||'咨询合伙人')}')">${esc((m.sender_name||'咨询').slice(0,2))}</div>
+  <div class="c"><div class="hd"><b>${esc(m.sender_name||'咨询合伙人')}</b><span>元理咨询</span></div>
+  <div class="bub"><div class="body">${docify(trust(md(m.text)))}</div></div></div></div>`);}
 function typing(){chatEl.insertAdjacentHTML('beforeend',`<div class="msg-a" id="typing">
  <div class="ava" style="background:#8f91a3">…</div><div><div class="typing"><i></i><i></i><i></i> 团队工作中</div></div></div>`);}
 function welcome(){chatEl.innerHTML=`<div class="hero">
@@ -408,7 +419,6 @@ function welcome(){chatEl.innerHTML=`<div class="hero">
  <h1>一句话，启动一支<em>咨询团队</em></h1>
  <div class="sub">告诉我们您的企业和想解决的问题——合伙人受理、双线研究、独立质控、结论汇报，全程实时可见。</div>
  <div class="hero-form">
-  <div class="hf-name"><label>怎么称呼您</label><input id="hf-name" placeholder="如：周总" value="${esc(myName)}" maxlength="12"></div>
   <div class="comp" style="box-shadow:none">
    <textarea id="hf-text" style="background:var(--bg)" placeholder="一句话描述您的企业和想解决的问题…"></textarea>
    <button class="send" id="hf-go" title="开始"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
@@ -416,9 +426,8 @@ function welcome(){chatEl.innerHTML=`<div class="hero">
  </div>
  <div class="chips" style="margin-top:22px">${EXAMPLES.map((e,i)=>`<div class="chip" onclick="useEx(${i})">${svg(e[0],16)}<span>${e[1]}</span></div>`).join('')}</div>
  <div class="tip">团队通常在半小时内完成一轮完整分析 · 资料可之后随时补传</div></div>`;
- $('hf-go').onclick=()=>{const n=$('hf-name').value.trim();const t=$('hf-text').value.trim();
+ $('hf-go').onclick=()=>{const t=$('hf-text').value.trim();
   if(!t){$('hf-text').focus();return;}
-  if(n){myName=n;localStorage.setItem('yl_name',n);$('who-name').textContent=n;}
   textEl.value=t;sendBtn.click();};
  $('hf-text').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('hf-go').click();}});
 }
@@ -452,11 +461,11 @@ async function pollComm(force){
    if(!d.messages.length){
     el.innerHTML='<div style="text-align:center;color:var(--tx-3);padding:56px 0;font-size:13px">团队已组建，沟通将在这里实时出现</div>';
    }else{
-    el.innerHTML='<div class="grp-cap">以下是项目群的真实沟通过程（' + d.messages.length + ' 条）</div>'+
+    el.innerHTML='<div class="grp-cap">团队内部群 · 只读直播（' + d.messages.length + ' 条）· 点消息可看该成员的执行过程</div>'+
      d.messages.map(m=>{
       const me=m.from==='self';
-      return `<div class="gm ${me?'me':''}">
-       <div class="a" style="background:${avc(m.sender_name)}" onclick="openMember('${esc(m.sender_name)}')">${esc((m.sender_name||'?')[0])}</div>
+      return `<div class="gm ${me?'me':''}" onclick="msgToTrace('${esc(m.sender_name)}', this)" data-mtext="${esc(m.text.slice(0,60))}">
+       <div class="a" style="background:${avc(m.sender_name)}">${esc((m.sender_name||'?').slice(0,2))}</div>
        <div class="c"><div class="h"><b>${esc(m.sender_name)}</b><span>${esc(m.ts)}</span></div>
        <div class="b">${docify(trust(md(m.text)))}</div></div></div>`;}).join('');
     el.parentElement.scrollTop=1e9;
@@ -496,19 +505,29 @@ async function pollFiles(force){
      d.entries.map(e=>`<div class="frow ${e.type==='dir'?'dir':''}" onclick="goPath('${e.rel}')">${svg(e.type==='dir'?'dir':'file',17)}<b>${esc(e.name)}</b>${e.type==='dir'?'':`<span class="sz">${(e.size/1000).toFixed(1)} KB</span>`}</div>`).join('')
      ||'<div style="text-align:center;color:var(--tx-3);padding:56px 0;font-size:13px">团队尚未交付文件</div>';
    }else{
-    $('files').innerHTML=`<div class="crumb"><span onclick="goPath('')">交付物</span><span>›</span><span class="cur">${esc(filePath.split('/').pop())}</span></div>
-     <div class="fdoc"><div class="fh">${svg('file',15)}${esc(filePath.split('/').pop())}</div><div class="mdb">${docify(trust(md(d.content)))}</div></div>`;}
+    const fname=filePath.split('/').pop().replace(/\.md$/,'');
+    $('files').innerHTML=`<div class="crumb"><span onclick="goPath('')">交付物</span><span>›</span><span class="cur">${esc(fname)}</span></div>
+     <div class="fdoc"><div class="fh">${svg('file',15)}${esc(fname)}
+      <div class="ops"><button onclick="copyDoc()">复制全文</button><button onclick="dlDoc('${esc(fname)}')">下载 .md</button></div></div>
+     <div class="mdb" id="fdoc-body">${docify(trust(md(d.content)))}</div>
+     </div>`;}
   }}catch(e){}}
 function goPath(p){filePath=p;sig.files='';pollFiles(true);}
+function copyDoc(){const t=document.getElementById('fdoc-body').innerText;navigator.clipboard.writeText(t);event.target.textContent='已复制';setTimeout(()=>event.target.textContent='复制全文',1500);}
+function dlDoc(name){const t=document.getElementById('fdoc-body').innerText;const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([t],{type:'text/markdown'}));a.download=name+'.md';a.click();}
 
 /* ── 抽屉：成员明细 ── */
 function closeDrawer(){$('drawer').classList.remove('open')}
-async function openMember(role){
+async function msgToTrace(role, el){
+ const txt=el.getAttribute('data-mtext')||'';
+ await openMember(role, txt);
+}
+async function openMember(role, locateText){
  const sid=memberSid[role];if(!sid)return;
  const d=await jget(`/api/customer/sessions/${cid}/members/${sid}`);
  if(!d.ok)return;
  const mine=todosCache.filter(t=>t.assignee===role);
- $('dw-head').innerHTML=`<div class="a" style="background:${avc(role)}">${esc((role||'?')[0])}</div>
+ $('dw-head').innerHTML=`<div class="a" style="background:${avc(role)}">${esc((role||'?').slice(0,2))}</div>
   <div><b>${esc(role)}</b><small>项目成员 · 点成员名随时查看</small></div><button class="x" onclick="closeDrawer()">✕</button>`;
  const K={think:['思考','st-think'],tool:['工具','st-tool'],result:['结果','st-result'],say:['发言','st-say'],rest:['休息','st-rest'],input:['输入','st-input']};
  $('dw-body').innerHTML=`<h6>负责任务（${mine.length}）</h6>`+
@@ -517,11 +536,19 @@ async function openMember(role){
   (d.traces.map(t=>`<div class="trc">
     <div class="trc-h" onclick="this.parentElement.classList.toggle('open')">${svg('spark',13)} 唤醒 #${t.seq} · ${esc(t.reason)}<span class="t">${esc(t.at)} · ${t.steps.length} 步</span></div>
     <div class="trc-b">
-     ${t.context?`<div class="ctx"><b>唤醒时看到的输入（事件与上下文）：</b>\n${esc(t.context.slice(0,300))}…</div>`:''}
+     ${t.context?`<div class="ctx"><b>唤醒时看到的输入（事件与上下文）：</b><br>${md(t.context.slice(0,400))}</div>`:''}
      ${t.steps.map(st=>{const[k,cls]=K[st.kind]||['步骤','st-input'];
-      return `<div class="step ${cls}"><div class="k">${k}</div><div class="x">${esc(st.text)}</div></div>`;}).join('')}
+      const body=st.kind==='tool'||st.kind==='rest'?esc(st.text):md(st.text);
+      return `<div class="step ${cls}"><div class="k">${k}</div><div class="x">${body}</div></div>`;}).join('')}
     </div></div>`).join('')||'<div style="font-size:12px;color:var(--tx-3);padding:4px 8px">尚无唤醒</div>');
  $('drawer').classList.add('open');
+ // 定位：找到含该消息文本的唤醒轨迹 → 展开并滚动
+ if(locateText){
+  const trcs=[...document.querySelectorAll('.trc')];
+  const hit=trcs.find(t=>t.textContent.includes(locateText.slice(0,24)));
+  if(hit){hit.classList.add('open');
+   setTimeout(()=>hit.scrollIntoView({behavior:'smooth',block:'start'}),120);}
+ }
 }
 
 /* ── 附件 ── */
@@ -542,7 +569,7 @@ $('file-in').onchange=async()=>{
 };
 const _origPoll=poll;
 poll=async function(){await _origPoll();$('attach').style.display=cid?'flex':'none';
- $('comp-note').textContent=cid?'可随时补充材料（📎）· Enter 发送':'首次发言将自动组建咨询团队';};
+ $('comp-note').textContent=cid?'可随时补充材料（📎 附件）':'首次发言将自动组建咨询团队';};
 
 /* ── 发送 ── */
 sendBtn.onclick=async()=>{

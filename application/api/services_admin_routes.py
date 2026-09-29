@@ -264,6 +264,116 @@ async def handle_project_activity(request: web.Request) -> web.Response:
 _ROUTER.router.add_get("/projects/{project_id}/activity", handle_project_activity)
 
 
+# ── 配置中心（项目/agent 配置，PRD M7 提前） ─────────────────────────
+
+
+async def handle_list_defs(_request: web.Request) -> web.Response:
+    """GET /api/admin/defs — 可用的 agent 定义目录（runtime_kind: definition）。"""
+    import yaml as _yaml
+
+    from infrastructure.config import get_project_root
+
+    defs = []
+    apps = get_project_root() / "apps"
+    if apps.is_dir():
+        for d in sorted(apps.iterdir()):
+            cfg = d / "config" / "app.yaml"
+            if not cfg.exists():
+                continue
+            try:
+                data = _yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+            except Exception:
+                continue
+            if str(data.get("runtime_kind") or "") == "definition":
+                defs.append({"def_id": d.name, "display_name": data.get("display_name") or d.name})
+    return _json({"ok": True, "defs": defs})
+
+
+async def handle_service_config(request: web.Request) -> web.Response:
+    """PATCH /api/admin/services/{sid}/config — agent 详细配置编辑。"""
+    sid = request.match_info["service_id"]
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    from infrastructure.persistence import services_registry
+
+    svc = services_registry.lookup_service(sid)
+    if svc is None:
+        return _json({"ok": False, "error": "服务不存在"}, 404)
+    kw = {}
+    if "display_name" in body:
+        kw["display_name"] = str(body["display_name"])[:30]
+    if "subscriptions" in body and isinstance(body["subscriptions"], list):
+        kw["subscriptions"] = [str(x) for x in body["subscriptions"]][:20]
+    if "tools" in body and isinstance(body["tools"], list):
+        kw["tools"] = [str(x) for x in body["tools"]][:40]
+    if "capabilities" in body and isinstance(body["capabilities"], dict):
+        caps = dict(svc.get("capabilities") or {})
+        caps.update({k: bool(v) for k, v in body["capabilities"].items()})
+        kw["capabilities"] = caps
+    if not kw:
+        return _json({"ok": False, "error": "无可更新字段"}, 400)
+    services_registry.update_service_fields(sid, **kw)
+    logger.info("SERVICE_CONFIG_UPDATED %s fields=%s", sid[:12], list(kw))
+    return _json({"ok": True, "service": services_registry.lookup_service(sid)})
+
+
+async def handle_add_member(request: web.Request) -> web.Response:
+    """POST /api/admin/projects/{pid}/members {def, role} — 项目增加 agent。"""
+    pid = request.match_info["project_id"]
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    def_id = str(body.get("def") or "").strip()
+    role = str(body.get("role") or "").strip()
+    if not def_id or not role:
+        return _json({"ok": False, "error": "def 和 role 必填"}, 400)
+    from domain.project.customer import load_template  # noqa: F401 复用校验思想
+
+    from domain.service import create_service
+    from domain.service.social import register_social_circle
+    from infrastructure.persistence import services_registry
+
+    project = services_registry.lookup_project(pid)
+    if project is None:
+        return _json({"ok": False, "error": "项目不存在"}, 404)
+    try:
+        svc = create_service(def_id, project_id=pid, display_name=role)
+    except ValueError as exc:
+        return _json({"ok": False, "error": str(exc)}, 400)
+    services_registry.add_project_member(pid, svc["service_id"], role)
+    # 社交圈补登（幂等）：老成员补新人联系人，新人进群
+    members = [
+        {"service_id": m["service_id"], "role": m.get("display_name") or m["service_id"][:10]}
+        for m in services_registry.list_services_by_project(pid, status="active")
+    ]
+    register_social_circle(pid, members, project.get("pm_id") or members[0]["service_id"], None)
+    return _json({"ok": True, "service": svc})
+
+
+async def handle_project_watchdog(request: web.Request) -> web.Response:
+    """POST /api/admin/projects/{pid}/watchdog {enabled} — 停滞看门狗开关。"""
+    pid = request.match_info["project_id"]
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    from infrastructure.persistence import services_registry
+
+    ok = services_registry.update_project_fields(
+        pid, watchdog_enabled=bool(body.get("enabled"))
+    )
+    return _json({"ok": ok})
+
+
+_ROUTER.router.add_get("/defs", handle_list_defs)
+_ROUTER.router.add_patch("/services/{service_id}/config", handle_service_config)
+_ROUTER.router.add_post("/projects/{project_id}/members", handle_add_member)
+_ROUTER.router.add_post("/projects/{project_id}/watchdog", handle_project_watchdog)
+
+
 async def _serve_page(_request: web.Request) -> web.Response:
     from infrastructure.config import get_project_root
 

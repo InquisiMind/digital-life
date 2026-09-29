@@ -194,10 +194,14 @@ async def handle_list_sessions(request: web.Request) -> web.Response:
     for p in services_registry.list_projects():
         if want and p.get("customer_id") != want:
             continue
+        todos = services_registry.list_project_todos(p["project_id"])
+        stage = ("已完成" if todos and all(t["status"] == "done" for t in todos)
+                 else ("研究中" if todos else "受理中")) if p["status"] == "active" else "已归档"
         rows.append({
             "project_id": p["project_id"],
             "name": p["name"],
             "status": p["status"],
+            "stage": stage,
             "customer_id": p.get("customer_id") or "",
             "created_at": p["created_at"],
         })
@@ -270,6 +274,20 @@ async def handle_files(request: web.Request) -> web.Response:
 
 _TRACE_STEP_CAP = 220
 
+# 客户可见清洗：内部 ID 打码、JSON 错误转友好文案、prompt 注入指令段截断
+import re as _re_trace
+
+
+def _clean_trace_text(t: str) -> str:
+    t = _re_trace.sub(r"\b(svc|ptodo|prj|cust)-[0-9a-f]{6,}\b", "…", t or "")
+    t = _re_trace.sub(r"\bmembers/[\w\-./]+\b", "个人工作区", t)
+    # prompt 尾部的投递指令段整段去掉（"—— 回复：chat_id…"起的说明）
+    t = _re_trace.split("—— 回复：", t)[0]
+    m = _re_trace.search(r'\{"error":\s*"([^"]+)"\}', t)
+    if m:
+        t = "系统提示：" + m.group(1)
+    return t.strip()
+
 
 def _member_trace(sid: str, limit_wakes: int = 3) -> list[dict]:
     """成员最近 N 次唤醒的执行轨迹：唤醒上下文 → 思考/工具调用/工具结果/发言 → 休息。
@@ -321,10 +339,10 @@ def _member_trace(sid: str, limit_wakes: int = 3) -> list[dict]:
             for role, content, tool_calls, tool_name, reasoning in rows:
                 content = content or ""
                 if role == "user":
-                    trace["context"] = content[:400]
+                    trace["context"] = _clean_trace_text(content)[:400]
                 elif role == "assistant":
                     if reasoning:
-                        trace["steps"].append({"kind": "think", "text": reasoning[:_TRACE_STEP_CAP]})
+                        trace["steps"].append({"kind": "think", "text": _clean_trace_text(reasoning)[:_TRACE_STEP_CAP]})
                     if tool_calls:
                         try:
                             calls = json.loads(tool_calls)
@@ -335,12 +353,12 @@ def _member_trace(sid: str, limit_wakes: int = 3) -> list[dict]:
                             names = tool_name or "工具"
                         trace["steps"].append({"kind": "tool", "text": f"调用 {names}"})
                     if content.strip():
-                        trace["steps"].append({"kind": "say", "text": content[:_TRACE_STEP_CAP]})
+                        trace["steps"].append({"kind": "say", "text": _clean_trace_text(content)[:_TRACE_STEP_CAP]})
                 elif role == "tool":
                     if "__l4_block__" in content:
                         trace["steps"].append({"kind": "rest", "text": "进入休息，等待下次唤醒"})
                     else:
-                        trace["steps"].append({"kind": "result", "text": content[:_TRACE_STEP_CAP]})
+                        trace["steps"].append({"kind": "result", "text": _clean_trace_text(content)[:_TRACE_STEP_CAP]})
             trace["steps"] = trace["steps"][:60]
         out.append(trace)
     return out
@@ -458,4 +476,14 @@ async def _serve_page(_request: web.Request) -> web.Response:
 def add_customer_routes(app: web.Application) -> None:
     app.add_subapp("/api/customer/", _ROUTER)
     app.router.add_get("/customer", _serve_page)
+    app.router.add_static(
+        "/customer/vendor/",
+        get_vendor_dir(),
+    )
+
+
+def get_vendor_dir():
+    from infrastructure.config import get_project_root
+
+    return get_project_root() / "interfaces" / "web" / "customer" / "vendor"
     logger.info("Customer chat routes registered: /customer + /api/customer/*")

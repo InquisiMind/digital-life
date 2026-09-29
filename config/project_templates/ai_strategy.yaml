@@ -1,4 +1,5 @@
-# AI 战略咨询项目模版（S00–S10 的容器；阶段=待办分组，方法论住在 PM 的 skill）
+# AI 战略咨询项目模版——四角色完整班子（分析全流程：研究×2 → 质控 → 定稿汇报）
+# 方法论住各角色 persona 与 PM 的待办拆解；引擎只提供人+事+文件+社交结构
 name: AI战略咨询
 watchdog: false
 roles:
@@ -9,8 +10,17 @@ roles:
             project_file_read, project_deliver, project_todo_create,
             project_todo_list, project_todo_update]
   - def: consulting-researcher-def
-    name: 研究员
+    name: 行业研究员
     tools: [sense_project_peers, send_chat_message, project_file_write,
             project_file_read, project_deliver, project_todo_list,
             project_todo_update]
-initial_todos: []
+  - def: consulting-enterprise-def
+    name: 企业研究员
+    tools: [sense_project_peers, send_chat_message, project_file_write,
+            project_file_read, project_deliver, project_todo_list,
+            project_todo_update]
+  - def: consulting-qc-def
+    name: 质控审查员
+    tools: [sense_project_peers, send_chat_message, project_file_read,
+            project_file_list, project_todo_list, project_todo_update]
+initial_todos: []   # S00 界定后由 PM 按客户情况拆解——进度=待办+skill

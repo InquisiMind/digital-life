@@ -103,7 +103,8 @@ def _pm_messages_db(pm_service_id: str):
 async def handle_get_messages(request: web.Request) -> web.Response:
     """GET /api/customer/sessions/{customer_id}/messages
 
-    回放 PM 库中 customer:{cid} 窗口的双向消息（in=客户发言，out=PM 回复）。
+    回放 PM 库中 customer:{cid} 窗口的双向消息（in=客户发言，out=PM 回复），
+    附项目进展（团队成员 + 待办状态）供前端进展栏展示。
     """
     customer_id = request.match_info["customer_id"]
     from infrastructure.persistence import services_registry
@@ -135,11 +136,37 @@ async def handle_get_messages(request: web.Request) -> web.Response:
                 "sender_name": sender or "",
                 "text": text or "",
             })
+
+    # 项目进展：团队 + 待办（角色名映射，供客户侧展示）
+    sid_to_role = {}
+    team = []
+    for svc in services_registry.list_services_by_project(
+        project["project_id"], status="active"
+    ):
+        sid_to_role[svc["service_id"]] = svc.get("display_name") or ""
+        team.append({
+            "role": svc.get("display_name") or "",
+            "is_pm": svc["service_id"] == project.get("pm_id"),
+        })
+    todos = [
+        {
+            "title": t["title"],
+            "status": t["status"],
+            "assignee": sid_to_role.get(t.get("assignee_id") or "", ""),
+        }
+        for t in services_registry.list_project_todos(project["project_id"])
+    ]
+    stage = "已完成" if todos and all(t["status"] == "done" for t in todos) else (
+        "研究中" if todos else "受理中"
+    )
     return _json({
         "ok": True,
         "customer_id": customer_id,
         "project_id": project["project_id"],
         "project_name": project["name"],
+        "stage": stage,
+        "team": team,
+        "todos": todos,
         "messages": messages,
     })
 

@@ -28,6 +28,7 @@ spawn worker，日志在 apps/{def}/services/{sid}/data/var/logs/）→ archive 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -68,6 +69,51 @@ ECHO_SECRETS = """\
 # 留空则继承 shell 环境的 GLM_API_KEY；或取消注释填入：
 # GLM_API_KEY=
 """
+
+
+def _cmd_bootstrap_consulting(_args: argparse.Namespace) -> int:
+    """安装咨询四角色 agent 定义到 apps/（源在 config/agent_defs/，不含密钥）。
+
+    密钥解析顺序：env LLM_API_KEY → zero 实例的 secrets.env → 留空提示。
+    幂等：已存在的 def 不覆盖（改 persona 请直接改 apps/ 下文件）。
+    """
+    import shutil
+
+    from infrastructure.config import get_project_root
+
+    root = get_project_root()
+    src_root = root / "config" / "agent_defs"
+    key = os.environ.get("LLM_API_KEY", "").strip()
+    if not key:
+        zero_secrets = next((root / "apps").glob("*/config/secrets.env"), None)
+        for p in (root / "apps").glob("*/config/secrets.env"):
+            for line in p.read_text(encoding="utf-8").splitlines():
+                if line.startswith("LLM_API_KEY="):
+                    key = line.split("=", 1)[1].strip()
+                    break
+            if key:
+                break
+    installed, skipped = [], []
+    for src in sorted(src_root.iterdir()):
+        if not src.is_dir():
+            continue
+        dst = root / "apps" / src.name
+        if dst.exists():
+            skipped.append(src.name)
+            continue
+        (dst / "config").mkdir(parents=True)
+        (dst / "persona").mkdir(parents=True)
+        (dst / "skills").mkdir(parents=True)
+        shutil.copy2(src / "app.yaml", dst / "config" / "app.yaml")
+        shutil.copy2(src / "LIFE_PERSONA.md", dst / "persona" / "LIFE_PERSONA.md")
+        if key:
+            (dst / "config" / "secrets.env").write_text(f"LLM_API_KEY={key}\n", encoding="utf-8")
+        installed.append(src.name)
+    for n in installed:
+        print(f"✅ 已安装 {n}" + ("" if key else "（⚠️ 无密钥：export LLM_API_KEY 后重跑，或手填 apps/{n}/config/secrets.env）"))
+    for n in skipped:
+        print(f"⏭️ 已存在跳过 {n}")
+    return 0
 
 
 def _cmd_bootstrap_echo(_args: argparse.Namespace) -> int:
@@ -196,6 +242,10 @@ def main() -> int:
     sub.add_parser("bootstrap-echo", help="创建 echo 验收定义（apps/echo-def/）").set_defaults(
         func=_cmd_bootstrap_echo
     )
+
+    sub.add_parser(
+        "bootstrap-consulting", help="安装咨询四角色 agent 定义到 apps/（源 config/agent_defs/，无密钥）"
+    ).set_defaults(func=_cmd_bootstrap_consulting)
 
     p_create = sub.add_parser("create", help="从定义创建服务")
     p_create.add_argument("--def", dest="def_id", required=True, help="agent 定义目录名")

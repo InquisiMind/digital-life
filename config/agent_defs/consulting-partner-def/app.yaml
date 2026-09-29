@@ -1,0 +1,9 @@
+runtime_kind: definition
+active: false
+display_name: partner-def
+model:
+  name: glm-5.3
+  provider: glm
+  base_url: https://open.bigmodel.cn/api/coding/paas/v4
+channels: {}
+skills: []

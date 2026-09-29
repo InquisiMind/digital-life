@@ -58,7 +58,7 @@ button{font-family:var(--font)}
 /* ══ 会话头 ══ */
 .ch-head{flex:none;height:58px;display:flex;align-items:center;gap:14px;padding:0 20px;border-bottom:1px solid var(--bd)}
 .ch-title{min-width:0}
-.ch-name{font-size:15px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px}
+.ch-name{font-size:16px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:300px;letter-spacing:.2px}
 .ch-sub{font-size:11.5px;color:var(--tx-3);margin-top:1px}
 .seg{margin-left:auto;display:flex;gap:2px;padding:3px;background:var(--bg-sunken);border-radius:11px}
 .seg button{display:flex;align-items:center;gap:6px;border:none;background:transparent;padding:6px 14px;border-radius:9px;font-size:12.5px;font-weight:550;color:var(--tx-2);cursor:pointer;transition:all .15s;position:relative;white-space:nowrap}
@@ -84,7 +84,7 @@ button{font-family:var(--font)}
 .msg-a .hd{display:flex;align-items:baseline;gap:8px;margin-bottom:5px}
 .msg-a .hd b{font-size:13px}
 .msg-a .hd span{font-size:11px;color:var(--tx-3)}
-.doc .body{font-size:14px;line-height:1.85}
+.doc .body{font-size:14.5px;line-height:1.9}
 .doc .body p{margin:0 0 .7em}.doc .body p:last-child{margin:0}
 .doc .body h3{font-size:14.5px;margin:1em 0 .4em;font-weight:650}
 .doc .body ul{margin:.3em 0 .8em;padding-left:1.3em}.doc .body li{margin:.25em 0}
@@ -190,13 +190,53 @@ button{font-family:var(--font)}
 .dw-todo .bx{flex:none;width:15px;height:15px;border-radius:5px;border:1.5px solid var(--bd-2);margin-top:2px}
 .dw-todo.done .bx{background:var(--ok);border-color:var(--ok)}
 .dw-todo.done .tt{color:var(--tx-3);text-decoration:line-through}
-@media(max-width:880px){.rail{display:none}}
+/* ── 群聊（团队沟通） ── */
+.grp{max-width:820px;margin:0 auto;padding:22px 24px 26px;display:flex;flex-direction:column;gap:16px}
+.grp-cap{font-size:12px;color:var(--tx-3);text-align:center;padding-bottom:4px}
+.gm{display:flex;gap:10px}
+.gm .a{flex:none;width:30px;height:30px;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:650;margin-top:1px;cursor:pointer}
+.gm .c{max-width:86%;min-width:0}
+.gm .h{display:flex;align-items:baseline;gap:7px;margin-bottom:3px}
+.gm .h b{font-size:12.5px;font-weight:600}
+.gm .h span{font-size:10.5px;color:var(--tx-3)}
+.gm .b{background:var(--bg-subtle);border:1px solid var(--bd);border-radius:4px 14px 14px 14px;padding:9px 14px;font-size:13.5px;line-height:1.75;white-space:pre-wrap;word-break:break-word}
+.gm.me{flex-direction:row-reverse}
+.gm.me .c{display:flex;flex-direction:column;align-items:flex-end}
+.gm.me .b{background:var(--pri-weak);border-color:transparent;border-radius:14px 4px 14px 14px}
+/* ── 响应式 ── */
+.menu-btn{display:none;flex:none;width:34px;height:34px;border:1px solid var(--bd-2);background:var(--bg);border-radius:9px;cursor:pointer;align-items:center;justify-content:center;color:var(--tx-2)}
+.menu-btn svg{width:16px;height:16px}
+@media(max-width:1160px){
+  .seg button span{display:none}
+  .seg button{padding:7px 11px}
+  .ch-sub{display:none}
+  .pill{padding:4px 9px;font-size:11px}
+}
+@media(max-width:880px){
+  .menu-btn{display:flex}
+  .rail{position:fixed;left:0;top:0;bottom:0;z-index:40;transform:translateX(-100%);transition:transform .2s;box-shadow:var(--sh-2)}
+  .rail.open{transform:none}
+  .veil{position:fixed;inset:0;background:rgba(15,17,30,.32);z-index:39;opacity:0;pointer-events:none;transition:opacity .2s}
+  .veil.on{opacity:1;pointer-events:auto}
+  .ch-name{max-width:150px;font-size:14px}
+  .col,.grp,.tl,.steps,.fwrap,.comp{padding-left:14px;padding-right:14px}
+  .comp .nm{width:72px}
+  .drawer.open{width:min(320px,88vw);position:fixed;right:0;top:0;bottom:0;z-index:40;box-shadow:var(--sh-2)}
+}
+@media(max-width:560px){
+  .pill{display:none!important}
+  .seg{padding:2px}
+  .msg-u{max-width:94%}
+  .gm .c{max-width:92%}
+  .hero h1{font-size:22px}
+}
 </style>
 </head>
 <body>
+<div class="veil" id="veil" onclick="toggleRail()"></div>
 <div class="app">
   <!-- 左：会话历史 rail -->
-  <aside class="rail">
+  <aside class="rail" id="rail-el">
     <div class="rail-brand">
       <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.8L20 11l-6.1 2.2L12 19l-1.9-5.8L4 11l6.1-2.2z"/></svg></div>
       <div><b>元理 · 战略咨询</b><small>AI 咨询团队工作台</small></div>
@@ -213,14 +253,16 @@ button{font-family:var(--font)}
   <!-- 中：会话主区 -->
   <div class="main">
     <header class="ch-head">
+      <button class="menu-btn" id="menu" onclick="toggleRail()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
       <div class="ch-title">
         <div class="ch-name" id="ch-name">新的咨询</div>
         <div class="ch-sub" id="ch-sub">描述您的企业问题，团队即刻组建</div>
       </div>
       <div class="seg" id="seg">
-        <button class="on" data-p="chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>对话</button>
-        <button data-p="team" id="tab-team" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>团队动态</button>
-        <button data-p="files" id="tab-files" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>交付物</button>
+        <button class="on" data-p="chat" title="对话"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>对话</span></button>
+        <button data-p="comm" id="tab-comm" title="团队沟通" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>团队沟通</span></button>
+        <button data-p="tasks" id="tab-tasks" title="任务协作" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg><span>任务协作</span></button>
+        <button data-p="files" id="tab-files" title="交付物" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg><span>交付物</span></button>
       </div>
       <span class="pill" id="stage" style="display:none"></span>
     </header>
@@ -236,7 +278,8 @@ button{font-family:var(--font)}
         <div class="foot-note">首次发言自动组建咨询团队 · 过程实时可见 · 完成后合伙人向您汇报</div>
       </div>
     </div>
-    <div class="pane" id="p-team"><div class="scroll">
+    <div class="pane" id="p-comm"><div class="scroll"><div class="grp" id="grp"></div></div></div>
+    <div class="pane" id="p-tasks"><div class="scroll">
       <div class="steps" id="steps"></div>
       <div class="tl" id="tl"></div>
     </div></div>
@@ -298,8 +341,8 @@ function renderHist(){
    <div class="m"><span class="dot-st ${p.status!=='active'?'fin':''}"></span>${p.status==='active'?'进行中':'已完成'} · ${esc((p.created_at||'').slice(5,10))}</div></div>`).join('');
 }
 function switchProj(pid){projSel=pid;localStorage.setItem('yl_proj_'+cid,projSel);
- sig={chat:'',act:'',files:''};filePath='';chatEl.innerHTML='';
- loadHead();poll();pollTeam();pollFiles();renderHist();}
+ sig={chat:'',act:'',files:''};commSig='';filePath='';chatEl.innerHTML='';
+ loadHead();poll();pollComm();pollTeam();pollFiles();renderHist();}
 function newSession(){cid='';projSel='';projCache=[];localStorage.removeItem('yl_customer_id');
  sig={chat:'',act:'',files:''};filePath='';chatEl.innerHTML='';
  $('tab-team').style.display='none';$('tab-files').style.display='none';$('stage').style.display='none';
@@ -317,7 +360,10 @@ function setPane(p){document.querySelectorAll('#seg button').forEach(b=>b.classL
  document.querySelectorAll('.pane').forEach(x=>x.classList.toggle('on',x.id==='p-'+p));}
 document.querySelectorAll('#seg button').forEach(b=>b.onclick=()=>{
  setPane(b.dataset.p);const d=b.querySelector('.dot');d&&d.remove();
- if(b.dataset.p==='team')pollTeam(true);if(b.dataset.p==='files')pollFiles(true);});
+ if(b.dataset.p==='comm')pollComm(true);
+ if(b.dataset.p==='tasks')pollTeam(true);
+ if(b.dataset.p==='files')pollFiles(true);});
+function toggleRail(){$('rail-el').classList.toggle('open');$('veil').classList.toggle('on');}
 
 async function jget(u){
  if(projSel&&u.includes('/api/customer/sessions/')&&!u.includes('project_id=')){
@@ -360,13 +406,41 @@ async function poll(){
    if(last&&last.from==='customer'&&d.stage!=='已完成')typing();
    chatEl.parentElement.scrollTop=1e9;}
   if(d.team){
-   $('tab-team').style.display='inline-flex';$('tab-files').style.display='inline-flex';
+   $('tab-comm').style.display='inline-flex';$('tab-tasks').style.display='inline-flex';$('tab-files').style.display='inline-flex';
    $('stage').style.display='inline-flex';$('stage').textContent=d.stage;
    teamCache=d.team;todosCache=d.todos||[];
    (d.team||[]).forEach(t=>memberSid[t.role]=t.sid);}
  }catch(e){}}
 
-/* ── 团队动态 ── */
+/* ── 团队沟通：项目群回放（点头像看成员明细） ── */
+let commSig='';
+async function pollComm(force){
+ if(!cid)return;try{
+  const d=await jget(`/api/customer/sessions/${cid}/team`);
+  const g=JSON.stringify(d.messages);
+  if(force||g!==commSig){commSig=g;
+   const el=$('grp');
+   if(!d.messages.length){
+    el.innerHTML='<div style="text-align:center;color:var(--tx-3);padding:56px 0;font-size:13px">团队已组建，沟通将在这里实时出现</div>';
+   }else{
+    el.innerHTML='<div class="grp-cap">以下是项目群的真实沟通过程（' + d.messages.length + ' 条）</div>'+
+     d.messages.map(m=>{
+      const me=m.from==='self';
+      return `<div class="gm ${me?'me':''}">
+       <div class="a" style="background:${avc(m.sender_name)}" onclick="openMember('${esc(m.sender_name)}')">${esc((m.sender_name||'?')[0])}</div>
+       <div class="c"><div class="h"><b>${esc(m.sender_name)}</b><span>${esc(m.ts)}</span></div>
+       <div class="b">${trust(md(m.text))}</div></div></div>`;}).join('');
+    el.parentElement.scrollTop=1e9;
+   }
+   // 红点挂在沟通 tab
+   const seen=+localStorage.getItem('yl_seen_'+cid)||0;
+   if(d.messages.length>seen&&!$('p-comm').classList.contains('on')){
+    if(!$('tab-comm').querySelector('.dot'))$('tab-comm').insertAdjacentHTML('beforeend','<span class="dot"></span>');
+   }else if($('p-comm').classList.contains('on')){localStorage.setItem('yl_seen_'+cid,d.messages.length);}
+  }
+ }catch(e){}}
+
+/* ── 任务协作：阶段步骤 + 转译动态 ── */
 async function pollTeam(force){
  if(!cid)return;try{
   const d=await jget(`/api/customer/sessions/${cid}/activity`);
@@ -374,24 +448,12 @@ async function pollTeam(force){
   if(force||g!==sig.act){sig.act=g;
    $('steps').innerHTML=d.steps.map((st,i)=>`${i?`<div class="stp-ln ${d.steps[i-1].state}"></div>`:''}
     <div class="stp ${st.state}"><div class="c">${st.state==='done'?svg('done',12):i+1}</div><span>${esc(st.name)}</span></div>`).join('');
-   let body;
-   if(rawMode){
-    const t=await jget(`/api/customer/sessions/${cid}/team`);
-    body=`<div class="tl-head"><span class="h">原始协作记录</span><button class="rawbtn" onclick="rawMode=false;sig.act='';pollTeam(true)">‹ 返回动态</button></div>`+
-     t.messages.map(m=>`<div class="raw"><b>${esc(m.sender_name)}</b> · ${esc(m.ts)}<br>${esc(m.text)}</div>`).join('');
-   }else{
-    body=`<div class="tl-head"><span class="h">团队动态 · 点成员看明细</span><button class="rawbtn" onclick="rawMode=true;sig.act='';pollTeam(true)">原始记录 ›</button></div>`+
+   $('tl').innerHTML=`<div class="tl-head"><span class="h">任务动态 · 点成员看明细</span></div>`+
      d.activities.map(a=>`<div class="ev k-${a.kind}">
       <div class="n">${svg(a.kind,13)}</div>
       <div class="c"><div class="l1"><b style="cursor:pointer" onclick="openMember('${esc(a.actor)}')">${esc(a.actor)}</b><span class="act-t">${esc(a.text.replace(a.actor,'').trim())}</span><span class="t">${esc(a.ts)}</span></div>
       ${a.detail&&a.kind!=='note'?`<div class="sub" onclick="this.style.display='none'">${esc(a.detail.slice(0,150))}${a.detail.length>150?' …':''}</div>`:''}</div></div>`).join('')
      ||`<div class="sk"><div style="flex:1"><div class="l" style="width:38%"></div><div class="l" style="width:64%"></div><div class="l" style="width:52%"></div></div></div>`;
-   }
-   $('tl').innerHTML=body;
-   const seen=+localStorage.getItem('yl_seen_'+cid)||0;
-   if(d.activities.length>seen&&!$('p-team').classList.contains('on')){
-    if(!$('tab-team').querySelector('.dot'))$('tab-team').insertAdjacentHTML('beforeend','<span class="dot"></span>');
-   }else if($('p-team').classList.contains('on')){localStorage.setItem('yl_seen_'+cid,d.activities.length);}
   }
  }catch(e){}}
 
@@ -445,8 +507,8 @@ textEl.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.prevent
 
 /* ── init ── */
 $('who-name').textContent=myName||'未设置';
-if(cid){loadProjects();poll();pollTeam();}else{welcome();}
-setInterval(()=>{poll();pollTeam();},5000);
+if(cid){loadProjects();poll();pollComm();pollTeam();}else{welcome();}
+setInterval(()=>{poll();pollComm();pollTeam();},5000);
 </script>
 </body>
 </html>

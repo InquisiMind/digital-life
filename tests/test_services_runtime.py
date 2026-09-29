@@ -455,6 +455,9 @@ def test_gated_tools_hidden_for_service(service_env):
         "todo", "todo_plan", "todo_note", "todo_trigger", "sense_todos",
         "sense_projects", "project_todo", "project_deliver", "project_bootstrap",
     } <= blocked
+    # 撞名教训回归闸：服务的 deliver_to_shared 不许再被旧 project_deliver
+    # 的 capability 闸误杀（陈总项目曾因此让 agent 用 execute_code 兜底）
+    assert "deliver_to_shared" not in blocked
     # 实例型：恒空集（零行为变化）
     assert gated_tool_names("11111111-1111-1111-1111-111111111111") == set()
 
@@ -493,7 +496,7 @@ def project_template(service_env):
         "    name: 甲\n"
         "    pm: true\n"
         "    tools: [sense_project_peers, send_chat_message, project_file_write,\n"
-        "            project_deliver, project_todo_create]\n"
+        "            deliver_to_shared, project_todo_create]\n"
         "  - def: echo-def\n"
         "    name: 乙\n"
         "initial_todos:\n"
@@ -521,7 +524,7 @@ def test_project_bootstrap_with_social_circle(service_env, project_template):
     # 项目行 + PM + 成员表
     assert result["project"]["pm_id"] == a["service_id"]
     assert a["tools"] == ["sense_project_peers", "send_chat_message",
-                          "project_file_write", "project_deliver",
+                          "project_file_write", "deliver_to_shared",
                           "project_todo_create"]
     assert b["tools"] is None  # 未配置=默认全量
     assert len(sr.list_project_members(pid)) == 2
@@ -666,7 +669,7 @@ def test_todo_tools_and_tool_face(service_env, project_template):
     # 工具面：PM 按模版收紧、研究员默认全量、实例整组隐藏
     assert project_tools_allowed(a["service_id"]) == {
         "sense_project_peers", "send_chat_message", "project_file_write",
-        "project_deliver", "project_todo_create",
+        "deliver_to_shared", "project_todo_create",
     }
     assert project_tools_allowed(b["service_id"]) is None
     assert service_only_tools_hidden("11111111-1111-1111-1111-111111111111") is True

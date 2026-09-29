@@ -55,7 +55,7 @@ SERVICE_PROJECT_TOOLS: frozenset[str] = frozenset({
     "project_file_list",
     "project_file_read",
     "project_file_write",
-    "project_deliver",
+    "deliver_to_shared",
     "project_todo_create",
     "project_todo_list",
     "project_todo_update",

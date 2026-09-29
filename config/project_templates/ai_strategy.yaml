@@ -7,17 +7,17 @@ roles:
     name: 咨询合伙人
     pm: true
     tools: [sense_project_peers, send_chat_message, project_file_write,
-            project_file_read, project_deliver, project_todo_create,
+            project_file_read, deliver_to_shared, project_todo_create,
             project_todo_list, project_todo_update]
   - def: consulting-researcher-def
     name: 行业研究员
     tools: [sense_project_peers, send_chat_message, project_file_write,
-            project_file_read, project_deliver, project_todo_list,
+            project_file_read, deliver_to_shared, project_todo_list,
             project_todo_update]
   - def: consulting-enterprise-def
     name: 企业研究员
     tools: [sense_project_peers, send_chat_message, project_file_write,
-            project_file_read, project_deliver, project_todo_list,
+            project_file_read, deliver_to_shared, project_todo_list,
             project_todo_update]
   - def: consulting-qc-def
     name: 质控审查员

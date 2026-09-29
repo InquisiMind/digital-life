@@ -512,17 +512,40 @@ def update_service_fields(service_id: str, *, project_id: str | None = None,
 # has_due_events 把它解析到不存在的 apps/{sid}/ 而静默跳过（2026-09-29
 # 双服务验收现场抓获）。
 _def_cache: dict[str, str] = {}
+# 负缓存（非服务 id → 判定时刻）：TTL 5s——新服务对其后 ≤5s 即可见
+# （master 调度循环 10s 一扫，天然覆盖）；避免测试/陌生 id 每次路径解析
+# 都打一次 DB（正命中缓存初版的性能坑，2026-09-29 全量抓到）
+_neg_cache: dict[str, float] = {}
+_NEG_TTL_S = 5.0
 
 
 def resolve_service_def(service_id: str) -> Optional[str]:
     """service_id → agent_def_id；非服务（含表不存在）返回 None。
 
-    正命中走内存 dict（热路径，每次路径解析都会过这里）；未命中（新服务/
-    陌生 id）直查注册表一次并入缓存——新服务对其后第一次解析即生效。
+    三层快慢路径（热路径，每次路径解析都会过这里）：
+      1. 正命中内存 dict（服务→定义映射创建后不可变，永不失效）；
+      2. apps/{id}/config/app.yaml 存在 → 实例或 agent 定义目录，文件系统
+         事实即"不是服务"，一次 stat 零 DB——恢复实例侧原有性能（正命中
+         缓存初版所有实例 id 未命中都打一次 DB，全局变慢，曾让 e2e 测试
+         泄漏的后台 wake 线程时序漂移引发跨测试消费，2026-09-29 全量抓到）；
+      3. 陌生 id（服务）直查注册表一次并入缓存。
     """
     hit = _def_cache.get(service_id)
     if hit:
         return hit
+    import time as _time
+
+    neg = _neg_cache.get(service_id)
+    if neg is not None and (_time.time() - neg) < _NEG_TTL_S:
+        return None
+    override = os.environ.get("DIGITAL_LIFE_SERVICES_DB", "").strip()
+    apps_dir = (Path(override).parent.parent / "apps") if override else (_repo_root() / "apps")
+    try:
+        if (apps_dir / service_id / "config" / "app.yaml").exists():
+            _neg_cache[service_id] = _time.time()
+            return None
+    except OSError:
+        pass
     try:
         _ensure_schema()
         with _connect() as conn:
@@ -534,6 +557,7 @@ def resolve_service_def(service_id: str) -> Optional[str]:
         logger.warning("services registry lookup failed for %r: %s", service_id, exc)
         return None
     if row is None:
+        _neg_cache[service_id] = _time.time()
         return None
     _def_cache[service_id] = row["agent_def_id"]
     return row["agent_def_id"]
@@ -541,15 +565,17 @@ def resolve_service_def(service_id: str) -> Optional[str]:
 
 def reset_cache_for_test() -> None:
     """测试专用：清掉映射缓存（测试内多次建/换库后调用）。"""
-    global _def_cache
+    global _def_cache, _neg_cache
     _def_cache = {}
+    _neg_cache = {}
 
 
 def reset_for_test() -> None:
     """测试专用：连 schema 就绪标记一起重置（切换 DIGITAL_LIFE_SERVICES_DB 后调用）。"""
-    global _SCHEMA_READY, _def_cache
+    global _SCHEMA_READY, _def_cache, _neg_cache
     _SCHEMA_READY = False
     _def_cache = {}
+    _neg_cache = {}
 
 
 # ── 服务串行执行闸（DB lease） ─────────────────────────────────────────

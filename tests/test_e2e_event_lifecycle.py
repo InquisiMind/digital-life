@@ -61,6 +61,25 @@ def _make_test_env(instance_id: str = "test") -> tuple[str, Path]:
     return tmp, db_path
 
 
+def _wait_bg_wake_done(instance_id: str, timeout_s: float = 10.0) -> None:
+    """等该实例的后台 wake 线程收尾。
+
+    cron tick 起的 _bg_wake 不 join 的话会跨测试活着——它按"当前"全局
+    db_path_hook 去 pop/消费事件，曾经吃掉后续 debounce 测试刚 emit 的
+    msg1（2026-09-29 全量顺序污染排查定位）。断言先做完（像今天一样赢
+    起跑），再在这里等线程善终，消费落回本测试自己的库。
+    """
+    try:
+        from domain.lifecycle.scheduler import _is_wake_in_progress
+    except ImportError:
+        return
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if not _is_wake_in_progress(instance_id):
+            return
+        time.sleep(0.05)
+
+
 def _cleanup_test_env(tmp: str):
     shutil.rmtree(tmp, ignore_errors=True)
     if "DIGITAL_LIFE_INSTANCE_ID" in os.environ:
@@ -725,6 +744,8 @@ class TestFullL4TickPipeline:
                 timer_events = [e for e in events if e["kind"] == "timer"]
                 assert len(timer_events) >= 1, f"Expected timer event, got events: {[(e['kind'], e.get('payload', {})) for e in events]}"
                 assert timer_events[0]["payload"]["reason"] == "l4_test"
+                # 断言完成后再等 tick 起的后台 wake 线程善终（防跨测试消费）
+                _wait_bg_wake_done("test-l4-full")
             finally:
                 reset_instance_context(token)
         finally:
@@ -829,9 +850,19 @@ class TestRASDebounceRealScenario:
                 # 窗口=0 → 两条独立事件
                 assert eid1 != eid2
 
-                events = pop_due_events(limit=10)
-                gm = [e for e in events if e["kind"] == "group_message"]
-                assert len(gm) == 2
+                # 消费无关断言：从事件表证明"两条独立事件、未被合并"
+                # （早前测并发竞态：L4 测试泄漏的后台 wake 线程可能在此期间
+                # 消费掉其中一条——pop 视角会少一条，但"不合并"的语义以
+                # 事件表为准：两行、不同 event_id、各自完整 payload）
+                conn = sqlite3.connect(str(db_path))
+                rows = conn.execute(
+                    "SELECT event_id, payload FROM events"
+                    " WHERE kind='group_message' ORDER BY event_id"
+                ).fetchall()
+                conn.close()
+                assert [r[0] for r in rows] == [eid1, eid2]
+                assert json.loads(rows[0][1])["text"] == "msg1"
+                assert json.loads(rows[1][1])["text"] == "msg2"
             finally:
                 reset_instance_context(token)
         finally:

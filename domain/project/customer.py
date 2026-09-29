@@ -229,7 +229,7 @@ def resolve_workspace_path(service_id: str, relative: str, *, for_write: bool = 
     if for_write and not in_personal:
         raise WorkspaceEscapeError(
             f"写路径受限: {relative!r} 只能写个人区 members/{service_id[:12]}/…，"
-            "进共享区用 project_deliver 转正"
+            "进共享区用 deliver_to_shared 转正"
         )
     if not in_personal:
         shared = shared_dir(pid).resolve()

@@ -3,7 +3,7 @@
 工具面按模版角色收紧（services.tools_json，装配层应用）。原语：
   - 社交：sense_project_peers / send_chat_message（群 fan-out·同伴·客户三路由）
   - 文件：project_file_list / read / write（锚定项目目录；写限个人区）
-  - 转正：project_deliver（个人区 → shared/，显式交付）
+  - 转正：deliver_to_shared（个人区 → shared/，显式交付）
   - 待办：project_todo_create / list / update（可挂 parent 拆解）
 """
 
@@ -160,7 +160,7 @@ def _handle_project_file_write(args: Dict[str, Any], **_) -> str:
         return registry.tool_error(f"写文件失败: {exc}")
 
 
-def _handle_project_deliver(args: Dict[str, Any], **_) -> str:
+def _handle_deliver_to_shared(args: Dict[str, Any], **_) -> str:
     sid = _current_service_id()
     relpath = (args.get("path") or "").strip()
     if not relpath:
@@ -310,14 +310,14 @@ _reg(
 _reg(
     "project_file_write",
     "写文件到自己的个人区（草稿自由写）。path 相对项目根，形如 members/<我的id>/xxx.md；"
-    "通常只需写相对个人区的名字。写共享区必须走 project_deliver 转正。",
+    "通常只需写相对个人区的名字。写共享区必须走 deliver_to_shared 转正。",
     params={"path": {"type": "string", "description": "文件路径"},
             "content": {"type": "string", "description": "文件全文"}},
     required=["path", "content"],
     emoji="✍️",
 )
 _reg(
-    "project_deliver",
+    "deliver_to_shared",
     "把个人区的文件转正到共享区（显式交付动作，全员可读；shared 存最新、.versions 留历史）。"
     "path 为个人区内相对路径。",
     params={"path": {"type": "string", "description": "个人区内相对路径"}},

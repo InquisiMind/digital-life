@@ -14,8 +14,8 @@ h1{font-size:16px}h1 small{color:var(--td);font-weight:400;font-size:12px;margin
 .tabs{margin:18px 24px 0;display:flex;gap:8px}
 .tab{padding:8px 18px;border-radius:10px;font-size:14px;cursor:pointer;background:var(--card);border:1px solid var(--bd);font-weight:600;color:var(--td)}
 .tab.on{background:var(--primary);color:#fff;border-color:var(--primary)}
-.wrap{padding:18px 24px}
-table{width:100%;border-collapse:collapse;background:var(--card);border-radius:14px;overflow:hidden;box-shadow:var(--shadow);font-size:13px}
+.wrap{padding:18px 24px;overflow-x:auto}
+table{width:100%;min-width:960px;border-collapse:collapse;background:var(--card);border-radius:14px;overflow:hidden;box-shadow:var(--shadow);font-size:13px}
 th{background:var(--soft);color:var(--td);text-align:left;padding:10px 14px;font-size:12px;letter-spacing:.5px}
 td{padding:11px 14px;border-top:1px solid var(--bd);vertical-align:top}
 tr:hover td{background:#fafbfd}
@@ -29,7 +29,7 @@ tr:hover td{background:#fafbfd}
 .btn:hover{border-color:var(--primary);color:var(--primary)}
 .hint{color:var(--td);font-size:12px;margin:8px 2px}
 /* 抽屉 */
-#drawer{position:fixed;top:0;right:-460px;width:440px;height:100vh;background:var(--card);box-shadow:-12px 0 40px rgba(15,23,42,.12);transition:right .2s;z-index:20;display:flex;flex-direction:column}
+#drawer{position:fixed;top:0;right:-460px;width:min(440px,94vw);height:100vh;background:var(--card);box-shadow:-12px 0 40px rgba(15,23,42,.12);transition:right .2s;z-index:20;display:flex;flex-direction:column}
 #drawer.open{right:0}
 .dh{padding:16px 20px;border-bottom:1px solid var(--bd);display:flex;justify-content:space-between;align-items:center}
 .dh b{font-size:15px}.dh .x{cursor:pointer;color:var(--td);font-size:16px;border:none;background:none}
@@ -54,8 +54,8 @@ pre.doc{background:var(--soft);border:1px solid var(--bd);border-radius:10px;pad
   <span style="margin-left:auto" class="badge b-blue" id="sync">—</span>
 </header>
 <div class="tabs">
-  <div class="tab on" data-t="services">🤖 服务</div>
-  <div class="tab" data-t="projects">📁 项目</div>
+  <div class="tab on" data-t="services">服务</div>
+  <div class="tab" data-t="projects">项目</div>
 </div>
 <div class="wrap" id="main"></div>
 <div id="drawer"><div class="dh"><b id="d-title">详情</b><button class="x" onclick="closeDrawer()">✕</button></div><div class="db" id="d-body"></div></div>

@@ -364,6 +364,70 @@ async def handle_def_tools_put(request: web.Request) -> web.Response:
     return _json({"ok": False, "error": "缺少 tools 字段"}, 400)
 
 
+# ── 事件订阅与唤醒文案（registry prompt_template + 定义层 prompts_override） ──
+
+
+async def handle_def_events_get(request: web.Request) -> web.Response:
+    def_id = request.match_info["def_id"]
+    if not _def_exists(def_id):
+        return _json({"ok": False, "error": "定义不存在"}, 404)
+    from domain.lifecycle.event_registry import list_event_types
+
+    cfg = _load_def_cfg(def_id)
+    overrides = cfg.get("prompts_override") or {}
+    overrides = overrides if isinstance(overrides, dict) else {}
+    events = [
+        {
+            "type": t.type_id,
+            "description": t.description,
+            "default_prompt": t.prompt_template or "",
+            "override": str(overrides.get(t.type_id) or ""),
+        }
+        for t in sorted(list_event_types(), key=lambda x: x.type_id)
+    ]
+    return _json({"ok": True, "events": events})
+
+
+async def handle_def_events_put(request: web.Request) -> web.Response:
+    """PUT {prompts_override:{type:文案|null}} — 类型级唤醒文案覆盖（null/空=清除）。
+
+    引擎侧由 event_registry._load_instance_overrides 在 worker 启动时加载
+    （服务上下文二跳定义层 app.yaml）——同类型全部实例生效。
+    """
+    def_id = request.match_info["def_id"]
+    if not _def_exists(def_id):
+        return _json({"ok": False, "error": "定义不存在"}, 404)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    incoming = body.get("prompts_override")
+    if not isinstance(incoming, dict):
+        return _json({"ok": False, "error": "缺少 prompts_override 对象"}, 400)
+    from domain.lifecycle.event_registry import get_event_type
+
+    cfg = _load_def_cfg(def_id)
+    cur = cfg.get("prompts_override") or {}
+    cur = cur if isinstance(cur, dict) else {}
+    changed = []
+    for k, v in incoming.items():
+        if get_event_type(str(k)) is None:
+            return _json({"ok": False, "error": f"未知事件类型: {k}"}, 400)
+        text = str(v or "").strip()
+        if text:
+            cur[str(k)] = text
+        else:
+            cur.pop(str(k), None)
+        changed.append(str(k))
+    if cur:
+        cfg["prompts_override"] = cur
+    else:
+        cfg.pop("prompts_override", None)
+    _save_def_cfg(def_id, cfg)
+    logger.info("AGENT_DEF_EVENT_PROMPTS def=%s changed=%s", def_id, changed)
+    return _json({"ok": True, "prompts_override": cur})
+
+
 # ── 工具 schema（registry 全量） ─────────────────────────────────────────
 
 
@@ -609,6 +673,8 @@ def register_into(router: web.Application) -> None:
     router.router.add_post("/agent-defs/{def_id}/skills/upload", handle_def_skill_upload)
     router.router.add_get("/agent-defs/{def_id}/tools", handle_def_tools_get)
     router.router.add_put("/agent-defs/{def_id}/tools", handle_def_tools_put)
+    router.router.add_get("/agent-defs/{def_id}/events", handle_def_events_get)
+    router.router.add_put("/agent-defs/{def_id}/events", handle_def_events_put)
     router.router.add_get("/tools", handle_tools_list)
     router.router.add_post("/agent-defs", handle_def_create)
     router.router.add_get("/templates", handle_templates_list)

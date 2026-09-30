@@ -56,14 +56,16 @@ button{font-family:var(--font)}
 .btn.pri:hover{background:var(--pri-deep);color:#fff}
 .btn.danger{color:#c0353b;border-color:#e5b4b4}
 .btn.danger:hover{border-color:#c0353b;background:#fdf3f3;color:#c0353b}
-.list{flex:1;overflow-y:auto;padding:18px 24px}
-.rowcard{display:flex;align-items:center;gap:12px;padding:13px 16px;background:var(--bg);border:1px solid var(--bd);border-radius:var(--r-m);margin-bottom:8px;cursor:pointer;transition:all .12s;box-shadow:var(--sh-1)}
-.rowcard:hover{border-color:var(--pri);box-shadow:var(--sh-2)}
-.rowcard .ava{width:36px;height:36px;border-radius:10px;color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:650;flex:none}
-.rowcard b{font-size:14px;font-weight:600}
-.rowcard .meta{font-size:11.5px;color:var(--tx-3);margin-top:2px}
-.rowcard .side{margin-left:auto;display:flex;gap:14px;align-items:center;font-size:12px;color:var(--tx-3);white-space:nowrap}
-.stat b{font-size:14px;color:var(--tx);font-weight:600;display:block;text-align:right}
+.list{flex:1;overflow-y:auto;padding:20px 24px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+.rowcard{display:flex;flex-direction:column;gap:8px;padding:16px;background:var(--bg);border:1px solid var(--bd);border-radius:var(--r-l);cursor:pointer;transition:all .12s;box-shadow:var(--sh-1)}
+.rowcard:hover{border-color:var(--pri);box-shadow:var(--sh-2);transform:translateY(-1px)}
+.rowcard .top{display:flex;align-items:center;gap:10px}
+.rowcard .ava{width:38px;height:38px;border-radius:11px;color:#fff;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:650;flex:none}
+.rowcard b{font-size:14px;font-weight:600;line-height:1.3}
+.rowcard .meta{font-size:11.5px;color:var(--tx-3);line-height:1.5}
+.rowcard .side{display:flex;gap:10px;align-items:center;font-size:11px;color:var(--tx-3);flex-wrap:wrap}
+.stat b{font-size:13px;color:var(--tx);font-weight:650;display:block;text-align:left}
 .stat span{font-size:10.5px}
 .badge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600}
 .b-green{background:var(--ok-weak);color:var(--ok)}
@@ -196,34 +198,45 @@ document.querySelectorAll('.nav-item').forEach(n=>n.onclick=()=>{
   document.querySelectorAll('.nav-item').forEach(x=>x.classList.toggle('on',x===n));
   VIEW=n.dataset.v;closeDetail();renderList();});
 
+let LISTSIG='';
 async function renderList(){
-  const list=$('list');list.innerHTML='<div class="empty">加载中…</div>';
+  const list=$('list');
   $('mh-title').textContent={agents:'Agent 配置',templates:'项目模版'}[VIEW]||'';
   if(VIEW==='agents'){
-    $('mh-sub').textContent='Agent 类型（定义层）· 配置作用于同类型全部实例';
+    $('mh-sub').textContent='agent 类型（定义层）· 配置作用于同类型全部实例';
     $('mh-ops').innerHTML='';
     const [dd,sv]=await Promise.all([jget('/api/admin/defs'),jget('/api/admin/services')]);
     const svcs=sv.services||[];
-    list.innerHTML=(dd.defs||[]).map(x=>{
+    const sig='a'+JSON.stringify([dd.defs,svcs.map(x=>[x.agent_def_id,x.status,x.wakes])]);
+    if(sig===LISTSIG&&list.dataset.view==='agents'&&list.innerHTML)return; // 数据未变不重绘
+    LISTSIG=sig;list.dataset.view='agents';
+    list.innerHTML=`<div class="cards">`+(dd.defs||[]).map(x=>{
       const mine=svcs.filter(v=>v.agent_def_id===x.def_id);
-      const running=mine.filter(v=>v.status==='active').length;
+      const running=mine.filter(v=>v.status==='active');
+      const wakes=running.reduce((a,v)=>a+(v.wakes||0),0);
       return `<div class="rowcard" onclick="defDetail('${esc(x.def_id)}')">
-       <div class="ava" style="background:${avc(x.display_name)}">${esc((x.display_name||'?').slice(0,2))}</div>
-       <div><b>${esc(x.display_name)}</b><div class="meta">${esc(x.def_id)} · ${mine.length} 实例（${running} 运行）· 人设 / Skill / 工具面</div></div>
-       <div class="side"><button class="btn">配置 →</button></div></div>`;}).join('')
-      ||'<div class="empty">无 agent 定义</div>';
+       <div class="top"><div class="ava" style="background:${avc(x.display_name)}">${esc((x.display_name||'?').slice(0,2))}</div>
+        <div><b>${esc(x.display_name)}</b><div class="meta">${esc(x.def_id)}</div></div></div>
+       <div class="side">
+        <span>${mine.length} 实例 · ${running.length} 运行</span>${wakes?`<span>· ${wakes} 次唤醒</span>`:''}
+       </div>
+       <div class="meta">人设 · Skill · 工具 · 事件唤醒文案</div>
+      </div>`;}).join('')+`</div>`||'<div class="empty">还没有 agent 类型——右上新建</div>';
   }else if(VIEW==='templates'){
-    $('mh-sub').textContent='成员班子与预设任务骨架 · 建项目时实例化';
+    $('mh-sub').textContent='成员班子与任务编排 · 建项目时实例化';
     $('mh-ops').innerHTML='';
-    const d=await jget('/api/admin/templates');
-    if(!d.templates.length){list.innerHTML='<div class="empty">暂无模版</div>';return;}
-    const pl=await jget('/api/admin/projects');
-    list.innerHTML=d.templates.map(t=>{
+    const [d,pl]=await Promise.all([jget('/api/admin/templates'),jget('/api/admin/projects')]);
+    const sig='t'+JSON.stringify([d.templates,pl.projects.map(p=>[p.template_id,p.status])]);
+    if(sig===LISTSIG&&list.dataset.view==='templates'&&list.innerHTML)return;
+    LISTSIG=sig;list.dataset.view='templates';
+    list.innerHTML=`<div class="cards">`+d.templates.map(t=>{
       const n=(pl.projects||[]).filter(p=>p.template_id===t.id).length;
       return `<div class="rowcard" onclick="tplDetail('${esc(t.id)}')">
-       <div class="ava" style="background:linear-gradient(135deg,#4d7cff,#b078ec)">T</div>
-       <div><b>${esc(t.name)}</b><div class="meta">${esc(t.id)}.yaml · ${(t.size/1000).toFixed(1)} KB · 已实例化 ${n} 个项目</div></div>
-       <div class="side"><button class="btn">配置 →</button></div></div>`;}).join('');
+       <div class="top"><div class="ava" style="background:linear-gradient(135deg,#4d7cff,#b078ec)">模</div>
+        <div><b>${esc(t.name)}</b><div class="meta">${esc(t.id)}.yaml</div></div></div>
+       <div class="side"><span>已实例化 ${n} 个项目</span></div>
+       <div class="meta">成员班子 · 任务编排（前置解锁）</div>
+      </div>`;}).join('')+`</div>`||'<div class="empty">暂无模版</div>';
   }
 }
 
@@ -238,11 +251,12 @@ async function defDetail(defId){
       instances:(sv.services||[]).filter(x=>x.agent_def_id===defId),tab:'overview'};
   $('rp-title').innerHTML=`<b>${esc(pf.name||defId)}</b><small>${esc(defId)} · ${AG.instances.length} 运行实例 · 配置作用于全部实例</small>`;
   $('rp-ops').innerHTML='';
+  AG.tab='basic';AG.editing=false;
   $('rp-body').innerHTML=`<div class="cfg-tabs">
-    <button data-t="overview" class="on" onclick="setAgentTab('overview')">概览 · 运行实例</button>
-    <button data-t="basic" onclick="setAgentTab('basic')">基本信息</button>
+    <button data-t="basic" class="on" onclick="setAgentTab('basic')">基本信息</button>
     <button data-t="skill" onclick="setAgentTab('skill')">Skill</button>
     <button data-t="tool" onclick="setAgentTab('tool')">Tool · 默认工具面</button>
+    <button data-t="events" onclick="setAgentTab('events')">事件 · 唤醒文案</button>
    </div><div id="ag-tab"></div>`;
   $('rpage').classList.add('open');
   renderAgentTab();
@@ -252,40 +266,71 @@ function setAgentTab(t){AG.tab=t;
   renderAgentTab();}
 function renderAgentTab(){
   const el=$('ag-tab');if(!el)return;
-  if(AG.tab==='overview'){
-   const ins=AG.instances, running=ins.filter(x=>x.status==='active');
-   el.innerHTML=`
-   <h6>运行统计</h6>
-   <div class="cfg-card">
-    <div class="stat"><b>${ins.length}</b><span>服务实例</span></div>
-    <div class="stat"><b>${running.length}</b><span>运行中</span></div>
-    <div class="stat"><b>${running.reduce((a,x)=>a+(x.wakes||0),0)}</b><span>累计唤醒</span></div>
-    <div class="stat"><b>${running.reduce((a,x)=>a+(x.messages||0),0)}</b><span>消息</span></div>
-    <div class="stat"><b>${running.reduce((a,x)=>a+(x.open_events||0),0)}</b><span>积压</span></div>
-   </div>
-   <div class="cfg-note">实例由项目模版实例化产生并归属各项目运行，逐次唤醒的思考与工具过程在客户页点成员头像查看。</div>`;
-  }else if(AG.tab==='basic'){
+  if(AG.tab==='basic'){
    const p=AG.profile;
-   el.innerHTML=`
-   <div class="cfg-note" style="margin:0 0 10px">作用域：<b>agent 类型</b>——保存即对同定义的全部实例（含未来新建）生效。本类型下各实例的差异化仅来自项目模版角色（名称 / 工具面收紧）。</div>
-   <h6>名称与头像</h6>
-   <div class="cfg-card"><span class="cfg-mono" style="flex:none">名称</span><input class="cfg-in" id="cfg-name" value="${esc(p.name)}"></div>
-   <div class="cfg-card"><span class="cfg-mono" style="flex:none">头像</span><input class="cfg-in" id="cfg-avatar" value="${esc(p.avatar)}" placeholder="emoji 或 #色值，如 🧭 / #7a5cff"><span style="width:30px;height:30px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:650;color:#fff;background:${p.avatar&&!p.avatar.startsWith('#')?'linear-gradient(135deg,#4d7cff,#b078ec)':(p.avatar||avc(p.name))}">${esc(p.avatar&&!p.avatar.startsWith('#')?p.avatar:(p.name||'A').slice(0,2))}</span></div>
-   <h6>人设（persona · 身份层）</h6>
-   <div class="cfg-note" style="margin:0 0 6px">定义层共享人设，直接编辑生效于全部实例。</div>
-   <textarea class="cfg-area" id="cfg-persona" rows="10">${esc(p.persona)}</textarea>
-   <h6>附加指令（追加到系统提示词尾部）</h6>
-   <div class="cfg-note" style="margin:0 0 6px">类型级追加段，留空 = 无附加。</div>
-   <textarea class="cfg-area" id="cfg-extra" rows="4" placeholder="例如：输出务必分点、结论先行…">${esc(p.extra_prompt)}</textarea>
-   <h6>生命周期段落（L4 · 高级）</h6>
-   <div class="cfg-note" style="margin:0 0 6px">来源 <span class="mk-src ${p.l4&&p.l4.source==='overlay'?'src-overlay':'src-system'}">${p.l4&&p.l4.source==='overlay'?'类型覆盖':'引擎默认'}</span>：躯体状态机与工具习惯段。清空保存 = 回默认。</div>
-   <textarea class="cfg-area" id="cfg-l4" rows="8" style="font-size:12px">${esc(p.l4?p.l4.content:'')}</textarea>
-   <div style="margin-top:14px"><button class="btn pri" id="cfg-save" onclick="saveProfile()">保存（全部实例生效）</button></div>`;
-  }else if(AG.tab==='skill'){
+   if(!AG.editing){
+    // 查看态：渲染好的卡片
+    el.innerHTML=`
+    <div class="cfg-card" style="align-items:flex-start">
+     <div style="width:52px;height:52px;border-radius:14px;flex:none;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:650;color:#fff;background:${p.avatar&&!p.avatar.startsWith('#')?'linear-gradient(135deg,#4d7cff,#b078ec)':(p.avatar||avc(p.name))}">${esc(p.avatar&&!p.avatar.startsWith('#')?p.avatar:(p.name||'A').slice(0,2))}</div>
+     <div style="min-width:0"><b style="font-size:16px">${esc(p.name)}</b>
+      <div class="cfg-mono" style="margin-top:3px">${esc(AG.defId)} · 作用于同类型 ${AG.instances.length} 个实例</div></div>
+     <button class="btn pri" style="margin-left:auto;flex:none" onclick="AG.editing=true;renderAgentTab()">编辑</button>
+    </div>
+    <h6>人设（persona · 身份层）</h6>
+    <div class="cfg-area" style="min-height:0;max-height:340px;overflow:auto;white-space:pre-wrap;background:var(--bg-subtle)">${esc(p.persona||'（空）')}</div>
+    <h6>生命周期段落（L4 · ${p.l4&&p.l4.source==='overlay'?'类型覆盖':'引擎默认'}）</h6>
+    <details><summary class="cfg-mono" style="cursor:pointer">展开查看引擎段落全文</summary>
+     <div class="cfg-area" style="min-height:0;max-height:280px;overflow:auto;white-space:pre-wrap;background:var(--bg-subtle);font-size:12px;margin-top:6px">${esc(p.l4?p.l4.content:'')}</div></details>`;
+   }else{
+    // 编辑态
+    el.innerHTML=`
+    <button class="btn" onclick="AG.editing=false;renderAgentTab()">← 取消</button>
+    <h6>名称与头像</h6>
+    <div class="cfg-card"><span class="cfg-mono" style="flex:none">名称</span><input class="cfg-in" id="cfg-name" value="${esc(p.name)}"></div>
+    <div class="cfg-card"><span class="cfg-mono" style="flex:none">头像</span><input class="cfg-in" id="cfg-avatar" value="${esc(p.avatar)}" placeholder="emoji 或 #色值，如 🧭 / #7a5cff"><span style="width:30px;height:30px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:650;color:#fff;background:${p.avatar&&!p.avatar.startsWith('#')?'linear-gradient(135deg,#4d7cff,#b078ec)':(p.avatar||avc(p.name))}">${esc(p.avatar&&!p.avatar.startsWith('#')?p.avatar:(p.name||'A').slice(0,2))}</span></div>
+    <h6>人设（persona · 身份层）</h6>
+    <textarea class="cfg-area" id="cfg-persona" rows="12">${esc(p.persona)}</textarea>
+    <h6>生命周期段落（L4 · 慎改）</h6>
+    <div class="cfg-note" style="margin:0 0 6px">当前来源 <span class="mk-src ${p.l4&&p.l4.source==='overlay'?'src-overlay':'src-system'}">${p.l4&&p.l4.source==='overlay'?'类型覆盖':'引擎默认'}</span>，清空保存 = 回默认。</div>
+    <textarea class="cfg-area" id="cfg-l4" rows="8" style="font-size:12px">${esc(p.l4?p.l4.content:'')}</textarea>
+    <div style="margin-top:14px"><button class="btn pri" id="cfg-save" onclick="saveProfile()">保存（全部实例生效）</button></div>`;
+   }
+  }else if(AG.tab==='skill'){  }else if(AG.tab==='skill'){
    el.innerHTML='<div id="skill-list" class="cfg-note">加载中…</div>';loadSkills();
-  }else{
+  }else if(AG.tab==='tool'){
    el.innerHTML='<div id="tool-tab" class="cfg-note">加载中…</div>';loadDefTools();
+  }else if(AG.tab==='events'){
+   el.innerHTML='<div id="ev-tab" class="cfg-note">加载中…</div>';loadDefEvents();
   }
+}
+async function loadDefEvents(){
+  const d=await jget(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/events`);
+  AG.events=d.events||[];
+  const el=$('ev-tab');if(!el)return;
+  el.innerHTML=`
+  <div class="cfg-note" style="margin:0 0 8px">每类事件唤醒 agent 时注入的提示文案（{xxx} 为运行时变量，保留即可）。覆盖写入类型层，worker 下次唤醒生效；订阅本身在项目模版角色上配置。</div>
+  ${AG.events.map(ev=>`<div class="skill-row">
+   <div class="sr-h" onclick="this.parentElement.classList.toggle('open')">
+    <b>${esc(ev.type)}</b>
+    ${ev.override?'<span class="mk-src src-overlay">已覆盖</span>':''}
+    <span class="d">${esc(ev.description)}</span>
+   </div>
+   <div class="sr-b"><div style="padding:10px 12px;border-top:1px solid var(--bd)">
+    <div class="cfg-mono" style="margin-bottom:4px">默认文案：${esc(ev.default_prompt.split('\n')[0])}</div>
+    <textarea class="cfg-area" data-ev="${esc(ev.type)}" rows="5" placeholder="留空 = 用默认文案">${esc(ev.override)}</textarea>
+   </div></div>
+  </div>`).join('')}
+  <div style="margin-top:12px"><button class="btn pri" onclick="saveDefEvents()">保存事件文案</button></div>`;
+}
+async function saveDefEvents(){
+  const overrides={};
+  document.querySelectorAll('#ev-tab textarea[data-ev]').forEach(t=>{
+    overrides[t.dataset.ev]=t.value.trim()||null;});
+  const r=await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/events`,{
+   method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompts_override:overrides})});
+  const d=await r.json();
+  if(d.ok)alert('已保存（该类型实例下次唤醒生效）');else alert(d.error||'保存失败');
 }
 async function toggleSvc(sid,status){
   await fetch(`/api/admin/services/${sid}/status`,{method:'POST',headers:{'Content-Type':'application/json'},
@@ -297,12 +342,14 @@ async function saveProfile(){
   try{
    const r=await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/profile`,{method:'PUT',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({name:$('cfg-name').value.trim(),avatar:$('cfg-avatar').value.trim(),
-     persona:$('cfg-persona').value,extra_prompt:$('cfg-extra').value,l4:$('cfg-l4')?$('cfg-l4').value:''})});
+     persona:$('cfg-persona').value,l4:$('cfg-l4')?$('cfg-l4').value:''})});
    const d=await r.json();
    if(!d.ok)throw new Error(d.error||'未知错误');
    AG.profile=await jget(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/profile`);
    $('rp-title').querySelector('b').textContent=AG.profile.name||AG.defId;
-   btn.textContent='已保存 ✓';setTimeout(()=>{btn.textContent='保存（全部实例生效）';btn.disabled=false;},1500);
+   btn.textContent='已保存 ✓';
+   AG.editing=false;renderAgentTab();
+   setTimeout(()=>{},0);
    renderList();
   }catch(e){btn.textContent='保存失败：'+e.message;btn.disabled=false;}
 }
@@ -466,7 +513,7 @@ async function createAgentDef(){
 let TPL={mode:'form'};
 async function tplDetail(tid){
   const [d,defs]=await Promise.all([jget('/api/admin/templates/'+tid),jget('/api/admin/defs')]);
-  TPL={id:tid,p:d.parsed||{},defs:defs.defs||[],mode:'form',raw:d.raw};
+  TPL={id:tid,p:d.parsed||{},defs:defs.defs||[],mode:'form',raw:d.raw};FLOW={sel:-1,drag:null,pos:{}};
   $('rp-title').innerHTML=`<b>模版 · ${esc((d.parsed&&d.parsed.name)||tid)}</b><small>定义层 · 角色班子与任务编排 · 建项目时生效</small>`;
   $('rp-ops').innerHTML=`<button class="btn" onclick="TPL.mode=TPL.mode==='form'?'raw':'form';renderTpl()">${TPL.mode==='form'?'源码模式':'表单模式'}</button>
    <button class="btn pri" onclick="tplSaveStructured()">保存</button>`;
@@ -561,37 +608,75 @@ function tplDelTodo(i){
     if(Array.isArray(t.after))t.after=t.after.filter(x=>x!==title);});
   renderTpl();
 }
+let FLOW={sel:-1,drag:null,pos:{}};   // 拖拽位置/选中节点（会话态，不入 yaml）
 function renderTplFlow(){
   const el=$('tpl-flow');if(!el)return;
   const ts=(TPL.p.initial_todos||[]);
-  if(ts.length<2){el.innerHTML='';return;}
+  if(ts.length<1){el.innerHTML='';return;}
   const idx={};ts.forEach((t,i)=>idx[(t.title||'').trim()]=i);
+  // 默认层次布局；被拖过的节点用自由位置
   const layer=Array(ts.length).fill(-1);
   const depth=t=>{const i=idx[(t.title||'').trim()];
     if(layer[i]>=0)return layer[i];
     const deps=(t.after||[]).map(d=>idx[d]).filter(x=>x!==undefined);
-    layer[i]=deps.length?Math.max(...deps.map(d=>{if(d===i)return 0;return depth(ts[d])+1;})):0;
+    layer[i]=deps.length?Math.max(...deps.map(d=>d===i?0:depth(ts[d])+1)):0;
     return layer[i];};
   ts.forEach(depth);
   const W=210,H=46,GX=46,GY=22;
-  const cols={};ts.forEach((t,i)=>{const l=layer[i];cols[l]=cols[l]||[];cols[l].push(i);});
-  const maxCol=Math.max(...Object.values(cols).map(a=>a.length));
-  const svgW=Object.keys(cols).length*(W+GX)+GX, svgH=maxCol*(H+GY)+GY;
+  const cols={};ts.forEach((t,i)=>{(cols[layer[i]]=cols[layer[i]]||[]).push(i);});
+  const maxCol=Math.max(1,...Object.values(cols).map(a=>a.length));
+  const svgW=Math.max(Object.keys(cols).length*(W+GX)+GX,320), svgH=maxCol*(H+GY)+GY+8;
   const pos={};
-  Object.entries(cols).forEach(([l,arr])=>arr.forEach((ti,row)=>{pos[ti]={x:GX+Number(l)*(W+GX),y:GY+row*(H+GY)+(maxCol-arr.length)*(H+GY)/2};}));
-  let svg=`<svg viewBox="0 0 ${svgW} ${svgH}" style="width:100%;max-width:900px;height:auto;background:var(--bg-subtle);border:1px solid var(--bd);border-radius:10px">`;
+  Object.entries(cols).forEach(([l,arr])=>arr.forEach((ti,row)=>{
+    pos[ti]=FLOW.pos[ti]||{x:GX+Number(l)*(W+GX),y:GY+row*(H+GY)+(maxCol-arr.length)*(H+GY)/2};}));
+  let svg=`<svg id="flow-svg" viewBox="0 0 ${svgW} ${svgH}" style="width:100%;max-width:960px;height:auto;background:var(--bg-subtle);border:1px solid var(--bd);border-radius:10px;touch-action:none">`;
   svg+=`<defs><marker id="ar" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#9095a6"/></marker></defs>`;
   ts.forEach((t,i)=>{(t.after||[]).forEach(d=>{const di=idx[d];if(di===undefined||di===i||!pos[di]||!pos[i])return;
     const a=pos[di],b=pos[i];
     svg+=`<line x1="${a.x+W}" y1="${a.y+H/2}" x2="${b.x-4}" y2="${b.y+H/2}" stroke="#9095a6" stroke-width="1.4" marker-end="url(#ar)"/>`;});});
-  ts.forEach((t,i)=>{const q=pos[i];if(!q)return;
-    const ms=t.kind==='milestone';
-    svg+=`<rect x="${q.x}" y="${q.y}" width="${W}" height="${H}" rx="9" fill="${ms?'#f6f0ff':'#fff'}" stroke="${ms?'#b79cf2':'#dfe0e8'}" stroke-width="${ms?1.6:1}"/>`;
-    const label=(t.title||'未命名').slice(0,15)+(t.title&&t.title.length>15?'…':'');
-    svg+=`<text x="${q.x+12}" y="${q.y+H/2+1}" dominant-baseline="middle" font-size="12" fill="#1b1c22" font-weight="${ms?650:500}">${ms?'🚩 ':''}${esc(label)}</text>`;
-    if(t.assign_role)svg+=`<text x="${q.x+W-10}" y="${q.y+H-9}" text-anchor="end" font-size="9.5" fill="#9095a6">${esc(t.assign_role)}</text>`;});
+  ts.forEach((t,i)=>{const q=pos[i];FLOW.pos[i]=q;
+    const ms=t.kind==='milestone', sel=FLOW.sel===i;
+    svg+=`<g data-i="${i}" style="cursor:grab">
+     <rect x="${q.x}" y="${q.y}" width="${W}" height="${H}" rx="9" fill="${sel?'#eef3ff':ms?'#f6f0ff':'#fff'}" stroke="${sel?'#2f6bff':ms?'#b79cf2':'#dfe0e8'}" stroke-width="${sel?2:(ms?1.6:1)}"/>
+     <text x="${q.x+12}" y="${q.y+H/2+1}" dominant-baseline="middle" font-size="12" fill="#1b1c22" font-weight="${ms?650:500}">${ms?'🚩 ':''}${esc((t.title||'未命名').slice(0,15))}</text>
+     ${t.assign_role?`<text x="${q.x+W-10}" y="${q.y+H-9}" text-anchor="end" font-size="9.5" fill="#9095a6">${esc(t.assign_role)}</text>`:''}
+    </g>`;});
   svg+='</svg>';
-  el.innerHTML='<div class="cfg-mono" style="margin-bottom:4px">编排预览（左→右为执行顺序）</div>'+svg;
+  el.innerHTML='<div class="cfg-mono" style="margin-bottom:4px">编排画布 · 拖动节点自由布局；点两个节点连依赖（后点的以前置并入）'+(FLOW.sel>=0?'——已选中，再点一个目标节点':'')+'</div>'+svg;
+  bindFlowEvents(svgW,svgH,W,H);
+}
+function bindFlowEvents(vw,vh,W,H){
+  const svg=document.getElementById('flow-svg');if(!svg)return;
+  const toSvg=e=>{const r=svg.getBoundingClientRect();
+   return {x:(e.clientX-r.left)*(vw/r.width),y:(e.clientY-r.top)*(vh/r.height)};};
+  let moved=false;
+  svg.addEventListener('pointerdown',e=>{
+   const g=e.target.closest('g[data-i]');if(!g)return;
+   const i=+g.dataset.i,p=FLOW.pos[i],m=toSvg(e);
+   moved=false;FLOW.drag={i,dx:p.x-m.x,dy:p.y-m.y};e.preventDefault();});
+  svg.addEventListener('pointermove',e=>{
+   if(!FLOW.drag)return;const m=toSvg(e),d=FLOW.drag;
+   if(!moved)moved=true;
+   FLOW.pos[d.i]={x:Math.max(4,d.dx+m.x),y:Math.max(4,d.dy+m.y)};
+   renderTplFlow();});
+  svg.addEventListener('pointerup',()=>{
+   if(FLOW.drag&&!moved){
+    const i=FLOW.drag.i;
+    if(FLOW.sel===-1){FLOW.sel=i;}
+    else if(FLOW.sel===i){FLOW.sel=-1;}
+    else{
+     // 后点的节点把选中节点并入前置
+     const tgt=TPL.p.initial_todos[i], srcT=(TPL.p.initial_todos[FLOW.sel].title||'').trim();
+     const title=(tgt.title||'').trim();
+     tgt.after=Array.isArray(tgt.after)?[...tgt.after]:[];
+     if(tgt.after.includes(srcT)) tgt.after=tgt.after.filter(x=>x!==srcT);
+     else if(srcT!==title) tgt.after.push(srcT);
+     if(!tgt.after.length)tgt.after=undefined;
+     FLOW.sel=-1;
+     renderTpl();return;
+    }
+   }
+   FLOW.drag=null;renderTplFlow();});
 }
 async function tplSaveStructured(){
   if(TPL.mode==='raw'){

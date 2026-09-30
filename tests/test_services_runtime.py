@@ -577,19 +577,24 @@ def test_chat_message_routing(service_env, project_template):
     )
     assert eid > 0
 
-    # PM 在群里派活（提及"乙"）→ 研究员收 group_message 事件 + messages 落库
-    r = send_chat_message(a["service_id"], group_chat_id(pid), "乙，请研究行业")
-    assert r["ok"] and r["kind"] == "group" and b["service_id"] in r["recipients"]
+    # 默认（无策略）：群消息唤醒全部成员（历史行为不变）
+    gid = group_chat_id(pid)
     db_b = service_env / "apps" / "echo-def" / "services" / b["service_id"] / "data" / "state.db"
+    r = send_chat_message(a["service_id"], gid, "请研究行业")
+    assert r["ok"] and r["kind"] == "group" and b["service_id"] in r["recipients"]
     conn = sqlite3.connect(str(db_b))
     ev = conn.execute(
         "SELECT kind, payload FROM events WHERE kind='group_message' ORDER BY event_id DESC LIMIT 1"
     ).fetchone()
     assert ev and "请研究行业" in ev[1]
+    assert "recent_context" in ev[1]  # payload 携带窗口上下文
     conn.close()
 
-    # 未提及对方角色名的群消息：消息落库（全员可见）但不产生唤醒事件
-    r_silent = send_chat_message(a["service_id"], group_chat_id(pid), "记个备忘：预算还没定")
+    # 联系人级策略：乙对本群设"仅被提及才唤醒"→ 未提及的群消息静默落库
+    from domain.service.social import set_wake_policy
+
+    set_wake_policy(b["service_id"], gid, True)
+    r_silent = send_chat_message(a["service_id"], gid, "记个备忘：预算还没定")
     assert r_silent["ok"]
     db_b2 = sqlite3.connect(str(db_b))
     ev2 = db_b2.execute(
@@ -597,7 +602,10 @@ def test_chat_message_routing(service_env, project_template):
         " AND payload LIKE '%预算还没定%'"
     ).fetchone()[0]
     db_b2.close()
-    assert ev2 == 0  # 未被提及 → 静默（下次醒来从窗口上下文补看）
+    assert ev2 == 0  # 策略命中 → 静默
+    # 提及乙的消息仍唤醒
+    r_mention = send_chat_message(a["service_id"], gid, "乙，看下预算")
+    assert b["service_id"] in r_mention["recipients"]
 
     # 研究员私聊 PM（chat_id=对方 service_id）
     r2 = send_chat_message(b["service_id"], a["service_id"], "底稿好了")

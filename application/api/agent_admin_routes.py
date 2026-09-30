@@ -474,6 +474,52 @@ async def handle_def_subscriptions_put(request: web.Request) -> web.Response:
     return _json({"ok": True, "instances_updated": n})
 
 
+# ── 联系人/窗口唤醒策略（服务实例私有；仅@唤醒等） ────────────────────────
+
+
+async def handle_wake_policy_get(request: web.Request) -> web.Response:
+    sid = request.match_info["service_id"]
+    from domain.service.social import _wake_policy_mention_only  # noqa: F401 — 复用同表
+
+    from infrastructure.config import resolve_runtime_dir
+
+    db = resolve_runtime_dir(sid) / "data" / "state.db"
+    out = []
+    if db.exists():
+        import sqlite3
+
+        conn = sqlite3.connect(str(db), timeout=3.0)
+        try:
+            rows = conn.execute(
+                "SELECT chat_id, mention_only, updated_at FROM wake_policies"
+            ).fetchall()
+            out = [{"chat_id": r[0], "mention_only": bool(r[1]), "updated_at": r[2] or ""}
+                   for r in rows]
+        except sqlite3.Error:
+            out = []
+        finally:
+            conn.close()
+    return _json({"ok": True, "policies": out})
+
+
+async def handle_wake_policy_put(request: web.Request) -> web.Response:
+    """PUT {chat_id, mention_only} — 窗口级唤醒策略（仅被提及才唤醒）。"""
+    sid = request.match_info["service_id"]
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    chat_id = str(body.get("chat_id") or "").strip()
+    if not chat_id:
+        return _json({"ok": False, "error": "chat_id 必填"}, 400)
+    from domain.service.social import set_wake_policy
+
+    set_wake_policy(sid, chat_id, bool(body.get("mention_only")))
+    logger.info("WAKE_POLICY_SET service=%s chat=%s mention_only=%s",
+                sid[:12], chat_id[:20], bool(body.get("mention_only")))
+    return _json({"ok": True})
+
+
 # ── 事件订阅与唤醒文案（registry prompt_template + 定义层 prompts_override） ──
 
 
@@ -788,6 +834,8 @@ def register_into(router: web.Application) -> None:
     router.router.add_get("/agent-defs/{def_id}/avatar", handle_def_avatar_get)
     router.router.add_get("/agent-defs/{def_id}/subscriptions", handle_def_subscriptions_get)
     router.router.add_put("/agent-defs/{def_id}/subscriptions", handle_def_subscriptions_put)
+    router.router.add_get("/services/{service_id}/wake-policies", handle_wake_policy_get)
+    router.router.add_put("/services/{service_id}/wake-policies", handle_wake_policy_put)
     router.router.add_get("/agent-defs/{def_id}/events", handle_def_events_get)
     router.router.add_put("/agent-defs/{def_id}/events", handle_def_events_put)
     router.router.add_get("/tools", handle_tools_list)

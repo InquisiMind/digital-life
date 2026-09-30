@@ -118,6 +118,82 @@ def _member_role(service_id: str) -> str:
     return svc.get("display_name") or service_id[:12]
 
 
+def _wake_policy_mention_only(service_id: str, chat_id: str) -> bool:
+    """该服务对该窗口（联系人）的唤醒策略：True=仅被提及才唤醒。
+
+    策略表在服务私有库 state.db（wake_policies）——无行/读失败 = False
+    （全部唤醒，与历史行为一致）。
+    """
+    try:
+        from infrastructure.config import resolve_runtime_dir
+
+        db = resolve_runtime_dir(service_id) / "data" / "state.db"
+        if not db.exists():
+            return False
+        import sqlite3
+
+        conn = sqlite3.connect(str(db), timeout=3.0)
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS wake_policies ("
+                " chat_id TEXT PRIMARY KEY, mention_only INTEGER DEFAULT 0,"
+                " updated_at TEXT DEFAULT '')"
+            )
+            row = conn.execute(
+                "SELECT mention_only FROM wake_policies WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+            return bool(row and row[0])
+        finally:
+            conn.close()
+    except Exception:
+        return False
+
+
+def set_wake_policy(service_id: str, chat_id: str, mention_only: bool) -> bool:
+    """写入窗口唤醒策略（联系人级配置入口用）。"""
+    from infrastructure.config import resolve_runtime_dir
+
+    db = resolve_runtime_dir(service_id) / "data" / "state.db"
+    import sqlite3
+    from domain.lifecycle.clock import now_iso
+
+    conn = sqlite3.connect(str(db), timeout=3.0)
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS wake_policies ("
+            " chat_id TEXT PRIMARY KEY, mention_only INTEGER DEFAULT 0,"
+            " updated_at TEXT DEFAULT '')"
+        )
+        conn.execute(
+            "INSERT INTO wake_policies (chat_id, mention_only, updated_at)"
+            " VALUES (?, ?, ?) ON CONFLICT(chat_id) DO UPDATE SET"
+            " mention_only = excluded.mention_only, updated_at = excluded.updated_at",
+            (chat_id, 1 if mention_only else 0, now_iso()),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def _recent_chat_context(service_id: str, chat_id: str, limit: int = 8) -> str:
+    """该服务视角下窗口最近对话（旧→新），供唤醒时补上下文。
+
+    最后一条即当前消息本身——剔除。空窗口返回空串（模板渲染为空段）。
+    """
+    try:
+        from domain.messages import list_messages
+
+        recent = list_messages(chat_id, limit=limit + 1)[:-1]
+        if not recent:
+            return ""
+        lines = [f"{m.get('sender_name') or '?'}：{(m.get('text') or '')[:120]}" for m in recent]
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def send_chat_message(sender_service_id: str, chat_id: str, text: str,
                       msg_id: str = "") -> dict:
     """服务侧统一发消息入口。返回 {ok, kind, recipients}。
@@ -150,14 +226,15 @@ def send_chat_message(sender_service_id: str, chat_id: str, text: str,
                     source=GROUP_PLATFORM,
                     sender_kind="bot",
                 )
-            # 唤醒过滤：消息落库全员可见，但只唤醒被提及的成员
-            # （文本含其角色名，或"全体/所有人/大家"）——其余成员下次醒来
-            # 从群历史上下文补看，避免每条群话全员唤醒
+            # 唤醒策略（联系人级，可配置）：消息落库全员可见；该窗口若配置
+            # mention_only=1 则仅被提及者（文本含其角色名 / 全体/所有人/大家）
+            # 产生唤醒事件，其余静默——无策略（默认）= 全部唤醒，保持现状。
             peer_role = (m.get("display_name") or "").strip()
             mentioned = (
                 peer_role and peer_role in text
             ) or any(kw in text for kw in ("全体", "所有人", "大家"))
-            if inserted and mentioned:
+            _mention_only = _wake_policy_mention_only(peer, chat_id)
+            if inserted and (mentioned or not _mention_only):
                 emit_to_service(
                     peer,
                     "group_message",
@@ -169,6 +246,7 @@ def send_chat_message(sender_service_id: str, chat_id: str, text: str,
                         "sender_name": sender_role,
                         "sender_position": sender_role,
                         "mentions_bot": True,
+                        "recent_context": _recent_chat_context(peer, chat_id),
                     },
                 )
                 recipients.append(peer)
@@ -265,5 +343,6 @@ def customer_message_to_pm(pm_service_id: str, customer: dict, text: str) -> int
             "sender_id": cid,
             "sender_name": customer.get("name") or "客户",
             "customer_message": True,
+            "recent_context": _recent_chat_context(pm_service_id, chat),
         },
     )

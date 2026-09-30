@@ -709,6 +709,69 @@ def test_todo_tools_and_tool_face(service_env, project_template):
         assert '"updated": true' in upd.lower()
     finally:
         reset_current_instance_id(token)
+
+    # 待办涉及通知（todo_assigned 事件）：别人指派/更新/代完成 → 负责人收事件；
+    # 自己给自己建 → 不通知
+    def _todo_events(sid):
+        from infrastructure.config import resolve_runtime_dir
+
+        db = resolve_runtime_dir(sid) / "data" / "state.db"
+        if not db.exists():
+            return []
+        conn = sqlite3.connect(str(db))
+        try:
+            has = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='events'"
+            ).fetchone()
+            if not has:
+                return []
+            return [
+                json.loads(p).get("action") or ""
+                for k, p in conn.execute(
+                    "SELECT kind, payload FROM events WHERE kind='todo_assigned'"
+                )
+            ]
+        finally:
+            conn.close()
+
+    # 乙订阅 todo_assigned（默认订阅闸会拦未订阅类型——闸本身正确）
+    from infrastructure.persistence import services_registry as _sr
+
+    _sr.update_service_fields(b["service_id"],
+                              subscriptions=["message", "group_message", "todo_assigned"])
+    token = set_current_instance_id(a["service_id"])
+    try:
+        # ① 甲给乙建 → 乙收"指派给你"，甲（创建者）无
+        t1 = collab._handle_project_todo_create(
+            {"title": "新调研", "assignee_id": b["service_id"]}
+        )
+        assert "指派给你" in _todo_events(b["service_id"])
+        assert _todo_events(a["service_id"]) == []
+        # ② 甲更新乙的任务内容 → 乙再收"内容被更新"
+        collab._handle_project_todo_update(
+            {"todo_id": json.loads(t1)["todo_id"], "detail": "补充要求"}
+        )
+        assert "内容被更新" in _todo_events(b["service_id"])
+        # ③ 甲代完成乙的任务 → 乙收"已由他人标记完成"
+        collab._handle_project_todo_update(
+            {"todo_id": json.loads(t1)["todo_id"], "status": "done"}
+        )
+        assert any("他人标记完成" in x for x in _todo_events(b["service_id"]))
+        # ④ 甲给自己建 → 自己不通知
+        collab._handle_project_todo_create(
+            {"title": "自查", "assignee_id": a["service_id"]}
+        )
+        assert _todo_events(a["service_id"]) == []
+        # ⑤ 甲把自建任务转派给乙 → 乙收"转派给你"
+        t2 = collab._handle_project_todo_create(
+            {"title": "复审", "assignee_id": a["service_id"]}
+        )
+        collab._handle_project_todo_update(
+            {"todo_id": json.loads(t2)["todo_id"], "assignee_id": b["service_id"]}
+        )
+        assert "转派给你" in _todo_events(b["service_id"])
+    finally:
+        reset_current_instance_id(token)
     # PM 工具面不含 todo_update → 研究员来关初始待办
     token = set_current_instance_id(b["service_id"])
     try:

@@ -818,4 +818,4 @@ event_types:
     debounce_window_s: 30
     merge_policy: latest
     consumption_policy: on_trigger
-    wake_prompt: "📌 有新任务指派给你。「{from_role}」在项目「{project_name}」给你建了任务：\n\n任务：{title}\n说明：{detail}\n\n先确认理解（不懂就在项目群里问），然后开工；完成后把待办置 done。"
+    wake_prompt: "📌 任务动态（{action}）。「{from_role}」在项目「{project_name}」：\n\n任务：{title}\n说明：{detail}\n\n涉及你——确认理解后行动（不懂就在项目群里问）；若是指派给你，请开工并在完成后把待办置 done；若是他人代完成且无异议，继续手头事即可。"

@@ -219,6 +219,7 @@ def _handle_project_todo_create(args: Dict[str, Any], **_) -> str:
                 "assign_role": peer.get("display_name") or "",
                 "from_role": project.get("pm_id") == sid and "项目经理" or (services_registry.lookup_service(sid) or {}).get("display_name", ""),
                 "project_name": project.get("name", ""),
+                "action": "指派给你",
             })
         except Exception as _exc:  # noqa: BLE001 — 通知失败不拦创建
             pass
@@ -265,6 +266,8 @@ def _handle_project_todo_update(args: Dict[str, Any], **_) -> str:
     status = (args.get("status") or "").strip() or None
     if status and status not in ("open", "in_progress", "done"):
         return registry.tool_error("status 取值: open / in_progress / done")
+    before_assignee = todo.get("assignee_id") or ""
+    new_assignee = (args.get("assignee_id") or "").strip() or before_assignee
     ok = services_registry.update_project_todo(
         todo_id,
         title=(args.get("title") or "").strip() or None,
@@ -273,6 +276,38 @@ def _handle_project_todo_update(args: Dict[str, Any], **_) -> str:
         status=status,
         actor=sid,
     )
+    # 涉及通知：别人转派给我 / 别人更新我的任务 / 别人代完成我的任务 →
+    # 通知当前（或新）负责人；自己给自己创建/更新不通知；别人的任务不动与我无关
+    try:
+        target = new_assignee or ""
+        if target and target != sid:
+            after = services_registry.get_project_todo(todo_id) or {}
+            if before_assignee and before_assignee != target and before_assignee != sid:
+                pass  # 转派离开原负责人：低频，暂不通知原负责人
+            action = None
+            if new_assignee != before_assignee:
+                action = "转派给你"
+            elif status == "done" and (todo.get("status") or "") != "done":
+                action = "已由他人标记完成（如与你的认知不符请在群里说明）"
+            elif any((args.get(k) or "").strip() for k in ("title", "detail")):
+                action = "内容被更新"
+            if action:
+                from domain.service import emit_to_service
+                from domain.service.registry import get_service as _get_svc
+
+                peer = _get_svc(target) or {}
+                me = (services_registry.lookup_service(sid) or {}).get("display_name") or ""
+                emit_to_service(target, "todo_assigned", {
+                    "todo_id": todo_id,
+                    "title": (after.get("title") or todo.get("title") or ""),
+                    "detail": (after.get("detail") or "")[:300],
+                    "assign_role": peer.get("display_name") or "",
+                    "from_role": me,
+                    "project_name": project.get("name") or "",
+                    "action": action,
+                })
+    except Exception:  # noqa: BLE001 — 通知失败不拦更新
+        pass
     return json.dumps({"updated": ok, "todo_id": todo_id}, ensure_ascii=False)
 
 

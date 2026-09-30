@@ -88,6 +88,10 @@ button{font-family:var(--font)}
 .msg-a .hd span{font-size:10.5px;color:var(--tx-3)}
 .msg-a .bub{background:var(--bg-subtle);border:1px solid var(--bd);border-radius:4px 14px 14px 14px;padding:10px 15px}
 .msg-a .body,.msg-a .bub .body{font-size:14px;line-height:1.8}
+.msg-a .bub .body>:last-child{margin-bottom:0}
+.msg-a .bub .body h1,.msg-a .bub .body h2,.msg-a .bub .body h3{font-size:14.5px;margin:.8em 0 .35em}
+.msg-a .bub .body code{background:var(--bg-sunken);border-radius:5px;padding:1px 6px;font-size:.92em}
+.msg-a .bub .body blockquote{border-left:3px solid var(--bd-2);padding-left:10px;margin:.5em 0;color:var(--tx-2)}
 .doc .body p{margin:0 0 .7em}.doc .body p:last-child{margin:0}
 .doc .body h3{font-size:14.5px;margin:1em 0 .4em;font-weight:650}
 .doc .body ul{margin:.3em 0 .8em;padding-left:1.3em}.doc .body li{margin:.25em 0}
@@ -240,6 +244,7 @@ button{font-family:var(--font)}
 }
 </style>
 <script src="/customer/vendor/marked.min.js"></script>
+<script>if(window.marked){marked.setOptions({mangle:false,headerIds:false});}</script>
 </head>
 <body>
 <div class="veil" id="veil" onclick="toggleRail()"></div>
@@ -254,7 +259,6 @@ button{font-family:var(--font)}
     <div class="rail-cap">咨询记录</div>
     <div class="rail-list" id="hist"></div>
     <div class="rail-foot">
-      <div class="rail-cfg" onclick="promptName()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>称呼：${myName?'<b id="who-name">'+esc(myName)+'</b>':'<span style="color:var(--tx-3)">点击设置</span>'}</span></div>
       <div class="rail-cfg danger" onclick="resetAll()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>清空本地会话</div>
     </div>
   </aside>
@@ -278,7 +282,7 @@ button{font-family:var(--font)}
 
     <div class="pane on" id="p-chat">
       <div class="scroll"><div class="col" id="chat"></div></div>
-      <div class="comp-wrap">
+      <div class="comp-wrap" id="comp-wrap">
         <div class="comp">
           <button class="attach" id="attach" title="添加附件" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.05 12.25 20.2a6 6 0 0 1-8.49-8.49l8.57-8.57a4 4 0 1 1 5.66 5.66l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
           <input type="file" id="file-in" style="display:none" multiple>
@@ -333,8 +337,10 @@ const svg=(n,w=15)=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" 
 const avc=n=>{let s=0;for(const c of(n||'x'))s+=c.charCodeAt(0);return AVA[s%AVA.length]};
 const MD=(window.marked?window.marked.parse:null);
 function md(t){
- if(MD){try{return MD(esc(t));}catch(e){}}
- return mdFallback(t);}
+ // 预处理：中文序号顿号（1、2、）不是合法 md 列表 → 归一为 "1."；含全角空格行首清理
+ const norm=(t||'').replace(/(^|\n)\s*(\d+)[、.．]\s*/g,'$1$2. ').replace(/(^|\n)\s*\d+\.\s*\n/g,'\n');
+ if(MD){try{return MD(norm);}catch(e){}}
+ return mdFallback(norm);}
 function mdFallback(t){let h=esc(t);
  h=h.replace(/^####?\s*(.+)$/gm,'<h3>$1</h3>').replace(/^##\s+(.+)$/gm,'<h2>$1</h2>').replace(/^#\s+(.+)$/gm,'<h1>$1</h1>');
  h=h.replace(/^---+$/gm,'<hr>');
@@ -375,7 +381,6 @@ function newSession(){cid='';projSel='';projCache=[];localStorage.removeItem('yl
  $('tab-team').style.display='none';$('tab-files').style.display='none';$('stage').style.display='none';
  setPane('chat');welcome();renderHist();loadHead();}
 function resetAll(){localStorage.clear();location.reload();}
-function promptName(){const n=prompt('您的称呼',myName||'');if(n){myName=n.trim();nameEl.value=myName;localStorage.setItem('yl_name',myName);$('who-name').textContent=myName||'未设置';}}
 
 
 function loadHead(){
@@ -419,12 +424,10 @@ function welcome(){chatEl.innerHTML=`<div class="hero">
  <h1>一句话，启动一支<em>咨询团队</em></h1>
  <div class="sub">告诉我们您的企业和想解决的问题——合伙人受理、双线研究、独立质控、结论汇报，全程实时可见。</div>
  <div class="hero-form">
-  <div class="comp" style="box-shadow:none">
-   <textarea id="hf-text" style="background:var(--bg)" placeholder="一句话描述您的企业和想解决的问题…"></textarea>
-   <button class="send" id="hf-go" title="开始"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
-  </div>
+  <textarea id="hf-text" placeholder="一句话描述您的企业和想解决的问题…（Enter 开始）"></textarea>
+  <button class="hf-btn" id="hf-go">开始咨询</button>
  </div>
- <div class="chips" style="margin-top:22px">${EXAMPLES.map((e,i)=>`<div class="chip" onclick="useEx(${i})">${svg(e[0],16)}<span>${e[1]}</span></div>`).join('')}</div>
+ <div class="chips sm">${EXAMPLES.map((e,i)=>`<div class="chip" onclick="useEx(${i})">${svg(e[0],14)}<span>${e[1]}</span></div>`).join('')}</div>
  <div class="tip">团队通常在半小时内完成一轮完整分析 · 资料可之后随时补传</div></div>`;
  $('hf-go').onclick=()=>{const t=$('hf-text').value.trim();
   if(!t){$('hf-text').focus();return;}
@@ -568,13 +571,16 @@ $('file-in').onchange=async()=>{
  $('file-in').value='';poll();pollFiles(true);
 };
 const _origPoll=poll;
-poll=async function(){await _origPoll();$('attach').style.display=cid?'flex':'none';
- $('comp-note').textContent=cid?'可随时补充材料（📎 附件）':'首次发言将自动组建咨询团队';};
+poll=async function(){await _origPoll();
+ const hasMsg=chatEl.children.length&&!chatEl.querySelector('.hero');
+ $('comp-wrap').style.display=hasMsg?'block':'none';
+ $('attach').style.display=cid&&hasMsg?'flex':'none';
+ $('comp-note').textContent=hasMsg?'可随时补充材料（📎 附件）':'';};
 
 /* ── 发送 ── */
 sendBtn.onclick=async()=>{
  const text=textEl.value.trim();if(!text)return;
- const customer_name=myName||'客户';
+ const customer_name='用户';
  chatEl.innerHTML='';
  bubble({from:'customer',sender_name:customer_name,text});typing();sendBtn.disabled=true;
  try{const r=await fetch('/api/customer/sessions',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -587,7 +593,6 @@ sendBtn.onclick=async()=>{
 textEl.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendBtn.click();}});
 
 /* ── init ── */
-$('who-name').textContent=myName||'未设置';
 if(cid){loadProjects();poll();pollComm();pollTeam();}else{welcome();}
 setInterval(()=>{poll();pollComm();pollTeam();},5000);
 </script>

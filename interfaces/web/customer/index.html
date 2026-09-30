@@ -425,7 +425,7 @@ let sig={chat:'',act:'',files:''};let filePath='';let rawMode=false;let projCach
 const AVA=['#2f6bff','#0e9f6e','#c2790a','#7a5cff','#e0526d'];
 const MY_NAME='lan';  // 个人中心演示名；历史消息展示与新消息发送统一用它
 
-const esc=s=>(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+const esc=s=>(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 const cleanId=t=>esc(t).replace(/\b(svc|ptodo|prj|cust)-[0-9a-f]{6,}\b/g,'').replace(/\s{2,}/g,' ');
 const icoN={
  assign:'<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',

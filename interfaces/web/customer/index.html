@@ -644,8 +644,8 @@ async function pollComm(force){
    }else{
     el.innerHTML='<div class="grp-cap">团队内部群 · 只读直播（' + d.messages.length + ' 条）· 点消息可看该成员的执行过程</div>'+
      d.messages.map(m=>{
-      const me=m.from==='self';
-      return `<div class="gm ${me?'me':''}" onclick="msgToTrace('${esc(m.sender_name)}', this)" data-mtext="${esc(m.text.slice(0,60))}">
+      // 观察者是客户：团队成员（含 PM）全部左侧，self/peer 是 PM 库的收发方向，不适用这里
+      return `<div class="gm" onclick="msgToTrace('${esc(m.sender_name)}', this)" data-mtext="${esc(m.text.slice(0,60))}">
        <div class="a" style="background:${avc(m.sender_name)}">${esc((m.sender_name||'?').slice(0,2))}</div>
        <div class="c"><div class="h"><b>${esc(m.sender_name)}</b><span>${esc(m.ts)}</span></div>
        <div class="b">${docify(trust(md(m.text)))}</div></div></div>`;}).join('');

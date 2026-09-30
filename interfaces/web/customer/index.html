@@ -116,12 +116,12 @@ button{font-family:var(--font)}
 .scroll::-webkit-scrollbar-thumb{background:var(--bd-2);border-radius:4px;border:2px solid var(--bg)}
 
 /* 对话流 */
-.col{max-width:760px;margin:0 auto;padding:26px 24px 18px;display:flex;flex-direction:column;gap:24px}
+.col{max-width:920px;margin:0 auto;padding:26px 24px 18px;display:flex;flex-direction:column;gap:24px}
 .msg-u{align-self:flex-end;max-width:82%;display:flex;flex-direction:column;align-items:flex-end;gap:5px}
 .msg-u .who{font-size:11px;color:var(--tx-3)}
 .msg-u .bub{background:var(--pri-weak);padding:11px 16px;border-radius:16px 16px 4px 16px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
 .msg-a{display:flex;gap:10px;max-width:92%}
-.msg-a .ava{flex:none;width:30px;height:30px;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:650;margin-top:1px;cursor:pointer}
+.msg-a .ava{flex:none;width:34px;height:34px;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:650;margin-top:1px;cursor:pointer}
 .msg-a .c{min-width:0}
 .msg-a .hd{display:flex;align-items:baseline;gap:7px;margin:2px 0 4px 2px}
 .msg-a .hd b{font-size:12.5px;font-weight:600}
@@ -183,7 +183,7 @@ button{font-family:var(--font)}
 .hf-file svg{width:13px;height:13px;color:var(--tx-3);flex:none}
 /* composer：输入在上，工具条在下（＋附件 / 发送），附件不是输入框的左邻 */
 .comp-wrap{flex:none;padding:8px 20px 14px;background:linear-gradient(transparent,var(--bg) 34%)}
-.comp{max-width:760px;margin:0 auto;border:1px solid var(--bd-2);border-radius:var(--r-l);padding:10px 14px 8px;display:flex;flex-direction:column;gap:2px;transition:all .15s;box-shadow:var(--sh-1)}
+.comp{max-width:920px;margin:0 auto;border:1px solid var(--bd-2);border-radius:var(--r-l);padding:10px 14px 8px;display:flex;flex-direction:column;gap:2px;transition:all .15s;box-shadow:var(--sh-1)}
 .comp:focus-within{border-color:var(--pri);box-shadow:0 0 0 3px var(--pri-weak)}
 .comp textarea{width:100%;border:none;background:transparent;resize:none;font-family:var(--font);font-size:14px;line-height:1.6;padding:2px;max-height:120px}
 .comp textarea:focus{outline:none}
@@ -195,14 +195,14 @@ button{font-family:var(--font)}
 .comp .send:hover{background:var(--pri-deep)}
 .comp .send:disabled{background:var(--bd-2);cursor:default}
 .comp .send svg{width:15px;height:15px}
-.foot-note{max-width:760px;margin:7px auto 0;text-align:center;font-size:11px;color:var(--tx-3)}
+.foot-note{max-width:920px;margin:7px auto 0;text-align:center;font-size:11px;color:var(--tx-3)}
 .up-ing{font-size:11px;color:var(--pri)}
 .fchip{display:inline-flex;align-items:center;gap:4px;padding:1px 8px;border-radius:6px;background:var(--pri-weak);color:var(--pri-deep);font-size:11.5px;font-weight:550;cursor:pointer;vertical-align:1px;margin:0 2px}
 .fchip:hover{background:#dfe8ff}
 .fchip svg{color:var(--pri);flex:none}
 
 /* 团队动态 */
-.steps{display:flex;align-items:flex-start;padding:22px 24px 12px;max-width:760px;margin:0 auto;width:100%}
+.steps{display:flex;align-items:flex-start;padding:22px 24px 12px;max-width:920px;margin:0 auto;width:100%}
 .stp{display:flex;flex-direction:column;align-items:center;gap:6px;flex:1;min-width:0}
 .stp .c{width:26px;height:26px;border-radius:50%;border:1.5px solid var(--bd-2);background:var(--bg);display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--tx-3)}
 .stp .c svg{width:12px;height:12px}
@@ -213,7 +213,7 @@ button{font-family:var(--font)}
 .stp.done span{color:var(--tx-2)}
 .stp-ln{flex:1;height:1.5px;background:var(--bd);margin-top:13px;min-width:14px}
 .stp-ln.done{background:var(--ok)}
-.tl{max-width:760px;margin:0 auto;padding:4px 24px 26px;width:100%}
+.tl{max-width:920px;margin:0 auto;padding:4px 24px 26px;width:100%}
 .tl-head{display:flex;align-items:center;justify-content:space-between;margin:6px 0 12px}
 .tl-head .h{font-size:13px;font-weight:650;color:var(--tx-2)}
 .rawbtn{border:none;background:transparent;font-size:12px;color:var(--tx-3);cursor:pointer;padding:4px 8px;border-radius:7px}
@@ -241,7 +241,7 @@ button{font-family:var(--font)}
 @keyframes shim{to{background-position:-200% 0}}
 
 /* 交付物 */
-.fwrap{max-width:760px;margin:0 auto;padding:18px 24px 26px;width:100%}
+.fwrap{max-width:920px;margin:0 auto;padding:18px 24px 26px;width:100%}
 .crumb{font-size:12.5px;color:var(--tx-3);margin-bottom:12px;display:flex;align-items:center;gap:6px}
 .crumb span{cursor:pointer}.crumb span:hover{color:var(--pri)}
 .crumb .cur{color:var(--tx);font-weight:550}
@@ -276,13 +276,20 @@ button{font-family:var(--font)}
 .dw-todo.done .tt{color:var(--tx-3);text-decoration:line-through}
 /* ── 唤醒轨迹 ── */
 .trc{border:1px solid var(--bd);border-radius:var(--r-m);margin-bottom:10px;background:var(--bg);overflow:hidden}
-.trc-h{display:flex;align-items:center;gap:8px;padding:10px 12px;font-size:12.5px;font-weight:600;cursor:pointer;background:var(--bg-subtle);color:var(--tx-2);transition:background .12s}
+.trc-h{display:flex;align-items:center;gap:8px;padding:10px 12px;font-size:12.5px;font-weight:600;cursor:pointer;background:var(--bg-subtle);color:var(--tx-2);transition:background .12s;flex-wrap:wrap}
 .trc-h:hover{background:var(--bg-sunken)}
 .trc-h svg{color:var(--pri);flex:none}
 .trc-h .t{margin-left:auto;font-weight:400;font-size:11px;color:var(--tx-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wt{flex:none;font-size:10.5px;font-weight:650;padding:1px 7px;border-radius:5px}
+.wt-msg{background:var(--pri-weak);color:var(--pri-deep)}
+.wt-grp{background:#e8f7f0;color:var(--ok)}
+.wt-timer{background:var(--warn-weak);color:var(--warn)}
+.wt-stall{background:#fdecec;color:#c0353b}
+.wt-mid{background:#f1edff;color:#7a5cff}
+.wt-wake{background:var(--bg-sunken);color:var(--tx-2)}
 .trc-b{display:none;padding:10px 12px;border-top:1px solid var(--bd)}
 .trc.open .trc-b{display:block}
-.ctx{background:var(--bg-sunken);border-radius:var(--r-s);padding:9px 12px;font-size:12px;color:var(--tx-2);line-height:1.7;margin-bottom:10px}
+.ctx{background:var(--bg-sunken);border-top:1px solid var(--bd);padding:9px 12px;font-size:12px;color:var(--tx-2);line-height:1.7}
 .ctx b{color:var(--tx);font-size:11.5px}
 .step{display:flex;gap:9px;padding:8px 0;border-bottom:1px dashed var(--bd)}
 .step:last-child{border-bottom:none}
@@ -296,10 +303,10 @@ button{font-family:var(--font)}
 .step .x{flex:1;min-width:0;font-size:12.5px;line-height:1.7;color:var(--tx-2);word-break:break-word;white-space:pre-wrap}
 .st-say .x{color:var(--tx)}
 /* ── 群聊（团队沟通） ── */
-.grp{max-width:820px;margin:0 auto;padding:22px 24px 26px;display:flex;flex-direction:column;gap:16px}
+.grp{max-width:940px;margin:0 auto;padding:22px 24px 26px;display:flex;flex-direction:column;gap:16px}
 .grp-cap{font-size:12px;color:var(--tx-3);text-align:center;padding-bottom:4px}
 .gm{display:flex;gap:10px}
-.gm .a{flex:none;width:30px;height:30px;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:650;margin-top:1px;cursor:pointer}
+.gm .a{flex:none;width:34px;height:34px;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:650;margin-top:1px;cursor:pointer}
 .gm .c{max-width:86%;min-width:0}
 .gm .h{display:flex;align-items:baseline;gap:7px;margin-bottom:3px}
 .gm .h b{font-size:12.5px;font-weight:600}
@@ -692,11 +699,16 @@ function dlDoc(name){const t=document.getElementById('fdoc-body').innerText;cons
 
 /* ── 抽屉：成员明细 ── */
 function closeDrawer(){$('drawer').classList.remove('open')}
-async function msgToTrace(role, el){
- const txt=el.getAttribute('data-mtext')||'';
- await openMember(role, txt);
-}
-async function openMember(role, locateText){
+async function msgToTrace(role){await openMember(role);}
+function wakeTag(r){
+ if(!r)return['唤醒','wt-wake'];
+ if(/^message$|^message|客户|需求|追问/.test(r)&&!/group/.test(r))return['客户消息','wt-msg'];
+ if(/群|group/.test(r))return['群消息','wt-grp'];
+ if(/定时|闹钟|timer/.test(r))return['定时器','wt-timer'];
+ if(/停滞|催办|stall/.test(r))return['停滞催办','wt-stall'];
+ if(/中途|midsession/.test(r))return['会话中途','wt-mid'];
+ return[r.slice(0,8),'wt-wake'];}
+async function openMember(role){
  const sid=memberSid[role];if(!sid)return;
  const d=await jget(`/api/customer/sessions/${cid}/members/${sid}`);
  if(!d.ok)return;
@@ -706,27 +718,17 @@ async function openMember(role, locateText){
  const K={think:['思考','st-think'],tool:['工具','st-tool'],tool_result:['结果','st-result'],result:['结果','st-result'],say:['发言','st-say'],rest:['休息','st-rest'],input:['输入','st-input']};
  $('dw-body').innerHTML=`<h6>负责任务（${mine.length}）</h6>`+
   (mine.map(t=>`<div class="dw-todo ${t.status}"><div class="bx"></div><div class="tt">${esc(t.title)}</div></div>`).join('')||'<div style="font-size:12px;color:var(--tx-3);padding:4px 8px">暂无分派任务</div>')+
-  `<h6>执行过程（最近 ${d.traces.length} 次唤醒 · 点开看思考与工具调用）</h6>`+
-  (d.traces.map(t=>`<div class="trc">
-    <div class="trc-h" onclick="this.parentElement.classList.toggle('open')">${svg('spark',13)} 唤醒 #${t.seq} · ${esc(t.reason)}<span class="t">${esc(t.at)} · ${t.steps.length} 步</span></div>
+  `<h6>执行过程（最近 ${d.traces.length} 次唤醒）</h6>
+  <div class="cfg-note" style="margin:-4px 0 8px">事件上下文常显；思考/工具/发言步骤默认收起，点唤醒条展开。长期记忆自动召回：未启用（服务型暂不提供实体记忆召回）。</div>`+
+  (d.traces.map(t=>{const[tagName,tagCls]=wakeTag(t.reason);return `<div class="trc">
+    <div class="trc-h" onclick="this.parentElement.classList.toggle('open')">${svg('spark',13)}<span class="wt ${tagCls}">${tagName}</span>唤醒 #${t.seq}${t.reason?` · ${esc(t.reason)}`:''}<span class="t">${esc(t.at)} · ${t.steps.length} 步</span></div>
+    ${t.context?`<div class="ctx"><b>唤醒时看到的输入（事件与上下文）：</b><br>${md(t.context.slice(0,400))}</div>`:''}
     <div class="trc-b">
-     ${t.context?`<div class="ctx"><b>唤醒时看到的输入（事件与上下文）：</b><br>${md(t.context.slice(0,400))}</div>`:''}
      ${t.steps.map(st=>{const[k,cls]=K[st.kind]||['步骤','st-input'];
       const body=st.kind==='tool'||st.kind==='rest'?esc(st.text):md(st.text);
       return `<div class="step ${cls}"><div class="k">${k}</div><div class="x">${body}</div></div>`;}).join('')}
-    </div></div>`).join('')||'<div style="font-size:12px;color:var(--tx-3);padding:4px 8px">尚无唤醒</div>');
+    </div></div>`}).join('')||'<div style="font-size:12px;color:var(--tx-3);padding:4px 8px">尚无唤醒</div>');
  $('drawer').classList.add('open');
- // 定位：找到含该消息文本的唤醒轨迹 → 展开并滚动
- if(locateText){
-  // 轨迹侧是 md 渲染后的纯文本，比对前两边都归一化去 md 符号与空白
-  const norm=t=>(t||'').replace(/[*#>`~_]/g,'').replace(/\s+/g,'');
-  const key=norm(locateText).slice(0,20);
-  const trcs=[...document.querySelectorAll('.trc')];
-  // 客户窗口的最终回复走工具通道，轨迹发言步骤里没有原文——定位不到就展开最新唤醒兜底
-  const hit=trcs.find(t=>norm(t.textContent).includes(key))||trcs[0];
-  if(hit){hit.classList.add('open');
-   setTimeout(()=>hit.scrollIntoView({behavior:'smooth',block:'start'}),120);}
- }
 }
 
 /* ── 右侧整页（项目配置 / 个人中心；执行轨迹才走浮窗抽屉） ── */

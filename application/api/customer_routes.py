@@ -326,7 +326,8 @@ def _member_trace(sid: str, limit_wakes: int = 3) -> list[dict]:
         except (TypeError, ValueError):
             at = ""
         trace: dict = {
-            "seq": seq, "reason": (m.get("reason") or "")[:30], "at": at,
+            # 引擎把唤醒事件 kind 存在 meta.trigger_type（wake_digital_life 的 reason 实参）
+            "seq": seq, "reason": (m.get("trigger_type") or m.get("reason") or "")[:30], "at": at,
             "context": "", "steps": [],
         }
         if session_id and sdb.exists():

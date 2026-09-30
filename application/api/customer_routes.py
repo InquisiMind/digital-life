@@ -477,11 +477,17 @@ async def _serve_page(_request: web.Request) -> web.Response:
 
 
 def add_customer_routes(app: web.Application) -> None:
+    from infrastructure.config import get_project_root
+
     app.add_subapp("/api/customer/", _ROUTER)
     app.router.add_get("/customer", _serve_page)
     app.router.add_static(
         "/customer/vendor/",
         get_vendor_dir(),
+    )
+    app.router.add_static(
+        "/customer/assets/",
+        get_project_root() / "interfaces" / "web" / "customer" / "assets",
     )
 
 

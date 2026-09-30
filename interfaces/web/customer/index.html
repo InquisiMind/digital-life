@@ -29,11 +29,8 @@ button{font-family:var(--font)}
 .drawer.open{width:340px}
 
 /* ══ 左侧栏 ══ */
-.rail-brand{display:flex;align-items:center;gap:10px;padding:16px 16px 12px}
-.mark{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,#2f6bff,#0e9f6e);display:flex;align-items:center;justify-content:center;flex:none}
-.mark svg{width:15px;height:15px}
-.rail-brand b{font-size:14.5px;letter-spacing:.2px}
-.rail-brand small{display:block;font-size:11px;color:var(--tx-3);font-weight:400}
+.rail-brand{display:flex;align-items:center;padding:16px 16px 12px}
+.rail-brand img{height:32px;width:auto;display:block}
 .new-btn{margin:4px 14px 10px;display:flex;align-items:center;gap:8px;border:1px solid var(--bd-2);background:var(--bg);border-radius:var(--r-m);padding:9px 12px;font-size:13.5px;font-weight:550;color:var(--tx);cursor:pointer;transition:all .15s;box-shadow:var(--sh-1)}
 .new-btn:hover{border-color:var(--pri);color:var(--pri)}
 .new-btn svg{width:15px;height:15px}
@@ -127,8 +124,7 @@ button{font-family:var(--font)}
 @keyframes tp{0%,80%,100%{opacity:.25;transform:translateY(0)}40%{opacity:1;transform:translateY(-2px)}}
 /* hero */
 .hero{margin:auto;max-width:620px;text-align:center;padding:24px}
-.hero .mark{width:52px;height:52px;border-radius:15px;margin:0 auto 18px;box-shadow:var(--sh-2)}
-.hero .mark svg{width:26px;height:26px}
+.hero-logo{height:56px;width:auto;margin:0 auto 22px;display:block}
 .hero h1{font-size:28px;font-weight:700;letter-spacing:.3px;line-height:1.3}
 .hero h1 em{font-style:normal;color:var(--pri)}
 .hero .sub{color:var(--tx-2);font-size:14px;line-height:1.8;margin:13px 0 24px}
@@ -320,8 +316,7 @@ button{font-family:var(--font)}
   <!-- 左：会话历史 rail -->
   <aside class="rail" id="rail-el">
     <div class="rail-brand">
-      <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.8L20 11l-6.1 2.2L12 19l-1.9-5.8L4 11l6.1-2.2z"/></svg></div>
-      <div><b>元理 · 战略咨询</b><small>AI 咨询团队工作台</small></div>
+      <img src="/customer/assets/brand-lockup.png" alt="元理智能 YOOLCC.AI">
     </div>
     <button class="new-btn" onclick="newSession()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>新的咨询</button>
     <div class="rail-cap">咨询记录</div>
@@ -501,7 +496,7 @@ function typing(){chatEl.insertAdjacentHTML('beforeend',`<div class="msg-a" id="
  <div class="ava" style="background:#8f91a3">…</div><div><div class="typing"><i></i><i></i><i></i> 团队工作中</div></div></div>`);}
 let heroFiles=[];
 function welcome(){chatEl.innerHTML=`<div class="hero">
- <div class="mark">${svg('spark',26)}</div>
+ <img class="hero-logo" src="/customer/assets/brand-anim.gif" alt="元理智能">
  <h1>一句话，启动一支<em>咨询团队</em></h1>
  <div class="sub">告诉我们您的企业和想解决的问题——合伙人受理、双线研究、独立质控、结论汇报，全程实时可见。</div>
  <div class="hero-form">

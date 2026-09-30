@@ -375,10 +375,39 @@ async def handle_project_watchdog(request: web.Request) -> web.Response:
     return _json({"ok": ok})
 
 
+async def handle_project_config(request: web.Request) -> web.Response:
+    """PATCH /api/admin/projects/{pid}/config — 项目改名/归档（客户页 rail 管理）。
+
+    归档=软删除：客户会话列表过滤 archived，服务台仍可见可恢复。
+    """
+    pid = request.match_info["project_id"]
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    from infrastructure.persistence import services_registry
+
+    if services_registry.lookup_project(pid) is None:
+        return _json({"ok": False, "error": "项目不存在"}, 404)
+    kw = {}
+    name = str(body.get("name") or "").strip()
+    if name:
+        kw["name"] = name[:60]
+    status = str(body.get("status") or "").strip()
+    if status in ("active", "archived"):
+        kw["status"] = status
+    if not kw:
+        return _json({"ok": False, "error": "无可更新字段（name / status）"}, 400)
+    services_registry.update_project_fields(pid, **kw)
+    logger.info("PROJECT_CONFIG_UPDATED %s fields=%s", pid[:12], list(kw))
+    return _json({"ok": True, "project": services_registry.lookup_project(pid)})
+
+
 _ROUTER.router.add_get("/defs", handle_list_defs)
 _ROUTER.router.add_patch("/services/{service_id}/config", handle_service_config)
 _ROUTER.router.add_post("/projects/{project_id}/members", handle_add_member)
 _ROUTER.router.add_post("/projects/{project_id}/watchdog", handle_project_watchdog)
+_ROUTER.router.add_patch("/projects/{project_id}/config", handle_project_config)
 
 
 async def _serve_page(_request: web.Request) -> web.Response:

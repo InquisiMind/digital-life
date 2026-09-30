@@ -30,20 +30,30 @@ button{font-family:var(--font)}
 
 /* ══ 左侧栏 ══ */
 .rail-brand{display:flex;align-items:center;padding:14px 16px 10px}
-.rail-brand img{height:44px;width:auto;display:block}
+.rail-brand img{height:56px;width:auto;display:block}
 .new-btn{margin:4px 14px 10px;display:flex;align-items:center;gap:8px;border:1px solid var(--bd-2);background:var(--bg);border-radius:var(--r-m);padding:9px 12px;font-size:13.5px;font-weight:550;color:var(--tx);cursor:pointer;transition:all .15s;box-shadow:var(--sh-1)}
 .new-btn:hover{border-color:var(--pri);color:var(--pri)}
 .new-btn svg{width:15px;height:15px}
 .rail-cap{font-size:11px;color:var(--tx-3);letter-spacing:1.5px;font-weight:600;padding:8px 18px 6px}
 .rail-list{flex:1;overflow-y:auto;padding:0 10px}
-.sess{padding:10px 12px;border-radius:var(--r-m);cursor:pointer;transition:background .12s;margin-bottom:2px}
+.sess{padding:10px 12px;border-radius:var(--r-m);cursor:pointer;transition:background .12s;margin-bottom:2px;position:relative}
 .sess:hover{background:var(--bg-sunken)}
 .sess.on{background:var(--pri-weak)}
-.sess .t{font-size:13px;font-weight:550;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.sess .t{font-size:13px;font-weight:550;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;padding-right:18px}
 .sess.on .t{color:var(--pri-deep)}
 .sess .m{display:flex;gap:6px;align-items:center;margin-top:4px;font-size:11px;color:var(--tx-3)}
 .sess .dot-st{width:6px;height:6px;border-radius:50%;background:var(--ok)}
 .sess .dot-st.fin{background:var(--tx-3)}
+.sess .more{display:none;position:absolute;top:8px;right:8px;border:none;background:transparent;color:var(--tx-3);border-radius:6px;padding:2px 6px;font-size:13px;font-weight:700;cursor:pointer;letter-spacing:1px}
+.sess:hover .more{display:block}
+.sess .more:hover{background:var(--bd);color:var(--tx)}
+.sess .menu{display:none;position:absolute;top:32px;right:8px;background:var(--bg);border:1px solid var(--bd);border-radius:10px;box-shadow:var(--sh-2);z-index:6;min-width:100px;padding:4px}
+.sess.menu-open .menu{display:block}
+.sess .menu button{display:block;width:100%;text-align:left;border:none;background:none;padding:7px 10px;font-size:12.5px;color:var(--tx-2);border-radius:7px;cursor:pointer}
+.sess .menu button:hover{background:var(--bg-sunken);color:var(--tx)}
+.sess .menu button.danger{color:#c0353b}
+.sess .menu button.danger:hover{background:#fdf0f0;color:#c0353b}
+.sess .rnm{width:100%;font-size:13px;border:1px solid var(--pri);border-radius:8px;padding:6px 8px;font-family:var(--font);outline:none;background:var(--bg);color:var(--tx)}
 .rail-empty{padding:18px;font-size:12px;color:var(--tx-3);line-height:1.7}
 .rail-foot{border-top:1px solid var(--bd);padding:10px 14px;display:flex;flex-direction:column;gap:2px}
 .rail-cfg{display:flex;align-items:center;gap:9px;padding:8px 8px;border-radius:var(--r-s);font-size:12.5px;color:var(--tx-2);cursor:pointer;transition:background .12s}
@@ -51,6 +61,12 @@ button{font-family:var(--font)}
 .rail-cfg svg{width:15px;height:15px;color:var(--tx-3)}
 .rail-cfg.danger:hover{color:#c0353b}
 .rail-cfg.off{opacity:.45;pointer-events:none}
+.rail-user{margin-top:4px}
+.rail-user .ava{width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,#3b6bf5,#f5319e);color:#fff;font-size:12px;font-weight:650;display:flex;align-items:center;justify-content:center;flex:none}
+.rail-user svg{margin-left:auto}
+.pf-hero{display:flex;align-items:center;gap:12px;padding:6px 2px 2px}
+.pf-hero .ava{width:46px;height:46px;border-radius:50%;background:linear-gradient(135deg,#3b6bf5,#f5319e);color:#fff;font-size:18px;font-weight:650;display:flex;align-items:center;justify-content:center;flex:none}
+.pf-hero b{font-size:15px}
 .rail-cfg b{font-weight:550;color:var(--tx)}
 /* ── 项目配置抽屉 ── */
 .cfg-card{border:1px solid var(--bd);border-radius:var(--r-m);padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
@@ -128,7 +144,6 @@ button{font-family:var(--font)}
 .hero-logo{height:80px;width:auto;margin:0 auto 24px;display:block}
 .hero h1{font-size:28px;font-weight:700;letter-spacing:.3px;line-height:1.3}
 .hero h1 em{font-style:normal;color:var(--pri)}
-.hero .sub{color:var(--tx-2);font-size:14px;line-height:1.8;margin:13px 0 24px}
 .chips{display:flex;flex-direction:column;gap:10px;text-align:left}
 .chip{display:flex;gap:10px;align-items:flex-start;background:var(--bg);border:1px solid var(--bd);border-radius:var(--r-m);padding:13px 16px;cursor:pointer;transition:all .15s;font-size:13.5px;line-height:1.6;color:var(--tx-2)}
 .chip:hover{border-color:var(--pri);box-shadow:var(--sh-1);color:var(--tx)}
@@ -137,16 +152,17 @@ button{font-family:var(--font)}
 .chips.sm .chip{padding:10px 14px;font-size:12.5px;white-space:nowrap}
 .chips.sm .chip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 /* hero 首问表单 */
-.hero-form{max-width:560px;margin:0 auto;text-align:left}
+.hero-form{max-width:560px;margin:26px auto 0;text-align:left}
 .hf-box{border:1px solid var(--bd-2);border-radius:var(--r-l);background:var(--bg);box-shadow:var(--sh-1);padding:10px 12px 10px 16px;transition:all .15s}
 .hf-box:focus-within{border-color:var(--pri);box-shadow:0 0 0 3px var(--pri-weak)}
-.hf-box textarea{width:100%;border:none;outline:none;resize:none;background:transparent;font-family:var(--font);font-size:14.5px;line-height:1.65;padding:6px 2px;min-height:52px;max-height:150px;color:var(--tx)}
-.hf-acts{display:flex;align-items:center;gap:6px;margin-top:6px}
+.hf-box textarea{width:100%;border:none;outline:none;resize:none;background:transparent;font-family:var(--font);font-size:14.5px;line-height:1.6;padding:5px 2px;min-height:38px;max-height:150px;color:var(--tx)}
+.hf-acts{display:flex;align-items:center;gap:6px;margin-top:4px}
 .hf-att{flex:none;width:34px;height:34px;border:none;background:transparent;border-radius:10px;color:var(--tx-3);display:flex;align-items:center;justify-content:center;cursor:pointer}
 .hf-att:hover{background:var(--bg-sunken);color:var(--pri)}
 .hf-att svg{width:17px;height:17px}
-.hf-btn{margin-left:auto;flex:none;border:none;background:var(--pri);color:#fff;border-radius:11px;padding:9px 22px;font-size:13.5px;font-weight:600;cursor:pointer;transition:background .15s}
-.hf-btn:hover{background:var(--pri-deep)}
+.hf-btn{margin-left:auto;flex:none;border:none;color:#fff;border-radius:10px;padding:8px 18px;font-size:13px;font-weight:600;cursor:pointer;background:linear-gradient(110deg,#3b6bf5,#7c3aed 45%,#f5319e 55%,#3b6bf5);background-size:220% 100%;animation:hfFlow 6s ease-in-out infinite;transition:box-shadow .15s}
+.hf-btn:hover{box-shadow:0 4px 16px rgba(124,58,237,.30)}
+@keyframes hfFlow{0%,100%{background-position:0% 0}50%{background-position:100% 0}}
 .hf-files{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
 .hf-file{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--tx-2);background:var(--bg-subtle);border:1px solid var(--bd);border-radius:8px;padding:4px 8px;max-width:230px}
 .hf-file b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
@@ -323,8 +339,8 @@ button{font-family:var(--font)}
     <div class="rail-cap">咨询记录</div>
     <div class="rail-list" id="hist"></div>
     <div class="rail-foot">
-      <div class="rail-cfg" id="cfg-entry" onclick="openProjCfg()" title="开始咨询后可配置成员与工具面"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>项目配置</div>
-      <div class="rail-cfg danger" onclick="resetAll()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>清空本地会话</div>
+      <div class="rail-cfg" id="cfg-entry" onclick="openProjCfg()" title="配置成员与工具面"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>项目配置</div>
+      <div class="rail-cfg rail-user" onclick="openProfile()"><span class="ava">L</span><b>lan</b><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M9 18l6-6-6-6"/></svg></div>
     </div>
   </aside>
 
@@ -433,9 +449,45 @@ const EXAMPLES=[
 function renderHist(){
  const el=$('hist');
  if(!projCache.length){el.innerHTML='<div class="rail-empty">空空如也，一句话开场</div>';return;}
- el.innerHTML=projCache.map(p=>`<div class="sess ${p.project_id===projSel?'on':''}" onclick="switchProj('${p.project_id}')">
+ el.innerHTML=projCache.map(p=>`<div class="sess ${p.project_id===projSel?'on':''}" data-pid="${p.project_id}" onclick="switchProj('${p.project_id}')">
    <div class="t">${esc(p.name)}</div>
-   <div class="m"><span class="dot-st ${p.stage==='已完成'||p.stage==='已归档'?'fin':''}"></span>${esc(p.stage||'…')} · ${esc((p.created_at||'').slice(5,10))}</div></div>`).join('');
+   <div class="m"><span class="dot-st ${p.stage==='已完成'||p.stage==='已归档'?'fin':''}"></span>${esc(p.stage||'…')} · ${esc((p.created_at||'').slice(5,10))}</div>
+   <button class="more" title="更多" onclick="toggleSessMenu(event,'${p.project_id}')">···</button>
+   <div class="menu">
+    <button onclick="renameProj(event,'${p.project_id}')">重命名</button>
+    <button class="danger" onclick="delProj(event,'${p.project_id}')">删除</button>
+   </div></div>`).join('');
+}
+function toggleSessMenu(e,pid){
+ e.stopPropagation();
+ const card=document.querySelector(`.sess[data-pid="${pid}"]`);
+ const was=card.classList.contains('menu-open');
+ document.querySelectorAll('.sess.menu-open').forEach(x=>x.classList.remove('menu-open'));
+ if(!was)card.classList.add('menu-open');
+}
+document.addEventListener('click',()=>document.querySelectorAll('.sess.menu-open').forEach(x=>x.classList.remove('menu-open')));
+function renameProj(e,pid){
+ e.stopPropagation();
+ const row=projCache.find(p=>p.project_id===pid);if(!row)return;
+ const card=document.querySelector(`.sess[data-pid="${pid}"]`);
+ card.innerHTML=`<input class="rnm" value="${esc(row.name)}" onkeydown="if(event.key==='Enter')saveRename('${pid}');if(event.key==='Escape')renderHist()" onblur="renderHist()">`;
+ const inp=card.querySelector('.rnm');inp.focus();inp.select();
+}
+async function saveRename(pid){
+ const inp=document.querySelector(`.sess[data-pid="${pid}"] .rnm`);
+ const name=(inp&&inp.value||'').trim();
+ if(!name){renderHist();return;}
+ try{await fetch(`/api/admin/projects/${pid}/config`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});}catch(err){}
+ await loadProjects();
+ if(pid===projSel)loadHead();
+}
+async function delProj(e,pid){
+ e.stopPropagation();
+ const row=projCache.find(p=>p.project_id===pid);if(!row)return;
+ if(!confirm('删除「'+row.name+'」？\n该咨询将从列表移除（项目归档，可在服务台恢复）。'))return;
+ try{await fetch(`/api/admin/projects/${pid}/config`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'archived'})});}catch(err){return;}
+ if(pid===projSel){projCache=projCache.filter(p=>p.project_id!==pid);newSession();}
+ else await loadProjects();
 }
 function switchProj(pid){
  const row=projCache.find(p=>p.project_id===pid);if(!row)return;
@@ -448,15 +500,12 @@ function newSession(){cid='';projSel='';
  sig={chat:'',act:'',files:''};filePath='';chatEl.innerHTML='';
  $('tab-comm').style.display='none';$('tab-tasks').style.display='none';$('tab-files').style.display='none';$('stage').style.display='none';
  setPane('chat');welcome();renderHist();loadHead();}
-function resetAll(){localStorage.clear();location.reload();}
-
-
 function loadHead(){
  if(cid&&projCache.length){const p=projCache.find(x=>x.project_id===projSel)||projCache[0];
   if(p){$('ch-name').textContent=p.name;$('ch-sub').textContent=p.status==='active'?'咨询团队工作中 · 过程实时可见':'本轮分析已完成 · 可继续追问迭代';}}
  else{$('ch-name').textContent='新的咨询';$('ch-sub').textContent='描述您的企业问题，团队即刻组建';}
  $('seg').style.display=(cid&&projCache.length)?'flex':'none';
- $('cfg-entry').classList.toggle('off',!(cid&&projSel));
+ $('cfg-entry').classList.toggle('off',!projCache.length);
 }
 function setPane(p){document.querySelectorAll('#seg button').forEach(b=>b.classList.toggle('on',b.dataset.p===p));
  document.querySelectorAll('.pane').forEach(x=>x.classList.toggle('on',x.id==='p-'+p));}
@@ -473,8 +522,8 @@ async function jget(u){
  const r=await fetch(u);return r.json()}
 async function loadProjects(){
  try{const d=await jget('/api/customer/sessions');
-  // 客户页只列/只绑带 customer_id 的会话；内部项目（无客户）归 /services 管
-  projCache=(d.projects||[]).filter(p=>p.customer_id);
+  // 客户页只列/只绑带 customer_id 的活跃会话；归档（=客户侧删除）与内部项目不进列表
+  projCache=(d.projects||[]).filter(p=>p.customer_id&&p.status!=='archived');
   // 绑定顺序：当前选中 > 上次看过 > 该客户最近 > 全局最新；有数据默认进会话
   let row=projCache.find(p=>p.project_id===projSel);
   if(!row)row=projCache.find(p=>p.customer_id===cid);
@@ -499,7 +548,6 @@ let heroFiles=[];
 function welcome(){chatEl.innerHTML=`<div class="hero">
  <img class="hero-logo" src="/customer/assets/brand-anim.gif" alt="元理智能">
  <h1>一句话，启动一支<em>咨询团队</em></h1>
- <div class="sub">告诉我们您的企业和想解决的问题——合伙人受理、双线研究、独立质控、结论汇报，全程实时可见。</div>
  <div class="hero-form">
   <div class="hf-box">
    <textarea id="hf-text" placeholder="一句话描述您的企业和想解决的问题…（Enter 开始）"></textarea>
@@ -650,12 +698,16 @@ const ALL_TOOLS=['sense_project_peers','send_chat_message','project_file_list','
 const ALL_SUBS=['message','group_message','timer','project_stall'];
 const ALL_CAPS=['vitals','routines','perception','projects'];
 async function aget(u){const r=await fetch(u);return r.json()}
+let cfgPid='';
 async function openProjCfg(){
- if(!cid||!projSel)return;
+ // 当前会话优先；新建咨询（无选中）时回退到最近项目——入口保持可用
+ cfgPid=projSel;
+ if(!cfgPid&&projCache.length)cfgPid=projCache.reduce((a,b)=>((a.created_at||'')>=(b.created_at||'')?a:b)).project_id;
+ if(!cfgPid)return;
  const [pl,defs,svcs]=await Promise.all([
   aget('/api/admin/projects'),aget('/api/admin/defs'),aget('/api/admin/services')]);
- const proj=(pl.projects||[]).find(p=>p.project_id===projSel);
- const members=(svcs.services||[]).filter(s=>s.project_id===projSel);
+ const proj=(pl.projects||[]).find(p=>p.project_id===cfgPid);
+ const members=(svcs.services||[]).filter(s=>s.project_id===cfgPid);
  $('dw-head').innerHTML=`<div class="a" style="background:#565a6b">${svg('gear',16)}</div>
   <div><b>项目配置</b><small>${esc(proj?proj.name:'')} · 成员与工具面</small></div><button class="x" onclick="closeDrawer()">✕</button>`;
  $('dw-body').innerHTML=`
@@ -681,8 +733,8 @@ async function openProjCfg(){
 }
 async function toggleWd(){
  const pl=await aget('/api/admin/projects');
- const pr=(pl.projects||[]).find(p=>p.project_id===projSel);
- await fetch(`/api/admin/projects/${projSel}/watchdog`,{method:'POST',headers:{'Content-Type':'application/json'},
+ const pr=(pl.projects||[]).find(p=>p.project_id===cfgPid);
+ await fetch(`/api/admin/projects/${cfgPid}/watchdog`,{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify({enabled:!(pr&&pr.watchdog)})});
  openProjCfg();
 }
@@ -718,9 +770,25 @@ async function addProjMember(){
  const role=document.getElementById('add-role').value.trim();
  const def=document.getElementById('add-def').value;
  if(!role)return;
- const r=await fetch(`/api/admin/projects/${projSel}/members`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({def,role})});
+ const r=await fetch(`/api/admin/projects/${cfgPid}/members`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({def,role})});
  const d=await r.json();
  if(d.ok)openProjCfg();else alert(d.error||'添加失败');
+}
+
+/* ── 个人中心（演示态） ── */
+function openProfile(){
+ $('dw-head').innerHTML=`<div class="a" style="background:linear-gradient(135deg,#3b6bf5,#f5319e)">L</div>
+  <div><b>lan</b><small>个人中心</small></div><button class="x" onclick="closeDrawer()">✕</button>`;
+ $('dw-body').innerHTML=`
+  <div class="pf-hero"><span class="ava">L</span>
+   <div><b>lan</b><div class="cfg-note">欢迎回来，今天也从一句话开始</div></div></div>
+  <h6>账号</h6>
+  <div class="cfg-card"><span class="cfg-mono" style="flex:none">用户名</span><b style="margin-left:auto">lan</b></div>
+  <div class="cfg-card"><span class="cfg-mono" style="flex:none">角色</span><span class="cfg-mono" style="margin-left:auto">企业客户 · 演示</span></div>
+  <div class="cfg-card"><span class="cfg-mono" style="flex:none">咨询数</span><span class="cfg-mono" style="margin-left:auto">${projCache.length}</span></div>
+  <h6>更多</h6>
+  <div class="cfg-card"><span class="cfg-note">通知偏好、账单与团队设置将在正式版出现</span></div>`;
+ $('drawer').classList.add('open');
 }
 
 /* ── 附件 ── */

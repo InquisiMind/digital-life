@@ -375,6 +375,24 @@ async def handle_project_watchdog(request: web.Request) -> web.Response:
     return _json({"ok": ok})
 
 
+async def handle_remove_member(request: web.Request) -> web.Response:
+    """DELETE /api/admin/projects/{pid}/members/{sid} — 成员退出项目。
+
+    成员表行删除 + 服务 project_id 置空（服务保留为独立 agent，可再加入）。
+    """
+    pid = request.match_info["project_id"]
+    sid = request.match_info["service_id"]
+    from infrastructure.persistence import services_registry
+
+    members = services_registry.list_project_members(pid)
+    if not any(m.get("member_id") == sid for m in members):
+        return _json({"ok": False, "error": "该成员不在本项目"}, 404)
+    services_registry.remove_project_member(pid, sid)
+    services_registry.update_service_fields(sid, project_id="")
+    logger.info("PROJECT_MEMBER_REMOVED project=%s member=%s", pid[:12], sid[:12])
+    return _json({"ok": True})
+
+
 async def handle_project_config(request: web.Request) -> web.Response:
     """PATCH /api/admin/projects/{pid}/config — 项目改名/归档（客户页 rail 管理）。
 
@@ -406,6 +424,7 @@ async def handle_project_config(request: web.Request) -> web.Response:
 _ROUTER.router.add_get("/defs", handle_list_defs)
 _ROUTER.router.add_patch("/services/{service_id}/config", handle_service_config)
 _ROUTER.router.add_post("/projects/{project_id}/members", handle_add_member)
+_ROUTER.router.add_delete("/projects/{project_id}/members/{service_id}", handle_remove_member)
 _ROUTER.router.add_post("/projects/{project_id}/watchdog", handle_project_watchdog)
 _ROUTER.router.add_patch("/projects/{project_id}/config", handle_project_config)
 

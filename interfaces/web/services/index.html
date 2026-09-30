@@ -5,160 +5,573 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>服务台 · 元理</title>
 <style>
-:root{--primary:#2563eb;--glow:rgba(37,99,235,.10);--ok:#059669;--warn:#d97706;--bg:#f6f7fb;--card:#fff;--soft:#f9fafb;--bd:#e5e7eb;--tm:#111827;--td:#6b7280;--shadow:0 1px 2px rgba(15,23,42,.04),0 12px 32px rgba(15,23,42,.05);--font:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif}
+:root{
+  --bg:#ffffff; --bg-subtle:#f7f8fa; --bg-sunken:#f0f1f5; --rail:#fafafd;
+  --bd:#ececf1; --bd-2:#dfe0e8;
+  --tx:#1b1c22; --tx-2:#565a6b; --tx-3:#9095a6;
+  --pri:#2f6bff; --pri-weak:#eef3ff; --pri-deep:#1d4fd8;
+  --ok:#0e9f6e; --ok-weak:#e6f6ef; --warn:#c2790a; --warn-weak:#fdf3e2;
+  --r-s:8px; --r-m:12px; --r-l:16px;
+  --sh-1:0 1px 2px rgba(20,22,40,.05); --sh-2:0 10px 32px rgba(20,22,40,.10);
+  --font:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",sans-serif;
+}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:var(--font);background:var(--bg);color:var(--tm)}
-header{background:rgba(255,255,255,.92);border-bottom:1px solid var(--bd);padding:14px 24px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:5;backdrop-filter:blur(8px)}
-.logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700}
-h1{font-size:16px}h1 small{color:var(--td);font-weight:400;font-size:12px;margin-left:8px}
-.tabs{margin:18px 24px 0;display:flex;gap:8px}
-.tab{padding:8px 18px;border-radius:10px;font-size:14px;cursor:pointer;background:var(--card);border:1px solid var(--bd);font-weight:600;color:var(--td)}
-.tab.on{background:var(--primary);color:#fff;border-color:var(--primary)}
-.wrap{padding:18px 24px;overflow-x:auto}
-table{width:100%;min-width:960px;border-collapse:collapse;background:var(--card);border-radius:14px;overflow:hidden;box-shadow:var(--shadow);font-size:13px}
-th{background:var(--soft);color:var(--td);text-align:left;padding:10px 14px;font-size:12px;letter-spacing:.5px}
-td{padding:11px 14px;border-top:1px solid var(--bd);vertical-align:top}
-tr:hover td{background:#fafbfd}
-.mono{font-family:ui-monospace,monospace;font-size:12px;color:var(--td)}
+html,body{height:100%}
+body{font-family:var(--font);background:var(--bg);color:var(--tx);font-size:14px;-webkit-font-smoothing:antialiased;overflow:hidden}
+button{font-family:var(--font)}
+::selection{background:var(--pri-weak)}
+
+/* ══ 三区骨架：rail 导航 + 列表 + 右侧整页详情 ══ */
+.app{height:100vh;display:flex}
+.rail{width:220px;flex:none;background:var(--rail);border-right:1px solid var(--bd);display:flex;flex-direction:column}
+.main{flex:1;min-width:0;display:flex;flex-direction:column;position:relative;background:var(--bg-subtle)}
+.rpage{position:absolute;inset:0;background:var(--bg);z-index:20;transform:translateX(100%);visibility:hidden;transition:transform .22s ease,visibility .22s;display:flex;flex-direction:column}
+.rpage.open{transform:none;visibility:visible}
+
+/* rail */
+.rail-brand{display:flex;align-items:center;gap:10px;padding:16px 16px 12px}
+.rail-brand .mark{width:32px;height:32px;border-radius:10px;background:linear-gradient(135deg,#4d7cff,#b078ec);color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;flex:none}
+.rail-brand b{font-size:14.5px}
+.rail-brand small{display:block;font-size:11px;color:var(--tx-3);font-weight:400}
+.nav{padding:6px 10px;flex:1}
+.nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:var(--r-m);font-size:13.5px;font-weight:550;color:var(--tx-2);cursor:pointer;margin-bottom:2px;transition:all .12s}
+.nav-item svg{width:16px;height:16px;color:var(--tx-3)}
+.nav-item:hover{background:var(--bg-sunken);color:var(--tx)}
+.nav-item.on{background:var(--pri-weak);color:var(--pri-deep)}
+.nav-item.on svg{color:var(--pri)}
+.nav-cap{font-size:11px;color:var(--tx-3);letter-spacing:1.5px;font-weight:600;padding:12px 22px 6px}
+.rail-foot{border-top:1px solid var(--bd);padding:10px 12px;display:flex;flex-direction:column;gap:2px}
+.foot-link{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:var(--r-s);font-size:12.5px;color:var(--tx-2);cursor:pointer}
+.foot-link:hover{background:var(--bg-sunken)}
+.foot-link svg{width:15px;height:15px;color:var(--tx-3)}
+
+/* 列表区 */
+.mh{flex:none;height:58px;display:flex;align-items:center;gap:12px;padding:0 24px;border-bottom:1px solid var(--bd);background:var(--bg)}
+.mh h2{font-size:16px;font-weight:650}
+.mh .sub{font-size:12px;color:var(--tx-3)}
+.mh .spacer{margin-left:auto}
+.btn{border:1px solid var(--bd-2);background:var(--bg);border-radius:9px;padding:7px 14px;font-size:12.5px;font-weight:550;cursor:pointer;color:var(--tx-2);transition:all .12s}
+.btn:hover{border-color:var(--pri);color:var(--pri)}
+.btn.pri{background:var(--pri);color:#fff;border-color:var(--pri)}
+.btn.pri:hover{background:var(--pri-deep);color:#fff}
+.btn.danger{color:#c0353b;border-color:#e5b4b4}
+.btn.danger:hover{border-color:#c0353b;background:#fdf3f3;color:#c0353b}
+.list{flex:1;overflow-y:auto;padding:18px 24px}
+.rowcard{display:flex;align-items:center;gap:12px;padding:13px 16px;background:var(--bg);border:1px solid var(--bd);border-radius:var(--r-m);margin-bottom:8px;cursor:pointer;transition:all .12s;box-shadow:var(--sh-1)}
+.rowcard:hover{border-color:var(--pri);box-shadow:var(--sh-2)}
+.rowcard .ava{width:36px;height:36px;border-radius:10px;color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:650;flex:none}
+.rowcard b{font-size:14px;font-weight:600}
+.rowcard .meta{font-size:11.5px;color:var(--tx-3);margin-top:2px}
+.rowcard .side{margin-left:auto;display:flex;gap:14px;align-items:center;font-size:12px;color:var(--tx-3);white-space:nowrap}
+.stat b{font-size:14px;color:var(--tx);font-weight:600;display:block;text-align:right}
+.stat span{font-size:10.5px}
 .badge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600}
-.b-green{background:rgba(5,150,105,.1);color:var(--ok)}
-.b-gray{background:#f3f4f6;color:var(--td)}
-.b-blue{background:var(--glow);color:var(--primary)}
-.b-amber{background:rgba(217,119,6,.1);color:var(--warn)}
-.btn{border:1px solid var(--bd);background:var(--card);border-radius:8px;padding:5px 12px;font-size:12px;cursor:pointer;margin-right:6px}
-.btn:hover{border-color:var(--primary);color:var(--primary)}
-.hint{color:var(--td);font-size:12px;margin:8px 2px}
-/* 抽屉 */
-#drawer{position:fixed;top:0;right:-460px;width:min(440px,94vw);height:100vh;background:var(--card);box-shadow:-12px 0 40px rgba(15,23,42,.12);transition:right .2s;z-index:20;display:flex;flex-direction:column}
+.b-green{background:var(--ok-weak);color:var(--ok)}
+.b-gray{background:#f3f4f6;color:var(--tx-3)}
+.b-blue{background:var(--pri-weak);color:var(--pri-deep)}
+.b-amber{background:var(--warn-weak);color:var(--warn)}
+.empty{text-align:center;color:var(--tx-3);padding:80px 0;font-size:13px}
+
+/* 右侧整页详情 */
+.rp-head{flex:none;min-height:58px;display:flex;align-items:center;gap:12px;padding:10px 20px;border-bottom:1px solid var(--bd)}
+.rp-back{display:inline-flex;align-items:center;gap:4px;border:none;background:none;color:var(--pri);font-size:13px;font-weight:600;cursor:pointer;padding:7px 10px;border-radius:9px}
+.rp-back:hover{background:var(--pri-weak)}
+.rp-title{min-width:0;flex:1;display:flex;align-items:center}
+.rp-title b{font-size:15px;font-weight:650}
+.rp-title small{display:block;font-size:11.5px;color:var(--tx-3);margin-top:1px}
+.rp-title .ops{display:flex;gap:8px;margin-left:auto;align-items:center}
+.rp-body{flex:1;overflow-y:auto;padding:20px 24px 32px}
+.rp-inner{max-width:860px;margin:0 auto}
+.rp-body h6{font-size:11px;color:var(--tx-3);letter-spacing:1.5px;margin:14px 0 8px;font-weight:600}
+.rp-body h6:first-child{margin-top:0}
+
+/* tabs（详情页内） */
+.cfg-tabs{display:flex;gap:2px;padding:3px;background:var(--bg-sunken);border-radius:11px;width:fit-content;margin-bottom:16px;flex-wrap:wrap}
+.cfg-tabs button{border:none;background:transparent;padding:7px 16px;border-radius:9px;font-size:12.5px;font-weight:550;color:var(--tx-2);cursor:pointer}
+.cfg-tabs button.on{background:var(--bg);color:var(--pri-deep);box-shadow:var(--sh-1);font-weight:650}
+
+/* 通用表单/卡片（与客户页同套设计语言） */
+.cfg-card{border:1px solid var(--bd);border-radius:var(--r-m);padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.cfg-card b{font-size:13px}
+.cfg-mono{font-family:ui-monospace,monospace;font-size:11px;color:var(--tx-3)}
+.cfg-note{font-size:11.5px;color:var(--tx-3);line-height:1.6}
+.cfg-in{font-size:13px;border:1px solid var(--bd-2);border-radius:var(--r-s);padding:7px 10px;font-family:var(--font);flex:1;min-width:0;background:var(--bg);color:var(--tx)}
+.cfg-in:focus{outline:none;border-color:var(--pri)}
+.cfg-area{width:100%;border:1px solid var(--bd-2);border-radius:var(--r-s);padding:9px 12px;font-family:var(--font);font-size:13px;line-height:1.7;background:var(--bg);color:var(--tx);resize:vertical}
+.cfg-area:focus{outline:none;border-color:var(--pri)}
+.mk-src{font-size:10.5px;padding:1px 7px;border-radius:5px;font-weight:600}
+.src-overlay{background:#f1edff;color:#7a5cff}
+.src-def{background:var(--pri-weak);color:var(--pri-deep)}
+.src-system{background:var(--bg-sunken);color:var(--tx-3)}
+.skill-row{border:1px solid var(--bd);border-radius:var(--r-m);margin-bottom:8px;overflow:hidden}
+.skill-row .sr-h{display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:pointer}
+.skill-row .sr-h:hover{background:var(--bg-subtle)}
+.skill-row .sr-h b{font-size:13px}
+.skill-row .sr-h .d{font-size:12px;color:var(--tx-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.tool-row{border:1px solid var(--bd);border-radius:var(--r-m);margin-bottom:8px;overflow:hidden}
+.tool-row .tr-h{display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:pointer}
+.tool-row .tr-h:hover{background:var(--bg-subtle)}
+.tool-row .tr-h b{font-size:13px;font-family:ui-monospace,monospace}
+.tool-row .tr-h .ts{font-size:10.5px;padding:1px 7px;border-radius:5px;background:var(--bg-sunken);color:var(--tx-2)}
+.tool-row .tr-b{display:none;border-top:1px solid var(--bd);padding:10px 12px;background:var(--bg-subtle)}
+.tool-row.open .tr-b{display:block}
+.tool-row pre{font-size:11.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:280px;overflow:auto;margin:0}
+
+/* 抽屉（群沟通/交付物回放） */
+#drawer{position:fixed;top:0;right:-460px;width:min(440px,94vw);height:100vh;background:var(--bg);box-shadow:-12px 0 40px rgba(15,23,42,.12);transition:right .2s;z-index:40;display:flex;flex-direction:column}
 #drawer.open{right:0}
 .dh{padding:16px 20px;border-bottom:1px solid var(--bd);display:flex;justify-content:space-between;align-items:center}
-.dh b{font-size:15px}.dh .x{cursor:pointer;color:var(--td);font-size:16px;border:none;background:none}
+.dh b{font-size:15px}.dh .x{cursor:pointer;color:var(--tx-3);font-size:16px;border:none;background:none}
 .db{flex:1;overflow-y:auto;padding:16px 20px;font-size:13px}
-.wake{border:1px solid var(--bd);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--soft)}
-.wake b{font-size:12px}.wake .m{color:var(--td);font-size:11px;margin-top:3px}
-.kv{display:flex;gap:8px;margin:4px 0}.kv i{width:88px;color:var(--td);font-style:normal;font-size:12px;flex:none}
-.msg{border-left:3px solid var(--primary);background:var(--soft);border-radius:8px;padding:8px 12px;margin-bottom:8px;font-size:13px}
-.msg .m{font-size:11px;color:var(--td);margin-bottom:3px}
-.msg.self{border-left-color:var(--ok)}
+.kv{display:flex;gap:8px;margin:4px 0;align-items:center}.kv i{width:88px;color:var(--tx-3);font-style:normal;font-size:12px;flex:none}
+.msg{border-left:3px solid var(--pri);background:var(--bg-subtle);border-radius:8px;padding:8px 12px;margin-bottom:8px;font-size:13px}
+.msg .m{font-size:11px;color:var(--tx-3);margin-bottom:3px}
 .file{cursor:pointer;padding:8px 12px;border-radius:8px;display:flex;gap:8px;align-items:center}
-.file:hover{background:var(--glow)}
-pre.doc{background:var(--soft);border:1px solid var(--bd);border-radius:10px;padding:14px;white-space:pre-wrap;font-size:12.5px;line-height:1.7;max-height:60vh;overflow:auto}
-.back{cursor:pointer;color:var(--primary);font-size:12px;margin-bottom:8px}
-.empty{text-align:center;color:var(--td);padding:60px 0;font-size:13px}
+.file:hover{background:var(--pri-weak)}
+.back{cursor:pointer;color:var(--pri);font-size:12px;margin-bottom:8px}
+pre.doc{background:var(--bg-subtle);border:1px solid var(--bd);border-radius:10px;padding:14px;white-space:pre-wrap;font-size:12.5px;line-height:1.7;max-height:60vh;overflow:auto}
+.wake{border:1px solid var(--bd);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--bg-subtle)}
+.wake b{font-size:12px}.wake .m{color:var(--tx-3);font-size:11px;margin-top:3px}
+@media(max-width:880px){
+  .rail{width:64px}
+  .rail-brand b,.rail-brand small,.nav-item span,.nav-cap,.foot-link span{display:none}
+  .nav-item{justify-content:center;padding:11px 0}
+}
 </style>
 </head>
 <body>
-<header>
-  <div class="logo">SV</div>
-  <h1>服务台<small>服务型 agent 运行过程 · 项目群 · 配置</small></h1>
-  <button class="btn" style="margin-left:auto" onclick="newAgent()">＋ 新建 agent</button>
-  <span class="badge b-blue" id="sync">—</span>
-</header>
-<div class="tabs">
-  <div class="tab on" data-t="services">服务</div>
-  <div class="tab" data-t="projects">项目</div>
-  <div class="tab" data-t="templates">项目模版</div>
+<div class="app">
+  <!-- 左：管理导航（对象模型三层：Agents=实例 / 模版·定义=定义层 / 项目=组织） -->
+  <aside class="rail">
+    <div class="rail-brand">
+      <div class="mark">台</div>
+      <div><b>元理服务台</b><small>管理台 · 内部</small></div>
+    </div>
+    <div class="nav-cap">管理</div>
+    <div class="nav" id="nav">
+      <div class="nav-item on" data-v="agents" title="服务型 Agent 实例"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Agents</span></div>
+      <div class="nav-item" data-v="projects" title="项目与成员"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg><span>项目</span></div>
+      <div class="nav-item" data-v="templates" title="项目模版（定义层）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 15l2 2 4-4"/></svg><span>项目模版</span></div>
+      <div class="nav-item" data-v="defs" title="Agent 定义（定义层，只读）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v4m0 14v4M4.2 4.2l2.8 2.8m10 10 2.8 2.8M1 12h4m14 0h4M4.2 19.8l2.8-2.8m10-10 2.8-2.8"/></svg><span>Agent 定义</span></div>
+    </div>
+    <div class="rail-foot">
+      <div class="foot-link" onclick="window.open('/customer','_blank')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>客户入口 ↗</span></div>
+    </div>
+  </aside>
+
+  <!-- 中：列表 -->
+  <div class="main">
+    <header class="mh">
+      <h2 id="mh-title">Agents</h2>
+      <span class="sub" id="mh-sub"></span>
+      <span class="spacer"></span>
+      <span id="mh-ops"></span>
+    </header>
+    <div class="list" id="list"><div class="empty">加载中…</div></div>
+
+    <!-- 右：整页详情 -->
+    <div class="rpage" id="rpage">
+      <header class="rp-head">
+        <button class="rp-back" onclick="closeDetail()">‹ 返回</button>
+        <div class="rp-title" id="rp-title"></div>
+        <div class="ops" id="rp-ops"></div>
+      </header>
+      <div class="rp-body" id="rp-body"></div>
+    </div>
+  </div>
 </div>
-<div class="wrap" id="main"></div>
 <div id="drawer"><div class="dh"><b id="d-title">详情</b><button class="x" onclick="closeDrawer()">✕</button></div><div class="db" id="d-body"></div></div>
+
 <script>
-const $=s=>document.querySelector(s); const main=$('#main'); const db_=$('#d-body');
-const esc=t=>(t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
-let TAB='services';
-document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');TAB=t.dataset.t;render();});
-function closeDrawer(){$('#drawer').classList.remove('open')}
-function openDrawer(title,html){$('#d-title').textContent=title;db_.innerHTML=html;$('#drawer').classList.add('open')}
-
+const $=id=>document.getElementById(id);
+const esc=t=>(t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+const AVA=['#2f6bff','#0e9f6e','#c2790a','#7a5cff','#e0526d'];
+const avc=n=>{let s=0;for(const c of(n||'x'))s+=c.charCodeAt(0);return AVA[s%AVA.length]};
 async function jget(u){const r=await fetch(u);return r.json()}
+function closeDrawer(){$('drawer').classList.remove('open')}
+function openDrawer(title,html){$('d-title').textContent=title;$('d-body').innerHTML=html;$('drawer').classList.add('open')}
+function closeDetail(){$('rpage').classList.remove('open')}
 
-/* ── 新建 agent（独立服务，不挂项目；加入项目走项目配置） ── */
+/* ══ 一级导航 ══ */
+let VIEW='agents';
+document.querySelectorAll('.nav-item').forEach(n=>n.onclick=()=>{
+  document.querySelectorAll('.nav-item').forEach(x=>x.classList.toggle('on',x===n));
+  VIEW=n.dataset.v;closeDetail();renderList();});
+
+async function renderList(){
+  const list=$('list');list.innerHTML='<div class="empty">加载中…</div>';
+  $('mh-title').textContent={agents:'Agents',projects:'项目',templates:'项目模版',defs:'Agent 定义'}[VIEW];
+  if(VIEW==='agents'){
+    $('mh-sub').textContent='服务型 agent 实例 · 点开配置';
+    $('mh-ops').innerHTML='<button class="btn pri" onclick="newAgent()">＋ 新建 Agent</button>';
+    const d=await jget('/api/admin/services');
+    if(!d.services.length){list.innerHTML='<div class="empty">还没有 agent——右上新建，或到客户入口发起一单</div>';return;}
+    list.innerHTML=d.services.map(s=>`<div class="rowcard" onclick="agentDetail('${s.service_id}')">
+     <div class="ava" style="background:${avc(s.role)}">${esc((s.role||'?').slice(0,2))}</div>
+     <div><b>${esc(s.role)}</b><div class="meta">${esc(s.project_name||'独立（未挂项目）')} · ${esc((s.agent_def_id||'').replace('consulting-','').replace('-def',''))}</div></div>
+     <div class="side">
+      <span class="badge ${s.status==='active'?'b-green':'b-gray'}">${s.status==='active'?'运行':'归档'}</span>
+      <div class="stat"><b>${s.wakes}</b><span>唤醒</span></div>
+      <div class="stat"><b>${s.messages}</b><span>消息</span></div>
+      <div class="stat"><b>${s.open_events||0}</b><span>积压</span></div>
+     </div></div>`).join('');
+  }else if(VIEW==='projects'){
+    $('mh-sub').textContent='项目与成员组织 · 点开管理';
+    $('mh-ops').innerHTML='';
+    const d=await jget('/api/admin/projects');
+    if(!d.projects.length){list.innerHTML='<div class="empty">暂无项目</div>';return;}
+    list.innerHTML=d.projects.map(p=>`<div class="rowcard" onclick="projDetail('${p.project_id}')">
+     <div class="ava" style="background:${avc(p.name)}">${esc((p.name||'?').slice(0,2))}</div>
+     <div><b>${esc(p.name)}</b><div class="meta">${p.members.length} 成员 · 模版 ${esc(p.template_id||'—')} · 客户 ${esc(p.customer_id?p.customer_id.slice(0,12)+'…':'—')}</div></div>
+     <div class="side">
+      <span class="badge ${p.status==='active'?'b-green':'b-gray'}">${p.status==='active'?'运行中':'已归档'}</span>
+      <div class="stat"><b>${p.todos_done}/${p.todos_total}</b><span>待办</span></div>
+      ${p.watchdog?'<span class="badge b-amber">看门狗</span>':''}
+     </div></div>`).join('');
+  }else if(VIEW==='templates'){
+    $('mh-sub').textContent='定义层 · 角色班子与预设任务骨架';
+    $('mh-ops').innerHTML='';
+    const d=await jget('/api/admin/templates');
+    if(!d.templates.length){list.innerHTML='<div class="empty">暂无模版</div>';return;}
+    list.innerHTML=d.templates.map(t=>`<div class="rowcard" onclick="tplDetail('${esc(t.id)}')">
+     <div class="ava" style="background:linear-gradient(135deg,#4d7cff,#b078ec)">T</div>
+     <div><b>${esc(t.name)}</b><div class="meta">${esc(t.id)}.yaml · ${(t.size/1000).toFixed(1)} KB · 建项目时按此生成班子与任务骨架</div></div>
+     <div class="side"><button class="btn">编辑 →</button></div></div>`).join('');
+  }else if(VIEW==='defs'){
+    $('mh-sub').textContent='定义层共享资产（只读）· 同定义的所有 agent 共享';
+    $('mh-ops').innerHTML='';
+    const d=await jget('/api/admin/defs');
+    list.innerHTML=(d.defs||[]).map(x=>`<div class="rowcard" onclick="defDetail('${esc(x.def_id)}')">
+     <div class="ava" style="background:${avc(x.display_name)}">${esc((x.display_name||'?').slice(0,2))}</div>
+     <div><b>${esc(x.display_name)}</b><div class="meta">${esc(x.def_id)}</div></div>
+     <div class="side"><button class="btn">查看 →</button></div></div>`).join('')||'<div class="empty">无定义</div>';
+  }
+}
+
+/* ══ Agent 详情（概览 / 配置[基本信息·Skill·Tool]） ══ */
+let AG={};
+async function agentDetail(sid){
+  const [d,pf,tl]=await Promise.all([
+    jget('/api/admin/services/'+sid),
+    jget('/api/admin/agents/'+sid+'/profile'),
+    jget('/api/admin/tools')]);
+  AG={sid,detail:d,profile:pf,tools:tl.tools||[],tab:'overview'};
+  $('rp-title').innerHTML=`<b>${esc(pf.name||d.service.role||'agent')}</b><small>${esc(pf.def_id)} · ${esc(d.service.status)}</small>`;
+  $('rp-ops').innerHTML=`<button class="btn ${d.service.status==='active'?'':'pri'}" onclick="toggleAgent()">${d.service.status==='active'?'归档':'恢复'}</button>`;
+  $('rp-body').innerHTML=`<div class="cfg-tabs">
+    <button data-t="overview" class="on" onclick="setAgentTab('overview')">概览</button>
+    <button data-t="basic" onclick="setAgentTab('basic')">配置 · 基本信息</button>
+    <button data-t="skill" onclick="setAgentTab('skill')">配置 · Skill</button>
+    <button data-t="tool" onclick="setAgentTab('tool')">配置 · Tool</button>
+   </div><div id="ag-tab"></div>`;
+  $('rpage').classList.add('open');
+  renderAgentTab();
+}
+function setAgentTab(t){AG.tab=t;
+  document.querySelectorAll('.cfg-tabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+  renderAgentTab();}
+function renderAgentTab(){
+  const el=$('ag-tab');if(!el)return;
+  const s=AG.detail.service;
+  if(AG.tab==='overview'){
+   el.innerHTML=`
+   <h6>运行统计</h6>
+   <div class="cfg-card">
+    <div class="stat"><b>${AG.detail.wakes.length}</b><span>累计唤醒</span></div>
+    <div class="stat"><b>${s.messages}</b><span>消息</span></div>
+    <div class="stat"><b>${s.open_events||0}</b><span>积压事件</span></div>
+    <div class="stat"><b>${(s.subscriptions||[]).length}</b><span>事件订阅</span></div>
+   </div>
+   <h6>订阅 / 工具面 / 能力</h6>
+   <div class="cfg-card"><span class="cfg-mono" style="flex:none">订阅</span><span class="cfg-mono">${esc((s.subscriptions||[]).join(', ')||'—')}</span></div>
+   <div class="cfg-card"><span class="cfg-mono" style="flex:none">工具面</span><span class="cfg-mono">${Array.isArray(s.tools)?esc(s.tools.join(', ')):'默认全量'}</span></div>
+   <div class="cfg-card"><span class="cfg-mono" style="flex:none">能力</span><span class="cfg-mono">${esc(JSON.stringify(s.capabilities||{}))}</span></div>
+   <h6>最近唤醒（新 → 旧）</h6>
+   ${AG.detail.wakes.map(w=>`<div class="wake"><b>#${w.seq} ${esc(w.reason||'')}</b><div class="m">${esc(w.started_at||'')} ${w.tokens?'· '+w.tokens+' tok':''}</div></div>`).join('')||'<div class="cfg-note">无唤醒记录</div>'}
+   <div class="cfg-note" style="margin-top:12px">逐次唤醒的思考与工具过程，在客户页点该成员头像查看。</div>`;
+  }else if(AG.tab==='basic'){
+   const p=AG.profile;
+   el.innerHTML=`
+   <h6>名称与头像</h6>
+   <div class="cfg-card"><span class="cfg-mono" style="flex:none">名称</span><input class="cfg-in" id="cfg-name" value="${esc(p.name)}"></div>
+   <div class="cfg-card"><span class="cfg-mono" style="flex:none">头像</span><input class="cfg-in" id="cfg-avatar" value="${esc(p.avatar)}" placeholder="emoji 或 #色值，如 🧭 / #7a5cff"><span id="ava-prev" style="width:30px;height:30px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:650;color:#fff;background:${p.avatar&&!p.avatar.startsWith('#')?'linear-gradient(135deg,#4d7cff,#b078ec)':(p.avatar||avc(p.name))}">${esc(p.avatar&&!p.avatar.startsWith('#')?p.avatar:(p.name||'A').slice(0,2))}</span></div>
+   <h6>人设（persona · 身份层）</h6>
+   <div class="cfg-note" style="margin:0 0 6px">来源 <span class="mk-src ${p.persona.source==='overlay'?'src-overlay':p.persona.source==='def'?'src-def':'src-system'}">${p.persona.source==='overlay'?'服务级覆盖':p.persona.source==='def'?'定义层共享':'缺失'}</span>：保存写入本 agent 私有覆盖；清空保存 = 回到定义层。</div>
+   <textarea class="cfg-area" id="cfg-persona" rows="10">${esc(p.persona.content)}</textarea>
+   <h6>附加指令（追加到系统提示词尾部）</h6>
+   <div class="cfg-note" style="margin:0 0 6px">本 agent 私有，留空 = 无附加。</div>
+   <textarea class="cfg-area" id="cfg-extra" rows="4" placeholder="例如：输出务必分点、结论先行…">${esc(p.extra_prompt)}</textarea>
+   <h6>生命周期段落（L4 · 高级）</h6>
+   <div class="cfg-note" style="margin:0 0 6px">来源 <span class="mk-src ${p.l4&&p.l4.source==='overlay'?'src-overlay':'src-system'}">${p.l4&&p.l4.source==='overlay'?'服务级覆盖':'引擎默认'}</span>：躯体状态机与工具习惯段。覆盖需谨慎，清空保存 = 回默认。</div>
+   <textarea class="cfg-area" id="cfg-l4" rows="8" style="font-size:12px">${esc(p.l4?p.l4.content:'')}</textarea>
+   <div style="margin-top:14px"><button class="btn pri" id="cfg-save" onclick="saveProfile()">保存基本信息</button></div>`;
+  }else if(AG.tab==='skill'){
+   el.innerHTML='<div id="skill-list" class="cfg-note">加载中…</div>';loadSkills();
+  }else{
+   el.innerHTML=cfgToolHTML();
+  }
+}
+async function toggleAgent(){
+  const s=AG.detail.service;
+  await fetch(`/api/admin/services/${AG.sid}/status`,{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({status:s.status==='active'?'archived':'active'})});
+  agentDetail(AG.sid);renderList();
+}
+async function saveProfile(){
+  const btn=$('cfg-save');btn.textContent='保存中…';btn.disabled=true;
+  try{
+   const r=await fetch(`/api/admin/agents/${AG.sid}/profile`,{method:'PUT',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name:$('cfg-name').value.trim(),avatar:$('cfg-avatar').value.trim(),
+     persona:$('cfg-persona').value,extra_prompt:$('cfg-extra').value,l4:$('cfg-l4')?$('cfg-l4').value:''})});
+   const d=await r.json();
+   if(!d.ok)throw new Error(d.error||'未知错误');
+   AG.profile=await jget(`/api/admin/agents/${AG.sid}/profile`);
+   $('rp-title').querySelector('b').textContent=AG.profile.name||'agent';
+   btn.textContent='已保存 ✓';setTimeout(()=>{btn.textContent='保存基本信息';btn.disabled=false;},1500);
+   renderList();
+  }catch(e){btn.textContent='保存失败：'+e.message;btn.disabled=false;}
+}
+
+/* Skill（写入服务级覆盖，与客户页同逻辑） */
+async function loadSkills(){
+  const d=await jget(`/api/admin/agents/${AG.sid}/skills`);
+  AG.skills=d.skills||[];
+  const el=$('skill-list');if(!el)return;
+  el.innerHTML=`
+   <div class="cfg-card"><input class="cfg-in" id="new-skill" placeholder="新增 skill 名（字母数字与 _ -）"><button class="btn pri" style="flex:none" onclick="newSkill()">新建</button></div>
+   <div class="cfg-note" style="margin:0 0 8px">编辑与新增均写入本 agent 私有覆盖（同名覆盖定义层/系统）；下载导出 .md；删除仅对覆盖有效。</div>
+   ${AG.skills.map(s=>`<div class="skill-row" data-skill="${esc(s.name)}">
+    <div class="sr-h" onclick="toggleSkillRow(this,'${esc(s.name)}')">
+     <b>${esc(s.name)}</b>${s.registered?'<span class="mk-src src-def">已注册</span>':''}<span class="d">${esc(s.description)}</span>
+     <span class="mk-src ${s.source==='overlay'?'src-overlay':s.source==='def'?'src-def':'src-system'}">${s.source==='overlay'?'覆盖':s.source==='def'?'定义层':'系统'}</span>
+    </div><div class="sr-b"></div></div>`).join('')||'<div class="cfg-note">还没有 skill</div>'}`;
+}
+async function toggleSkillRow(head,name){
+  const row=head.parentElement,body=row.querySelector('.sr-b');
+  const opening=row.classList.toggle('open');
+  if(opening&&!body.dataset.loaded){
+   const d=await jget(`/api/admin/agents/${AG.sid}/skills/${encodeURIComponent(name)}`);
+   body.dataset.loaded=1;
+   body.innerHTML=`<div style="padding:10px 12px;border-top:1px solid var(--bd)">
+    <textarea class="cfg-area" id="sk-md" rows="14">${esc(d.content)}</textarea>
+    <div class="cfg-note" style="margin:6px 0 0">当前来源：${d.source==='overlay'?'服务级覆盖':'保存后在本 agent 生效为覆盖'}</div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+     <button class="btn pri" onclick="saveSkill('${esc(name)}')">保存到服务覆盖</button>
+     <button class="btn" onclick="dlSkill('${esc(name)}')">下载 .md</button>
+     ${d.source==='overlay'?`<button class="btn danger" onclick="delSkill('${esc(name)}')">删除覆盖</button>`:''}
+    </div></div>`;
+  }
+}
+async function saveSkill(name){
+  const ta=document.getElementById('sk-md');if(!ta||!ta.value.trim()){alert('内容不能为空');return;}
+  const r=await fetch(`/api/admin/agents/${AG.sid}/skills/${encodeURIComponent(name)}`,{
+   method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:ta.value})});
+  const d=await r.json();
+  if(d.ok)loadSkills();else alert(d.error||'保存失败');
+}
+async function dlSkill(name){
+  try{const d=await jget(`/api/admin/agents/${AG.sid}/skills/${encodeURIComponent(name)}`);
+   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([d.content],{type:'text/markdown'}));
+   a.download=name+'.SKILL.md';a.click();}catch(e){alert('下载失败');}
+}
+async function delSkill(name){
+  if(!confirm('删除「'+name+'」的服务级覆盖？'))return;
+  const r=await fetch(`/api/admin/agents/${AG.sid}/skills/${encodeURIComponent(name)}`,{method:'DELETE'});
+  const d=await r.json();
+  if(d.ok)loadSkills();else alert(d.error||'删除失败');
+}
+function newSkill(){
+  const name=($('new-skill').value||'').trim();
+  if(!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)){alert('skill 名仅限字母数字与 _ -');return;}
+  if(AG.skills.some(s=>s.name===name)){alert('同名 skill 已存在，展开编辑即可');return;}
+  AG.skills.unshift({name,description:'',source:'overlay'});
+  $('skill-list').querySelector('.cfg-card').insertAdjacentHTML('afterend',`<div class="skill-row open" data-skill="${esc(name)}">
+   <div class="sr-h" onclick="toggleSkillRow(this,'${esc(name)}')"><b>${esc(name)}</b><span class="d"></span><span class="mk-src src-overlay">覆盖</span></div>
+   <div class="sr-b" data-loaded="1"><div style="padding:10px 12px;border-top:1px solid var(--bd)">
+    <textarea class="cfg-area" id="sk-md" rows="14">---\nname: ${esc(name)}\ndescription: 一句话描述该技能的用途\n---\n\n# ${esc(name)}\n\n在这里写方法论正文（Markdown）。</textarea>
+    <div style="display:flex;gap:8px;margin-top:8px"><button class="btn pri" onclick="saveSkill('${esc(name)}')">保存到服务覆盖</button></div>
+   </div></div></div>`);
+}
+
+/* Tool：registry 全量 ∪ 服务面 */
+function cfgToolHTML(){
+  const explicit=Array.isArray(AG.detail.service.tools);
+  const regNames=new Set(AG.tools.map(t=>t.name));
+  const extra=(explicit?AG.detail.service.tools:[]).filter(n=>n&&!regNames.has(n))
+   .map(n=>({name:n,toolset:'service',description:'服务运行时注册的工具',schema:{name:n,parameters:{}}}));
+  const rows=[...AG.tools,...extra];
+  const enabled=new Set(explicit?AG.detail.service.tools:rows.map(t=>t.name));
+  return `
+  <div class="cfg-note" style="margin:0 0 10px">工具面：当前${explicit?'为显式清单':'未配置 = 默认全量'}。保存任意勾选即成为显式清单（勾=启用），即时生效于下次唤醒。点行展开完整 schema。</div>
+  ${rows.map(t=>{const on=enabled.has(t.name);return `<div class="tool-row">
+   <div class="tr-h" onclick="this.parentElement.classList.toggle('open')">
+    <input type="checkbox" data-tool="${esc(t.name)}" ${on?'checked':''} onclick="event.stopPropagation()">
+    <b>${esc(t.name)}</b><span class="ts">${esc(t.toolset)}</span>
+    <span class="d" style="flex:1;font-size:12px;color:var(--tx-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.description)}</span>
+   </div>
+   <div class="tr-b"><pre>${esc(JSON.stringify(t.schema,null,2))}</pre></div>
+  </div>`}).join('')}
+  <div style="margin-top:12px"><button class="btn pri" onclick="saveToolset()">保存工具面</button></div>`;
+}
+async function saveToolset(){
+  const tools=[...document.querySelectorAll('#ag-tab input[data-tool]')].filter(c=>c.checked).map(c=>c.dataset.tool);
+  if(!tools.length&&!confirm('全部取消将禁用所有工具，确定？'))return;
+  const r=await fetch(`/api/admin/services/${AG.sid}/config`,{method:'PATCH',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({tools})});
+  const d=await r.json();
+  if(d.ok)agentDetail(AG.sid);else alert(d.error||'保存失败');
+}
+
+/* 新建 agent */
 async function newAgent(){
   const defs=await jget('/api/admin/defs');
-  openDrawer('新建 agent',`
+  openDrawer('新建 Agent',`
    <div class="kv"><i>名称</i><input id="na-name" placeholder="如：数据分析师" style="font-size:13px;border:1px solid var(--bd);border-radius:8px;padding:7px 10px;flex:1"></div>
    <div class="kv"><i>定义</i><select id="na-def" class="btn" style="font-size:13px;flex:1">${(defs.defs||[]).map(d=>`<option value="${d.def_id}">${esc(d.display_name)}</option>`).join('')}</select></div>
-   <div class="hint">创建后为独立运行的服务 agent；要进项目，在客户页「项目配置 → 增加成员」里选它。</div>
-   <button class="btn" style="background:#2563eb;color:#fff;border:none;margin-top:10px;padding:8px 18px" onclick="createAgent()">创建</button>`);
+   <div class="kv" style="font-size:12px;color:var(--tx-3)">创建后为独立 agent（不挂项目）；要进项目：项目详情 → 成员 → 增加。</div>
+   <button class="btn pri" style="margin-top:10px" onclick="createAgent()">创建</button>`);
 }
 async function createAgent(){
-  const name=document.getElementById('na-name').value.trim();
-  const def=document.getElementById('na-def').value;
+  const name=$('na-name').value.trim(),def=$('na-def').value;
   if(!name){alert('名称必填');return;}
   const r=await fetch('/api/admin/agents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({def,name})});
   const d=await r.json();
-  if(d.ok){closeDrawer();render();}else alert(d.error||'创建失败');
+  if(d.ok){closeDrawer();renderList();}else alert(d.error||'创建失败');
 }
 
-/* ── 项目模版编辑（结构化表单 + 源码模式） ── */
+/* ══ 项目详情（基本信息 / 成员管理 / 群沟通 / 交付物） ══ */
+let PRJ={};
+async function projDetail(pid){
+  const [pl,defs,svcs]=await Promise.all([
+   jget('/api/admin/projects'),jget('/api/admin/defs'),jget('/api/admin/services')]);
+  const proj=pl.projects.find(p=>p.project_id===pid);
+  if(!proj)return;
+  PRJ={pid,proj,defs:defs.defs||[],members:svcs.services.filter(s=>s.project_id===pid)};
+  $('rp-title').innerHTML=`<b>${esc(proj.name)}</b><small>${esc(proj.template_id||'')} · ${proj.status==='active'?'运行中':'已归档'} · ${proj.members.length} 成员</small>`;
+  $('rp-ops').innerHTML=`
+   <button class="btn" onclick="projGroup()">群沟通</button>
+   <button class="btn" onclick="projFiles('')">交付物</button>
+   <button class="btn" onclick="toggleProjWd()">看门狗：${proj.watchdog?'开':'关'}</button>`;
+  $('rp-body').innerHTML=`<div class="rp-inner">
+   <h6>基本信息</h6>
+   <div class="cfg-card"><span class="cfg-mono" style="flex:none">项目</span><b>${esc(proj.name)}</b><span class="cfg-mono">${esc(pid)}</span>
+    <span class="cfg-mono" style="flex:none;margin-left:auto">客户</span><span class="cfg-mono">${esc(proj.customer_id||'—')}</span></div>
+   <div class="cfg-card"><span class="cfg-mono" style="flex:none">模版</span><button class="btn" onclick="tplDetail('${esc(proj.template_id||'')}')">${esc(proj.template_id||'—')} ↗ 编辑模版</button>
+    <span class="cfg-note" style="margin-left:auto">待办 ${proj.todos_done}/${proj.todos_total} · 看门狗 <span class="badge ${proj.watchdog?'b-amber':'b-gray'}">${proj.watchdog?'开':'关'}</span></span></div>
+   <h6>成员（${PRJ.members.length}）· 「配置」进该 agent 的深度配置页</h6>
+   ${PRJ.members.map(s=>`<div class="cfg-card">
+     <div style="width:30px;height:30px;border-radius:50%;background:${avc(s.role)};color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:650;flex:none">${esc((s.role||'?').slice(0,2))}</div>
+     <b>${esc(s.role)}</b>
+     <span class="badge ${s.status==='active'?'b-green':'b-gray'}">${s.status==='active'?'运行':'归档'}</span>
+     <span class="cfg-mono">唤醒 ${s.wakes} · 消息 ${s.messages}</span>
+     <button class="btn" style="margin-left:auto" onclick="agentDetail('${s.service_id}')">配置 →</button>
+     <button class="btn danger" onclick="removeMember('${s.service_id}','${esc(s.role)}')">移除</button>
+    </div>`).join('')||'<div class="cfg-note">无成员</div>'}
+   <h6>增加成员</h6>
+   <div class="cfg-card">
+    <input class="cfg-in" id="add-role" placeholder="角色名，如：数据分析师">
+    <select class="cfg-in" id="add-def" style="flex:none;width:150px">${PRJ.defs.map(x=>`<option value="${x.def_id}">${esc(x.display_name)}</option>`).join('')}</select>
+    <button class="btn pri" style="flex:none" onclick="addProjMember()">加入项目</button>
+   </div>
+   <div class="cfg-note" style="margin-top:8px">移除成员=退出本项目（服务保留为独立 agent，可再加入）。</div>
+  </div>`;
+  $('rpage').classList.add('open');
+}
+async function toggleProjWd(){
+  const pl=await jget('/api/admin/projects');
+  const pr=pl.projects.find(p=>p.project_id===PRJ.pid);
+  await fetch(`/api/admin/projects/${PRJ.pid}/watchdog`,{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({enabled:!(pr&&pr.watchdog)})});
+  projDetail(PRJ.pid);renderList();
+}
+async function addProjMember(){
+  const role=$('add-role').value.trim(),def=$('add-def').value;
+  if(!role)return;
+  const r=await fetch(`/api/admin/projects/${PRJ.pid}/members`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({def,role})});
+  const d=await r.json();
+  if(d.ok)projDetail(PRJ.pid);else alert(d.error||'添加失败');
+}
+async function removeMember(sid,role){
+  if(!confirm('移除「'+role+'」？服务将退出本项目（保留为独立 agent）。'))return;
+  const r=await fetch(`/api/admin/projects/${PRJ.pid}/members/${sid}`,{method:'DELETE'});
+  if(r.status===404){alert('该成员不在本项目');return;}
+  const d=await r.json().catch(()=>({ok:false,error:'网络错误'}));
+  if(d.ok){projDetail(PRJ.pid);renderList();}else alert(d.error||'移除失败');
+}
+async function projGroup(){
+  const d=await jget(`/api/admin/projects/${PRJ.pid}/group`);
+  openDrawer('群沟通 · '+PRJ.proj.name,(d.messages||[]).map(m=>`
+   <div class="msg"><div class="m">${esc(m.sender_name)} · ${esc(m.ts)}</div>${esc(m.text)}</div>`).join('')||'<div class="empty">暂无群消息</div>');
+}
+async function projFiles(path){
+  const d=await jget(`/api/admin/projects/${PRJ.pid}/files?path=${encodeURIComponent(path)}`);
+  if(d.kind==='dir'){
+   openDrawer('交付物 · '+(path||'shared/'),(path?`<div class="back" onclick="projFiles('${path.split('/').slice(0,-1).join('/')}')">‥ 上级</div>`:'')+
+    (d.entries||[]).map(e=>e.type==='dir'
+     ?`<div class="file" onclick="projFiles('${e.rel}')">📂 <b>${esc(e.name)}</b>/</div>`
+     :`<div class="file" onclick="projFiles('${e.rel}')">📄 ${esc(e.name)} <span style="margin-left:auto;color:var(--tx-3)">${(e.size/1000).toFixed(1)}k</span></div>`).join('')||'<div class="empty">空</div>');
+  }else{
+   openDrawer('📄 '+path,`<div class="back" onclick="projFiles('${path.split('/').slice(0,-1).join('/')}')">‥ 上级</div><pre class="doc">${esc(d.content)}</pre>`);
+  }
+}
+
+/* ══ 模版详情（结构化编辑 · 整页） ══ */
 let TPL={mode:'form'};
-async function tplEdit(tid){
+async function tplDetail(tid){
   const [d,defs]=await Promise.all([jget('/api/admin/templates/'+tid),jget('/api/admin/defs')]);
-  TPL={id:tid,p:d.parsed||{},defs:defs.defs||[],mode:'form'};
-  openDrawer('模版 · '+tid,'<div id="tpl-body"></div>');
+  TPL={id:tid,p:d.parsed||{},defs:defs.defs||[],mode:'form',raw:d.raw};
+  $('rp-title').innerHTML=`<b>模版 · ${esc((d.parsed&&d.parsed.name)||tid)}</b><small>定义层 · 角色班子与预设任务骨架 · 建项目时生效</small>`;
+  $('rp-ops').innerHTML=`<button class="btn" onclick="TPL.mode=TPL.mode==='form'?'raw':'form';renderTpl()">${TPL.mode==='form'?'源码模式':'表单模式'}</button>
+   <button class="btn pri" onclick="tplSaveStructured()">保存</button>`;
+  $('rp-body').innerHTML='<div class="rp-inner" id="tpl-body"></div>';
+  $('rpage').classList.add('open');
   renderTpl();
 }
 function renderTpl(){
-  const el=document.getElementById('tpl-body');if(!el)return;
+  const el=$('tpl-body');if(!el)return;
   const p=TPL.p;
   if(TPL.mode==='raw'){
-    el.innerHTML=`<textarea id="tpl-raw" style="width:100%;min-height:56vh;font-family:ui-monospace,monospace;font-size:12px;line-height:1.7;border:1px solid var(--bd);border-radius:10px;padding:12px">${esc(TPL.raw||'')}</textarea>
-    <div style="display:flex;gap:8px;margin-top:10px">
-      <button class="btn" style="background:#2563eb;color:#fff;border:none;padding:8px 18px" onclick="tplSaveRaw()">保存源码</button>
-      <button class="btn" onclick="TPL.mode='form';renderTpl()">← 返回表单</button>
-    </div>`;
-    if(!TPL.raw)jget('/api/admin/templates/'+TPL.id).then(x=>{TPL.raw=x.raw;const t=document.getElementById('tpl-raw');if(t)t.value=x.raw;});
-    return;
+   el.innerHTML=`<textarea id="tpl-raw" style="width:100%;min-height:60vh;font-family:ui-monospace,monospace;font-size:12px;line-height:1.7;border:1px solid var(--bd-2);border-radius:var(--r-s);padding:12px">${esc(TPL.raw||'')}</textarea>
+   <div class="cfg-note" style="margin-top:8px">源码模式保存走 YAML 语法闸；表单模式保存会重排 YAML（丢注释）。</div>`;
+   return;
   }
   const roleNames=(p.roles||[]).map(r=>r.name||r.def);
   el.innerHTML=`
-   <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
-    <b style="font-size:13px">结构化编辑</b>
-    <button class="btn" style="margin-left:auto" onclick="TPL.mode='raw';renderTpl()">源码模式</button>
-   </div>
-   <div class="kv"><i>模版名</i><input id="t-name" value="${esc(p.name||'')}" style="font-size:13px;border:1px solid var(--bd);border-radius:8px;padding:7px 10px;flex:1"></div>
-   <div class="kv"><i>描述</i><input id="t-desc" value="${esc(p.description||'')}" style="font-size:13px;border:1px solid var(--bd);border-radius:8px;padding:7px 10px;flex:1"></div>
-   <div class="kv"><i>看门狗</i><label style="font-size:12.5px"><input type="checkbox" id="t-wd" ${p.watchdog?'checked':''}> 全员停摆时自动催 PM</label></div>
-   <div style="font-weight:600;margin:14px 0 6px">项目成员（${(p.roles||[]).length}）</div>
-   ${(p.roles||[]).map((r,i)=>`<div style="border:1px solid var(--bd);border-radius:10px;padding:10px;margin-bottom:8px">
-    <div style="display:flex;gap:6px;align-items:center">
-     <input value="${esc(r.def||'')}" list="def-list" placeholder="定义" onchange="TPL.p.roles[${i}].def=this.value" style="font-size:12px;border:1px solid var(--bd);border-radius:7px;padding:5px 8px;width:180px;font-family:ui-monospace,monospace">
-     <input value="${esc(r.name||'')}" placeholder="角色名" onchange="tplRoleRenamed(${i},this.value)" style="font-size:12.5px;border:1px solid var(--bd);border-radius:7px;padding:5px 8px;flex:1">
-     <label style="font-size:12px;white-space:nowrap"><input type="radio" name="t-pm" ${r.pm?'checked':''} onchange="tplSetPm(${i})"> PM</label>
-     <button class="btn" style="color:#c0353b;border-color:#e5b4b4" onclick="tplDelRole(${i})">删除</button>
-    </div>
-    <input value="${esc((r.tools||[]).join(', '))}" placeholder="工具面（逗号分隔，留空=默认全量）" onchange="TPL.p.roles[${i}].tools=this.value?this.value.split(',').map(x=>x.trim()).filter(Boolean):undefined" style="font-size:11.5px;border:1px solid var(--bd);border-radius:7px;padding:5px 8px;width:100%;margin-top:6px;font-family:ui-monospace,monospace">
+   <h6>基本信息</h6>
+   <div class="cfg-card"><span class="cfg-mono" style="flex:none">模版名</span><input class="cfg-in" id="t-name" value="${esc(p.name||'')}"></div>
+   <div class="cfg-card"><span class="cfg-mono" style="flex:none">描述</span><input class="cfg-in" id="t-desc" value="${esc(p.description||'')}"></div>
+   <div class="cfg-card"><span class="cfg-mono" style="flex:none">看门狗</span><label style="font-size:12.5px"><input type="checkbox" id="t-wd" ${p.watchdog?'checked':''}> 全员停摆时自动催 PM</label></div>
+   <h6>项目成员（${(p.roles||[]).length}）· 删除成员自动清空引用它的任务指派</h6>
+   ${(p.roles||[]).map((r,i)=>`<div class="cfg-card" style="flex-wrap:wrap">
+    <input value="${esc(r.def||'')}" list="def-list" placeholder="定义" onchange="TPL.p.roles[${i}].def=this.value" style="font-size:12px;border:1px solid var(--bd-2);border-radius:7px;padding:6px 8px;width:190px;font-family:ui-monospace,monospace">
+    <input value="${esc(r.name||'')}" placeholder="角色名" onchange="tplRoleRenamed(${i},this.value)" style="font-size:12.5px;border:1px solid var(--bd-2);border-radius:7px;padding:6px 8px;flex:1;min-width:110px">
+    <label style="font-size:12px;white-space:nowrap"><input type="radio" name="t-pm" ${r.pm?'checked':''} onchange="tplSetPm(${i})"> PM</label>
+    <button class="btn danger" style="flex:none" onclick="tplDelRole(${i})">删除</button>
+    <input value="${esc((r.tools||[]).join(', '))}" placeholder="工具面（逗号分隔，留空=默认全量）" onchange="TPL.p.roles[${i}].tools=this.value?this.value.split(',').map(x=>x.trim()).filter(Boolean):undefined" style="font-size:11.5px;border:1px solid var(--bd-2);border-radius:7px;padding:5px 8px;width:100%;margin-top:6px;font-family:ui-monospace,monospace">
    </div>`).join('')}
    <datalist id="def-list">${TPL.defs.map(d=>`<option value="${esc(d.def_id)}">${esc(d.display_name)}</option>`).join('')}</datalist>
    <button class="btn" onclick="tplAddRole()">＋ 增加成员</button>
-   <div style="font-weight:600;margin:16px 0 6px">预设任务骨架（${(p.initial_todos||[]).length}）· 里程碑=特殊任务类型</div>
-   ${(p.initial_todos||[]).map((t,i)=>`<div style="border:1px solid var(--bd);border-radius:10px;padding:10px;margin-bottom:8px">
-    <div style="display:flex;gap:6px;align-items:center">
-     <input value="${esc(t.title||'')}" placeholder="任务标题" onchange="TPL.p.initial_todos[${i}].title=this.value" style="font-size:12.5px;border:1px solid var(--bd);border-radius:7px;padding:5px 8px;flex:1">
-     <select onchange="TPL.p.initial_todos[${i}].kind=this.value==='milestone'?'milestone':undefined" style="font-size:12px;border:1px solid var(--bd);border-radius:7px;padding:5px 6px">
-      <option value="task" ${t.kind!=='milestone'?'selected':''}>任务</option>
-      <option value="milestone" ${t.kind==='milestone'?'selected':''}>🚩 里程碑</option>
-     </select>
-     <button class="btn" style="color:#c0353b;border-color:#e5b4b4" onclick="tplDelTodo(${i})">删除</button>
-    </div>
-    <div style="display:flex;gap:6px;margin-top:6px">
-     <input value="${esc(t.detail||'')}" placeholder="任务描述（可选）" onchange="TPL.p.initial_todos[${i}].detail=this.value" style="font-size:12px;border:1px solid var(--bd);border-radius:7px;padding:5px 8px;flex:1">
-     <select onchange="TPL.p.initial_todos[${i}].assign_role=this.value||undefined" style="font-size:12px;border:1px solid var(--bd);border-radius:7px;padding:5px 6px;max-width:130px">
-      <option value="">未指派</option>
-      ${roleNames.map(n=>`<option value="${esc(n)}" ${t.assign_role===n?'selected':''}>${esc(n)}</option>`).join('')}
-     </select>
-    </div>
+   <h6>预设任务骨架（${(p.initial_todos||[]).length}）· 里程碑=特殊任务类型</h6>
+   ${(p.initial_todos||[]).map((t,i)=>`<div class="cfg-card" style="flex-wrap:wrap">
+    <input value="${esc(t.title||'')}" placeholder="任务标题" onchange="TPL.p.initial_todos[${i}].title=this.value" style="font-size:12.5px;border:1px solid var(--bd-2);border-radius:7px;padding:6px 8px;flex:1;min-width:160px">
+    <select onchange="TPL.p.initial_todos[${i}].kind=this.value==='milestone'?'milestone':undefined" style="font-size:12px;border:1px solid var(--bd-2);border-radius:7px;padding:6px">
+     <option value="task" ${t.kind!=='milestone'?'selected':''}>任务</option>
+     <option value="milestone" ${t.kind==='milestone'?'selected':''}>🚩 里程碑</option>
+    </select>
+    <select onchange="TPL.p.initial_todos[${i}].assign_role=this.value||undefined" style="font-size:12px;border:1px solid var(--bd-2);border-radius:7px;padding:6px;max-width:130px">
+     <option value="">未指派</option>
+     ${roleNames.map(n=>`<option value="${esc(n)}" ${t.assign_role===n?'selected':''}>${esc(n)}</option>`).join('')}
+    </select>
+    <button class="btn danger" style="flex:none" onclick="tplDelTodo(${i})">删除</button>
+    <input value="${esc(t.detail||'')}" placeholder="任务描述（可选）" onchange="TPL.p.initial_todos[${i}].detail=this.value" style="font-size:12px;border:1px solid var(--bd-2);border-radius:7px;padding:5px 8px;width:100%;margin-top:6px">
    </div>`).join('')}
    <button class="btn" onclick="tplAddTodo()">＋ 增加预设任务</button>
-   <div style="display:flex;gap:8px;margin-top:14px">
-    <button class="btn" style="background:#2563eb;color:#fff;border:none;padding:8px 18px" onclick="tplSaveStructured()">保存模版</button>
-   </div>
-   <div class="hint">建项目时按此骨架生成任务（指派按角色名解析到成员）；删成员会自动清掉引用它的任务指派。</div>`;
+   <div class="cfg-note" style="margin-top:12px">建项目时按此骨架生成任务（指派按角色名解析到成员）。指派角色被删除时对应任务的指派自动置空。</div>`;
 }
 function tplAddRole(){TPL.p.roles=TPL.p.roles||[];TPL.p.roles.push({def:'',name:''});renderTpl();}
 function tplDelRole(i){
   const name=(TPL.p.roles[i].name||TPL.p.roles[i].def||'').trim();
   TPL.p.roles.splice(i,1);
-  // 联动：引用该角色的预设任务指派置空
   (TPL.p.initial_todos||[]).forEach(t=>{if((t.assign_role||'')===name)t.assign_role='';});
   renderTpl();
 }
@@ -171,187 +584,47 @@ function tplSetPm(i){(TPL.p.roles||[]).forEach((r,j)=>r.pm=(j===i));renderTpl();
 function tplAddTodo(){TPL.p.initial_todos=TPL.p.initial_todos||[];TPL.p.initial_todos.push({title:''});renderTpl();}
 function tplDelTodo(i){TPL.p.initial_todos.splice(i,1);renderTpl();}
 async function tplSaveStructured(){
-  collectTplHead();
+  if(TPL.mode==='raw'){
+   const raw=$('tpl-raw').value;
+   const r=await fetch('/api/admin/templates/'+TPL.id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({raw})});
+   const d=await r.json();
+   if(d.ok){TPL.raw=raw;alert('已保存');}else alert(d.error||'失败');
+   return;
+  }
+  TPL.p.name=$('t-name').value.trim();TPL.p.description=$('t-desc').value.trim();TPL.p.watchdog=$('t-wd').checked;
   const r=await fetch('/api/admin/templates/'+TPL.id+'/structured',{method:'PUT',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({template:TPL.p})});
+   body:JSON.stringify({template:TPL.p})});
   const d=await r.json();
-  if(d.ok){TPL.raw=d.raw;alert('已保存（建项目即时生效）');render();}
+  if(d.ok){TPL.raw=d.raw;alert('已保存（建项目即时生效）');renderList();}
   else alert(d.error||'保存失败');
 }
-function collectTplHead(){
-  TPL.p.name=document.getElementById('t-name').value.trim();
-  TPL.p.description=document.getElementById('t-desc').value.trim();
-  TPL.p.watchdog=document.getElementById('t-wd').checked;
-}
-async function tplSaveRaw(){
-  const raw=document.getElementById('tpl-raw').value;
-  const r=await fetch('/api/admin/templates/'+TPL.id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({raw})});
-  const d=await r.json();
-  if(d.ok){alert('已保存');render();}else alert(d.error||'失败');
+
+/* ══ Agent 定义（定义层 · 只读） ══ */
+async function defDetail(defId){
+  const svc=await jget('/api/admin/services');
+  const mine=(svc.services||[]).filter(s=>s.agent_def_id===defId);
+  openDrawer('定义 · '+defId,`
+   <div class="kv"><i>同定义服务</i><span class="cfg-mono">${mine.length} 个实例</span></div>
+   ${mine.map(s=>`<div class="kv"><i></i><span>${esc(s.role)} <span class="cfg-mono">${s.service_id.slice(0,14)}…</span></span></div>`).join('')}
+   <div class="kv" style="font-size:12px;color:var(--tx-3);margin-top:10px">定义层资产（默认人设 / 默认 skill）由同定义的所有 agent 共享——修改请在具体 agent 上做服务级覆盖（Agents → 配置），此处只读防止误伤同类。</div>`);
 }
 
-async function render(){
-  $('#sync').textContent='加载中…';
-  if(TAB==='services'){
-    const d=await jget('/api/admin/services');
-    if(!d.services.length){main.innerHTML='<div class="empty">暂无服务——到 <a href="/customer" target="_blank">客户入口</a> 发起一单</div>';$('#sync').textContent='就绪';return;}
-    main.innerHTML=`<table><tr><th>角色</th><th>服务 ID</th><th>定义</th><th>项目</th><th>状态</th><th>唤醒</th><th>最近唤醒</th><th>积压</th><th>消息</th><th>订阅</th><th>操作</th></tr>`+
-    d.services.map(s=>`<tr>
-      <td><b>${esc(s.role)}</b></td>
-      <td class="mono">${s.service_id.slice(0,14)}…</td>
-      <td class="mono">${esc(s.agent_def_id.replace('consulting-','').replace('-def',''))}</td>
-      <td>${esc(s.project_name||'—')}</td>
-      <td><span class="badge ${s.status==='active'?'b-green':'b-gray'}">${s.status==='active'?'运行':'归档'}</span></td>
-      <td>${s.wakes}</td><td class="mono">${s.last_wake_at||'—'}</td>
-      <td>${s.open_events?`<span class="badge b-amber">${s.open_events}</span>`:'0'}</td>
-      <td>${s.messages}</td>
-      <td class="mono" style="max-width:140px">${(s.subscriptions||[]).join(',')}</td>
-      <td><button class="btn" onclick="detail('${s.service_id}')">明细</button>
-      <button class="btn" onclick="toggle('${s.service_id}','${s.status==='active'?'archived':'active'}')">${s.status==='active'?'归档':'恢复'}</button></td>
-    </tr>`).join('')+`</table><div class="hint">点「明细」看该服务的唤醒记录与运行统计</div>`;
-  } else if(TAB==='projects'){
-    const d=await jget('/api/admin/projects');
-    if(!d.projects.length){main.innerHTML='<div class="empty">暂无项目</div>';$('#sync').textContent='就绪';return;}
-    main.innerHTML=`<table><tr><th>项目</th><th>进度</th><th>PM</th><th>成员</th><th>待办</th><th>客户</th><th>看门狗</th><th>创建</th><th>操作</th></tr>`+
-    d.projects.map(p=>`<tr>
-      <td><b>${esc(p.name)}</b></td>
-      <td><span class="badge ${p.status==='active'?'b-green':'b-gray'}">${p.status==='active'?'运行中':'已归档'}</span></td>
-      <td class="mono">${esc((p.members[0]||'').slice(0,8))}</td>
-      <td>${p.members.map(m=>esc(m)).join('、')}</td>
-      <td>${p.todos_done}/${p.todos_total}</<td>
-      <td class="mono">${esc(p.customer_id||'—')}</td>
-      <td>${p.watchdog?'<span class="badge b-amber">on</span>':'—'}</td>
-      <td class="mono">${p.created_at}</td>
-      <td><button class="btn" onclick="group('${p.project_id}','${esc(p.name)}')">群沟通</button>
-      <button class="btn" onclick="files('${p.project_id}','')">交付物</button>
-      <button class="btn" onclick="projCfg('${p.project_id}','${esc(p.name)}')">配置</button></td>
-    </tr>`).join('')+`</table><div class="hint">群沟通=项目内服务间的协作直播 · 交付物=共享区文件</div>`;
-  } else if(TAB==='templates'){
-    const d=await jget('/api/admin/templates');
-    if(!d.templates.length){main.innerHTML='<div class="empty">暂无模版</div>';$('#sync').textContent='就绪';return;}
-    main.innerHTML=`<table><tr><th>模版 ID</th><th>名称</th><th>大小</th><th>操作</th></tr>`+
-    d.templates.map(t=>`<tr>
-      <td class="mono">${esc(t.id)}</td><td><b>${esc(t.name)}</b></td>
-      <td>${(t.size/1000).toFixed(1)} KB</td>
-      <td><button class="btn" onclick="tplEdit('${esc(t.id)}')">编辑</button></td>
-    </tr>`).join('')+`</table><div class="hint">模版即建项目时的角色/工具面/初始待办定义（config/project_templates/*.yaml）；保存前过 YAML 语法闸</div>`;
-  }
-  $('#sync').textContent='就绪';
+/* ══ 深链：#agent= / #project= / #tpl= ══ */
+function switchNav(v){
+  const el=document.querySelector(`.nav-item[data-v="${v}"]`);
+  if(el)el.click();
+}
+function applyHash(){
+  const h=location.hash;
+  if(h.startsWith('#agent=')){const sid=decodeURIComponent(h.slice(7));history.replaceState(null,'','#services');switchNav('agents');agentDetail(sid);}
+  else if(h.startsWith('#project=')){const pid=decodeURIComponent(h.slice(9));history.replaceState(null,'','#services');switchNav('projects');projDetail(pid);}
+  else if(h.startsWith('#tpl=')){const tid=decodeURIComponent(h.slice(5));history.replaceState(null,'','#services');switchNav('templates');tplDetail(tid);}
 }
 
-async function detail(sid){
-  const d=await jget('/api/admin/services/'+sid);
-  const s=d.service;
-  openDrawer(s.role+' · 明细',`
-    <div class="kv"><i>服务 ID</i><span class="mono">${s.service_id}</span></div>
-    <div class="kv"><i>定义</i><span class="mono">${esc(s.agent_def_id)}</span></div>
-    <div class="kv"><i>状态</i>${s.status}</div>
-    <div class="kv"><i>订阅</i><span class="mono">${(s.subscriptions||[]).join(', ')}</span></div>
-    <div class="kv"><i>工具面</i><span class="mono">${s.tools?esc(s.tools.join(', ')):'默认全量'}</span></div>
-    <div class="kv"><i>capabilities</i><span class="mono">${esc(JSON.stringify(s.capabilities||{}))}</span></div>
-    <div class="kv"><i>统计</i>唤醒 ${s.wakes} · 消息 ${s.messages} · 积压 ${s.open_events}</div>
-    <div style="margin:14px 0 8px;font-weight:600">最近唤醒（新→旧）</div>
-    ${d.wakes.map(w=>`<div class="wake"><b>#${w.seq} ${esc(w.reason||'')}</b><div class="m">${esc(w.started_at||'')} · ${esc(w.session_id)} ${w.tokens?'· '+w.tokens+' tok':''}</div></div>`).join('')||'<div class="empty">无唤醒记录</div>'}
-  `);
-}
-async function toggle(sid,status){await fetch(`/api/admin/services/${sid}/status`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});render()}
-/* ── 项目/agent 配置 ── */
-const ALL_TOOLS=['sense_project_peers','send_chat_message','project_file_list','project_file_read','project_file_write','deliver_to_shared','project_todo_create','project_todo_list','project_todo_update'];
-const ALL_SUBS=['message','group_message','timer','project_stall'];
-const ALL_CAPS=['vitals','routines','perception','projects'];
-async function projCfg(pid,name){
-  const [projList,defs,svcs]=await Promise.all([
-    jget('/api/admin/projects'), jget('/api/admin/defs'), jget('/api/admin/services')]);
-  const proj=projList.projects.find(x=>x.project_id===pid);
-  const members=(svcs.services||[]).filter(s=>s.project_id===pid);
-  openDrawer(name+' · 项目配置',`
-   <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
-     <span class="badge ${proj&&proj.watchdog?'b-amber':'b-gray'}">看门狗 ${proj&&proj.watchdog?'开':'关'}</span>
-     <button class="btn" onclick="toggleWd('${pid}')">${proj&&proj.watchdog?'关闭':'开启'}</button>
-     <span style="font-size:12px;color:var(--td)">有未完成待办但全员停摆时，自动提醒项目经理</span>
-   </div>
-   <div style="font-weight:600;margin:14px 0 6px">成员（${members.length}）· 点配置可调角色/工具/订阅</div>
-   ${members.map(s=>`
-   <div style="border:1px solid var(--bd);border-radius:10px;padding:10px 12px;margin-bottom:8px">
-    <div style="display:flex;align-items:center;gap:8px">
-      <b>${esc(s.role)}</b>
-      <span class="mono" style="color:var(--td);font-size:11px">${esc(s.agent_def_id.replace('consulting-','').replace('-def',''))}</span>
-      <span class="badge ${s.status==='active'?'b-green':'b-gray'}">${s.status==='active'?'运行':'归档'}</span>
-      <span style="font-size:11px;color:var(--td)">唤醒 ${s.wakes} · 消息 ${s.messages}</span>
-      <button class="btn" style="margin-left:auto" onclick="svcCfg('${s.service_id}')">配置</button>
-    </div>
-   </div>`).join('')||'<div class="empty">无成员</div>'}
-   <div style="font-weight:600;margin:16px 0 6px">增加成员</div>
-   <div style="display:flex;gap:8px">
-     <input id="add-role" placeholder="角色名，如：数据分析师" style="flex:1;font-size:13px;border:1px solid var(--bd);border-radius:8px;padding:8px 10px">
-     <select id="add-def" class="btn" style="font-size:13px">${(defs.defs||[]).map(d=>`<option value="${d.def_id}">${esc(d.display_name)}</option>`).join('')}</select>
-     <button class="btn" style="background:#2563eb;color:#fff;border:none" onclick="addMember('${pid}')">加入项目</button>
-   </div>`);
-}
-
-async function svcCfg(sid){
-  const d=await jget('/api/admin/services/'+sid);
-  const s=d.service;
-  const chk=(list,all)=>all.map(x=>`<label style="display:inline-flex;gap:5px;align-items:center;margin:2px 8px 2px 0;font-size:12.5px"><input type="checkbox" value="${x}" ${(list||[]).includes(x)?'checked':''}>${x}</label>`).join('');
-  openDrawer(s.role+' · agent 配置',`
-   <div class="kv"><i>角色名</i><input id="cfg-name" value="${esc(s.role)}" style="font-size:13px;border:1px solid var(--bd);border-radius:8px;padding:6px 10px;flex:1"></div>
-   <div class="kv"><i>定义</i><span class="mono">${esc(s.agent_def_id)}</span></div>
-   <div style="font-weight:600;margin:12px 0 4px">事件订阅</div><div>${chk(s.subscriptions,ALL_SUBS)}</div>
-   <div style="font-weight:600;margin:12px 0 4px">工具面 ${s.tools?'（按模版收紧）':'（默认全量）'}</div><div>${chk(s.tools||ALL_TOOLS,ALL_TOOLS)}</div>
-   <div style="font-weight:600;margin:12px 0 4px">能力开关</div><div>${ALL_CAPS.map(c=>`<label style="display:inline-flex;gap:5px;margin:2px 10px 2px 0;font-size:12.5px"><input type="checkbox" data-cap="${c}" ${((s.capabilities||{})[c]===true)?'checked':''}>${c}</label>`).join('')}</div>
-   <button class="btn" style="margin-top:14px;background:#2563eb;color:#fff;border:none;padding:8px 18px" onclick="saveCfg('${sid}')">保存配置</button>`);
-}
-async function saveCfg(sid){
-  const subs=[...document.querySelectorAll('.drawer input[type=checkbox]:not([data-cap])')].filter(c=>c.closest('div')&&c.closest('div').previousElementSibling===null);
-  // 简化：按区域收集
-  const boxes=[...document.querySelectorAll('#d-body input[type=checkbox]')];
-  const caps={};boxes.filter(b=>b.dataset.cap).forEach(b=>caps[b.dataset.cap]=b.checked);
-  const checkedTools=boxes.filter(b=>!b.dataset.cap&&ALL_TOOLS.includes(b.value)).map(b=>b.value);
-  const checkedSubs=boxes.filter(b=>!b.dataset.cap&&ALL_SUBS.includes(b.value)).map(b=>b.value);
-  await fetch(`/api/admin/services/${sid}/config`,{method:'PATCH',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({display_name:document.getElementById('cfg-name').value,
-      subscriptions:checkedSubs,tools:checkedTools,capabilities:caps})});
-  alert('已保存（工具面/订阅/能力即时生效于下次唤醒）');
-}
-async function toggleWd(pid){
-  const d=await jget('/api/admin/projects');const pr=d.projects.find(x=>x.project_id===pid);
-  await fetch(`/api/admin/projects/${pid}/watchdog`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!pr.watchdog})});
-  projCfg(pid,pr.name);
-}
-async function addMember(pid){
-  const role=document.getElementById('add-role').value.trim();
-  const def=document.getElementById('add-def').value;
-  if(!role){alert('角色名必填');return;}
-  const r=await fetch(`/api/admin/projects/${pid}/members`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({def,role})});
-  const d=await r.json();
-  if(d.ok){const pl=await jget('/api/admin/projects');projCfg(pid,pl.projects.find(x=>x.project_id===pid).name);}else alert(d.error);
-}
-
-async function group(pid,name){
-  const d=await jget(`/api/admin/projects/${pid}/group`);
-  openDrawer(name+' · 群沟通',d.messages.map(m=>`
-    <div class="msg ${m.from==='self'?'self':''}"><div class="m">${esc(m.sender_name)} · ${esc(m.ts)}</div>${esc(m.text)}</div>`).join('')||'<div class="empty">暂无群消息</div>');
-}
-async function files(pid,path){
-  const d=await jget(`/api/admin/projects/${pid}/files?path=${encodeURIComponent(path)}`);
-  if(d.kind==='dir'){
-    openDrawer('交付物 · '+(path||'shared/'),(path?`<div class="back" onclick="files('${pid}','${path.split('/').slice(0,-1).join('/')}')">‥ 上级</div>`:'')+
-      d.entries.map(e=>e.type==='dir'
-        ?`<div class="file" onclick="files('${pid}','${e.rel}')">📂 <b>${esc(e.name)}</b>/</div>`
-        :`<div class="file" onclick="files('${pid}','${e.rel}')">📄 ${esc(e.name)} <span style="margin-left:auto;color:var(--td)">${(e.size/1000).toFixed(1)}k</span></div>`).join('')||'<div class="empty">空</div>');
-  } else {
-    openDrawer('📄 '+path,`<div class="back" onclick="files('${pid}','${path.split('/').slice(0,-1).join('/')}')">‥ 上级</div><pre class="doc">${esc(d.content)}</pre>`);
-  }
-}
-render(); setInterval(render, 15000);
-// 从客户页「编辑项目模版」跳入：#tpl={id} 自动切 tab 并打开编辑器
-if(location.hash.startsWith('#tpl=')){
-  const _tid=decodeURIComponent(location.hash.slice(5));
-  history.replaceState(null,'','#services');
-  const _t=document.querySelector('.tab[data-t=\'templates\']');
-  if(_t)_t.click();
-  tplEdit(_tid);
-}
+/* init */
+renderList();
+applyHash();
+setInterval(()=>{if(!$('rpage').classList.contains('open')&&!$('drawer').classList.contains('open'))renderList();},15000);
 </script>
 </body>
 </html>

@@ -161,10 +161,21 @@ async def handle_get_messages(request: web.Request) -> web.Response:
             "title": t["title"],
             "status": t["status"],
             "assignee": sid_to_role.get(t.get("assignee_id") or "", ""),
+            "kind": t.get("kind") or "task",
             "created_at": (t.get("created_at") or "")[:16],
             "updated_at": (t.get("updated_at") or "")[:16],
         }
         for t in services_registry.list_project_todos(project["project_id"])
+    ]
+    sid_to_sid_role = {sid: role for role, sid in sid_to_role.items()}
+    todo_events = [
+        {
+            "kind": e["kind"],
+            "title": e["title"],
+            "actor": sid_to_sid_role.get(e.get("actor") or "", "") or (e.get("actor") or "系统"),
+            "at": (e.get("at") or "")[:16],
+        }
+        for e in services_registry.list_project_todo_events(project["project_id"])
     ]
     stage = "已完成" if todos and all(t["status"] == "done" for t in todos) else (
         "研究中" if todos else "受理中"
@@ -177,6 +188,7 @@ async def handle_get_messages(request: web.Request) -> web.Response:
         "stage": stage,
         "team": team,
         "todos": todos,
+        "todo_events": todo_events,
         "messages": messages,
     })
 
@@ -211,6 +223,7 @@ async def handle_list_sessions(request: web.Request) -> web.Response:
             "status": p["status"],
             "stage": stage,
             "customer_id": p.get("customer_id") or "",
+            "template_id": p.get("template_id") or "",
             "created_at": p["created_at"],
         })
     return _json({"ok": True, "projects": rows})

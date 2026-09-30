@@ -60,6 +60,11 @@ async def handle_profile_get(request: web.Request) -> web.Response:
             persona_content = ""
 
     meta = overlay.read_agent_meta(sid)
+    l4_overlay = overlay.read_l4(sid)
+    try:
+        from domain.identity.system_prompts import L4_LIFECYCLE_PROMPT as _L4
+    except Exception:  # noqa: BLE001
+        _L4 = ""
     return _json({
         "ok": True,
         "name": svc.get("display_name") or "",
@@ -68,6 +73,8 @@ async def handle_profile_get(request: web.Request) -> web.Response:
         "status": svc.get("status") or "",
         "persona": {"content": persona_content, "source": persona_source},
         "extra_prompt": overlay.read_extra_prompt(sid),
+        "l4": {"content": l4_overlay if l4_overlay is not None else _L4,
+               "source": "overlay" if l4_overlay is not None else "engine"},
     })
 
 
@@ -103,6 +110,9 @@ async def handle_profile_put(request: web.Request) -> web.Response:
     if "extra_prompt" in body:
         overlay.write_extra_prompt(sid, str(body["extra_prompt"] or ""))
         touched.append("extra_prompt")
+    if "l4" in body:
+        overlay.write_l4(sid, str(body["l4"] or ""))
+        touched.append("l4")
     if not touched:
         return _json({"ok": False, "error": "无可更新字段"}, 400)
     logger.info("AGENT_PROFILE_UPDATED %s fields=%s", sid[:12], touched)
@@ -306,7 +316,91 @@ async def handle_template_get(request: web.Request) -> web.Response:
     f = _templates_dir() / f"{tid}.yaml"
     if not _SAFE_NAME.match(tid) or not f.exists():
         return _json({"ok": False, "error": "模版不存在"}, 404)
-    return _json({"ok": True, "id": tid, "raw": f.read_text(encoding="utf-8")})
+    raw = f.read_text(encoding="utf-8")
+    # 结构化视图：roles / initial_todos 供表单编辑（raw 保留给源码模式）
+    import yaml as _yaml
+
+    try:
+        parsed = _yaml.safe_load(raw) or {}
+    except Exception:  # noqa: BLE001
+        parsed = {}
+    return _json({"ok": True, "id": tid, "raw": raw, "parsed": parsed})
+
+
+async def handle_template_put_structured(request: web.Request) -> web.Response:
+    # PUT /api/admin/templates/{tid}/structured — 结构化保存（表单编辑器）。
+    # 白名单字段写回 YAML；写回会丢文件头注释（调试口子可接受）。
+    tid = request.match_info["template_id"]
+    if not _SAFE_NAME.match(tid):
+        return _json({"ok": False, "error": "模版 id 非法"}, 400)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    tpl = body.get("template")
+    if not isinstance(tpl, dict):
+        return _json({"ok": False, "error": "缺少 template 对象"}, 400)
+
+    roles = tpl.get("roles")
+    if not isinstance(roles, list) or not roles:
+        return _json({"ok": False, "error": "roles 必须非空"}, 400)
+    pm_seen = False
+    for r in roles:
+        if not isinstance(r, dict) or not str(r.get("def") or "").strip():
+            return _json({"ok": False, "error": "每个成员的 def 必填"}, 400)
+        if r.get("pm"):
+            if pm_seen:
+                return _json({"ok": False, "error": "pm 角色只能有一个"}, 400)
+            pm_seen = True
+    todos = tpl.get("initial_todos")
+    if not isinstance(todos, list):
+        todos = []
+    role_names = {str(r.get("name") or r.get("def") or "") for r in roles}
+    for t in todos:
+        if not isinstance(t, dict) or not str(t.get("title") or "").strip():
+            return _json({"ok": False, "error": "预设任务每项需 title"}, 400)
+        ar = str(t.get("assign_role") or "")
+        if ar and ar not in role_names:
+            return _json({"ok": False, "error": f"预设任务的执行角色不存在: {ar}"}, 400)
+        if t.get("kind") not in (None, "task", "milestone"):
+            return _json({"ok": False, "error": "kind 仅 task / milestone"}, 400)
+
+    out = {
+        "name": str(tpl.get("name") or tid)[:60],
+        "watchdog": bool(tpl.get("watchdog")),
+        "description": str(tpl.get("description") or "")[:500],
+        "roles": [
+            {
+                "def": str(r.get("def")),
+                "name": str(r.get("name") or r.get("def"))[:30],
+                **({"pm": True} if r.get("pm") else {}),
+                **({"tools": [str(x) for x in r.get("tools")]}
+                   if isinstance(r.get("tools"), list) else {}),
+                **({"subscriptions": [str(x) for x in r.get("subscriptions")]}
+                   if isinstance(r.get("subscriptions"), list) else {}),
+                **({"capabilities": r.get("capabilities")}
+                   if isinstance(r.get("capabilities"), dict) else {}),
+            }
+            for r in roles
+        ],
+        "initial_todos": [
+            {
+                "title": str(t.get("title"))[:200],
+                **({"detail": str(t.get("detail"))[:1000]} if t.get("detail") else {}),
+                **({"assign_role": str(t.get("assign_role"))} if t.get("assign_role") else {}),
+                **({"kind": t.get("kind")} if t.get("kind") else {}),
+            }
+            for t in todos
+        ],
+    }
+    import yaml as _yaml
+
+    raw = _yaml.safe_dump(out, allow_unicode=True, sort_keys=False)
+    f = _templates_dir() / f"{tid}.yaml"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(raw, encoding="utf-8")
+    logger.info("TEMPLATE_SAVED_STRUCTURED id=%s", tid)
+    return _json({"ok": True, "raw": raw})
 
 
 async def handle_template_put(request: web.Request) -> web.Response:
@@ -351,4 +445,5 @@ def register_into(router: web.Application) -> None:
     router.router.add_get("/templates", handle_templates_list)
     router.router.add_get("/templates/{template_id}", handle_template_get)
     router.router.add_put("/templates/{template_id}", handle_template_put)
+    router.router.add_put("/templates/{template_id}/structured", handle_template_put_structured)
     logger.info("Agent admin routes registered into /api/admin/ (shared router)")

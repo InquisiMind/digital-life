@@ -651,7 +651,7 @@ function renderHeroFiles(){
  el.innerHTML=heroFiles.map((f,i)=>`<span class="hf-file">${svg('file',13)}<b>${esc(f.name)}</b><button title="移除" onclick="rmHeroFile(${i})">✕</button></span>`).join('');}
 function rmHeroFile(i){heroFiles.splice(i,1);renderHeroFiles();}
 function useEx(i){$('hf-text').value=EXAMPLES[i][1];$('hf-text').focus();}
-let memberSid={},memberAvatar={},teamCache=[],todosCache=[];
+let memberSid={},memberAvatar={},teamCache=[],todosCache=[],evCache=[];
 async function poll(){
  if(!cid)return;try{
   const d=await jget(`/api/customer/sessions/${cid}/messages`);
@@ -659,7 +659,7 @@ async function poll(){
   if(d.team){
    $('tab-comm').style.display='inline-flex';$('tab-tasks').style.display='inline-flex';$('tab-files').style.display='inline-flex';
    $('stage').style.display='inline-flex';$('stage').textContent=d.stage;
-   teamCache=d.team;todosCache=d.todos||[];
+   teamCache=d.team;todosCache=d.todos||[];evCache=d.todo_events||[];
    (d.team||[]).forEach(t=>{memberSid[t.role]=t.sid;memberAvatar[t.role]=t.avatar||'';})}
   const s=JSON.stringify(d.messages);
   if(s!==sig.chat){sig.chat=s;chatEl.innerHTML='';
@@ -700,30 +700,26 @@ async function pollComm(force){
 
 /* ── 任务协作：阶段步骤 + 转译动态 ── */
 function renderTasks(){
- // 任务看板：按负责人分组
+ // 任务看板：按负责人分组（里程碑任务带 🚩）
  const by={};
  todosCache.forEach(t=>{const a=t.assignee||'未分派';(by[a]=by[a]||[]).push(t);});
  const total=todosCache.length,done=todosCache.filter(t=>t.status==='done').length;
  $('steps').innerHTML=`<div class="tb-head">任务看板 · ${done}/${total} 已完成</div><div class="tb">`+
   Object.entries(by).map(([a,ts])=>`<div class="tb-col"><div class="tb-cap">${esc(a)}<span>${ts.filter(t=>t.status==='done').length}/${ts.length}</span></div>
-   ${ts.map(t=>`<div class="tb-card ${t.status}"><span class="bx"></span><div><b>${esc(t.title)}</b><div class="cfg-mono" style="margin-top:2px">${t.status==='done'?'已完成':'进行中'} · 建 ${esc((t.created_at||'').slice(5,10))}</div></div></div>`).join('')}
+   ${ts.map(t=>`<div class="tb-card ${t.status}"><span class="bx"></span><div><b>${t.kind==='milestone'?'🚩 ':''}${esc(t.title)}</b><div class="cfg-mono" style="margin-top:2px">${t.kind==='milestone'?'里程碑 · ':''}${t.status==='done'?'已完成':'进行中'} · 建 ${esc((t.created_at||'').slice(5,10))}</div></div></div>`).join('')}
   </div>`).join('')+`</div>`||'<div class="cfg-note">尚无任务</div>';
- // 任务时间线：创建 / 完成（真实 todo 生命周期）
- const evs=[];
- todosCache.forEach(t=>{
-  evs.push({at:t.created_at||'',k:'create',who:t.assignee||'—',title:t.title});
-  if(t.status==='done')evs.push({at:t.updated_at||t.created_at||'',k:'done',who:t.assignee||'—',title:t.title});
- });
- evs.sort((a,b)=>(b.at||'').localeCompare(a.at||''));
- $('tl').innerHTML=`<div class="tl-head"><span class="h">任务动态 · 创建与完成</span></div>`+
-  evs.map(e=>`<div class="ev k-${e.k==='done'?'done':'assign'}">
-   <div class="n">${svg(e.k==='done'?'done':'assign',13)}</div>
-   <div class="c"><div class="l1"><b style="cursor:pointer" onclick="openMember('${esc(e.who)}')">${esc(e.who)}</b><span class="act-t">${e.k==='done'?'完成任务':'创建任务'} · ${esc(e.title)}</span><span class="t">${esc((e.at||'').slice(5,16))}</span></div></div></div>`).join('')
-  ||'<div class="cfg-note">尚无任务动态</div>';
+ // 任务时间线：todo 变更事件流（引擎审计：创建/更新/完成/重启/改派）
+ const KTXT={created:'创建任务',updated:'更新任务',completed:'完成任务',reopened:'重启任务',reassigned:'改派任务'};
+ $('tl').innerHTML=`<div class="tl-head"><span class="h">任务动态 · 变更记录</span></div>`+
+  evCache.map(e=>`<div class="ev k-${e.kind==='completed'?'done':e.kind==='reassigned'?'assign':'note'}">
+   <div class="n">${svg(e.kind==='completed'?'done':e.kind==='reassigned'?'assign':'note',13)}</div>
+   <div class="c"><div class="l1"><b style="cursor:pointer" onclick="openMember('${esc(e.actor)}')">${esc(e.actor)}</b><span class="act-t">${TXT_SAFE(e.kind)} · ${esc(e.title)}</span><span class="t">${esc((e.at||'').slice(5,16))}</span></div></div></div>`).join('')
+  ||'<div class="cfg-note">尚无任务动态（新项目的任务动作会实时出现在这里）</div>';
 }
+function TXT_SAFE(k){return{created:'创建任务',updated:'更新任务',completed:'完成任务',reopened:'重启任务',reassigned:'改派任务'}[k]||'任务变更';}
 async function pollTeam(force){
  if(!cid)return;
- const g=JSON.stringify(todosCache);
+ const g=JSON.stringify([todosCache,evCache]);
  if(force||g!==sig.act){sig.act=g;renderTasks();}}
 
 /* ── 交付物 ── */
@@ -802,7 +798,11 @@ async function openProjCfg(){
   aget('/api/admin/projects'),aget('/api/admin/defs'),aget('/api/admin/services')]);
  const proj=(pl.projects||[]).find(p=>p.project_id===cfgPid);
  const members=(svcs.services||[]).filter(s=>s.project_id===cfgPid);
- openRPage('项目配置',(proj?proj.name:'')+' · 成员与工具面',`
+ openRPage('项目配置',(proj?proj.name:'')+' · 本项目成员与工具面',`
+  <div class="cfg-card" style="background:var(--bg-subtle)">
+   <span class="cfg-note">另一类配置：<b>项目模版</b>（预设任务骨架 / 角色班子）在本项目所用模版上编辑</span>
+   <button class="cfg-btn" style="margin-left:auto" onclick="editTemplate()">编辑项目模版 ↗</button>
+  </div>
   <h6>看门狗（自动催办）</h6>
   <div class="cfg-card"><span class="cfg-note">有未完成待办但全员停摆时，自动唤醒项目经理</span>
    <span class="mk ${proj&&proj.watchdog?'mk-draft':'mk-todo'}" style="margin-left:auto">${proj&&proj.watchdog?'开':'关'}</span>
@@ -821,6 +821,11 @@ async function openProjCfg(){
    <button class="cfg-btn pri" style="flex:none" onclick="addProjMember()">加入项目</button>
   </div>
   <div class="cfg-note" style="margin-top:14px">配置改动即时生效于该成员的下一次唤醒；工具面/订阅默认来自项目模版，可在此按需收紧。</div>`);}
+function editTemplate(){
+ const proj=(projCache.find(p=>p.project_id===cfgPid)||{});
+ const tid=proj.template_id||'ai_strategy';
+ window.open('/services#tpl='+encodeURIComponent(tid),'_blank');
+}
 async function toggleWd(){
  const pl=await aget('/api/admin/projects');
  const pr=(pl.projects||[]).find(p=>p.project_id===cfgPid);
@@ -860,8 +865,11 @@ function cfgBasicHTML(){const p=AG.profile;
  <div class="cfg-note" style="margin:-4px 0 6px">来源 <span class="mk-src ${p.persona.source==='overlay'?'src-overlay':p.persona.source==='def'?'src-def':'src-system'}">${p.persona.source==='overlay'?'服务级覆盖':p.persona.source==='def'?'定义层共享':'缺失'}</span>：保存写入本 agent 私有覆盖，不影响同定义的其他 agent；清空内容再保存 = 回到定义层共享。</div>
  <textarea class="cfg-area" id="cfg-persona" rows="10">${esc(p.persona.content)}</textarea>
  <h6>附加指令（追加到系统提示词尾部）</h6>
- <div class="cfg-note" style="margin:-4px 0 6px">本 agent 私有，留空 = 无附加。系统提示词其余部分（生命周期引擎段落 + 技能索引）由引擎组装，不在此覆盖。</div>
+ <div class="cfg-note" style="margin:-4px 0 6px">本 agent 私有，留空 = 无附加。</div>
  <textarea class="cfg-area" id="cfg-extra" rows="4" placeholder="例如：输出务必分点、结论先行；对客户保持正式称呼…">${esc(p.extra_prompt)}</textarea>
+ <h6>生命周期段落（L4 · 高级）</h6>
+ <div class="cfg-note" style="margin:-4px 0 6px">来源 <span class="mk-src ${p.l4&&p.l4.source==='overlay'?'src-overlay':'src-system'}">${p.l4&&p.l4.source==='overlay'?'服务级覆盖':'引擎默认'}</span>：躯体状态机与工具使用习惯的引擎段落。覆盖需谨慎——清空内容保存 = 回到引擎默认。技能索引由引擎按已注册 skill 动态组装，不在此覆盖。</div>
+ <textarea class="cfg-area" id="cfg-l4" rows="8" style="font-size:12px">${esc(p.l4?p.l4.content:'')}</textarea>
  <div style="margin-top:14px"><button class="cfg-btn pri" id="cfg-save" onclick="saveProfile()">保存基本信息</button></div>`;
 }
 function avaPreview(){
@@ -875,7 +883,7 @@ async function saveProfile(){
  try{
   const r=await fetch(`/api/admin/agents/${AG.sid}/profile`,{method:'PUT',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({name:$('cfg-name').value.trim(),avatar:$('cfg-avatar').value.trim(),
-    persona:$('cfg-persona').value,extra_prompt:$('cfg-extra').value})});
+    persona:$('cfg-persona').value,extra_prompt:$('cfg-extra').value,l4:$('cfg-l4')?$('cfg-l4').value:''})});
   const d=await r.json();
   if(!d.ok)throw new Error(d.error||'未知错误');
   AG.profile=await aget(`/api/admin/agents/${AG.sid}/profile`);

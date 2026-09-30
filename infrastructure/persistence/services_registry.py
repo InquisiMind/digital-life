@@ -92,9 +92,22 @@ CREATE TABLE IF NOT EXISTS project_todos (
     due_at TEXT,
     created_by TEXT DEFAULT '',
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    kind TEXT DEFAULT 'task'
 );
 CREATE INDEX IF NOT EXISTS idx_project_todos ON project_todos(project_id, status);
+CREATE TABLE IF NOT EXISTS project_todo_events (
+    rowid_ INTEGER PRIMARY KEY AUTOINCREMENT,
+    todo_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT DEFAULT '',
+    actor TEXT DEFAULT '',
+    from_value TEXT DEFAULT '',
+    to_value TEXT DEFAULT '',
+    at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_project_todo_events ON project_todo_events(project_id, at);
 """
 
 # 旧库增量列（刀4b 轻量化：projects 补 pm/watchdog 字段——列存在则跳过）
@@ -108,6 +121,9 @@ _MIGRATION_COLUMNS = {
     },
     "services": {
         "tools_json": "TEXT",
+    },
+    "project_todos": {
+        "kind": "TEXT DEFAULT 'task'",
     },
 }
 
@@ -311,18 +327,21 @@ def new_todo_id() -> str:
 
 def create_project_todo(project_id: str, title: str, *, parent_id: str = "",
                         detail: str = "", assignee_id: str = "",
-                        due_at: str | None = None, created_by: str = "") -> dict:
+                        due_at: str | None = None, created_by: str = "",
+                        kind: str = "task") -> dict:
     _ensure_schema()
     tid = new_todo_id()
     now = _now_iso()
     with _connect() as conn:
         conn.execute(
             "INSERT INTO project_todos (todo_id, project_id, parent_id, title, detail,"
-            " assignee_id, status, due_at, created_by, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)",
+            " assignee_id, status, due_at, created_by, created_at, updated_at, kind)"
+            " VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)",
             (tid, project_id, parent_id, title, detail, assignee_id, due_at,
-             created_by, now, now),
+             created_by, now, now, kind if kind in ("task", "milestone") else "task"),
         )
+        _log_todo_event(conn, tid, project_id, "created", title,
+                        actor=created_by or "system")
     row = get_project_todo(tid)
     assert row is not None
     return row
@@ -356,8 +375,10 @@ def list_project_todos(project_id: str, *, status: str | None = None,
 
 def update_project_todo(todo_id: str, *, title: str | None = None,
                         detail: str | None = None, assignee_id: str | None = None,
-                        status: str | None = None, due_at: str | None = None) -> bool:
+                        status: str | None = None, due_at: str | None = None,
+                        actor: str = "") -> bool:
     _ensure_schema()
+    before = get_project_todo(todo_id)
     sets = ["updated_at = ?"]
     params: list[Any] = [_now_iso()]
     if title is not None:
@@ -375,7 +396,47 @@ def update_project_todo(todo_id: str, *, title: str | None = None,
         cur = conn.execute(
             f"UPDATE project_todos SET {', '.join(sets)} WHERE todo_id = ?", params
         )
-    return cur.rowcount > 0
+        ok = cur.rowcount > 0
+        if ok and before is not None:
+            # 变更日志：完成/重启/改派单独成事件，其余归 updated
+            ev_kind = None
+            if status is not None and status != before.get("status"):
+                ev_kind = "completed" if status == "done" else "reopened"
+            elif assignee_id is not None and assignee_id != before.get("assignee_id"):
+                ev_kind = "reassigned"
+            else:
+                ev_kind = "updated"
+            _log_todo_event(conn, todo_id, before["project_id"], ev_kind,
+                            title or before["title"], actor=actor or "system",
+                            **{"from": before.get("assignee_id") or "",
+                               "to": assignee_id if assignee_id is not None
+                                     else before.get("assignee_id") or ""})
+    return ok
+
+
+# ── todo 变更日志（任务过程时间线的审计真相） ────────────────────────────
+
+
+def _log_todo_event(conn, todo_id: str, project_id: str, kind: str, title: str,
+                     *, actor: str = "system", **extra) -> None:
+    conn.execute(
+        "INSERT INTO project_todo_events (todo_id, project_id, kind, title,"
+        " actor, from_value, to_value, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (todo_id, project_id, kind, title, actor,
+         str(extra.get("from", "")), str(extra.get("to", "")), _now_iso()),
+    )
+
+
+def list_project_todo_events(project_id: str, limit: int = 200) -> list[dict]:
+    """任务变更事件（新→旧）：created/updated/completed/reopened/reassigned。"""
+    _ensure_schema()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM project_todo_events WHERE project_id = ?"
+            " ORDER BY at DESC, rowid DESC LIMIT ?",
+            (project_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def list_services_by_project(project_id: str, status: str | None = None) -> list[dict]:

@@ -152,6 +152,7 @@ def create_project_from_template(
             services_registry.create_project_todo(
                 pid, t["title"], detail=t.get("detail", ""),
                 assignee_id=assignee, created_by=final_pm,
+                kind=t.get("kind") or "task",
             )
         )
 

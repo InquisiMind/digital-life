@@ -254,6 +254,7 @@ def _handle_project_todo_update(args: Dict[str, Any], **_) -> str:
         detail=(args.get("detail") or "").strip() or None,
         assignee_id=(args.get("assignee_id") or "").strip() or None,
         status=status,
+        actor=sid,
     )
     return json.dumps({"updated": ok, "todo_id": todo_id}, ensure_ascii=False)
 

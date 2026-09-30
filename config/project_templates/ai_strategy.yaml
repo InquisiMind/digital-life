@@ -1,26 +1,62 @@
-# AI 战略咨询项目模版——四角色完整班子（分析全流程：研究×2 → 质控 → 定稿汇报）
-# 方法论住各角色 persona 与 PM 的待办拆解；引擎只提供人+事+文件+社交结构
 name: AI战略咨询
 watchdog: false
+description: ''
 roles:
-  - def: consulting-partner-def
-    name: 咨询合伙人
-    pm: true
-    tools: [sense_project_peers, send_chat_message, project_file_write,
-            project_file_read, deliver_to_shared, project_todo_create,
-            project_todo_list, project_todo_update]
-  - def: consulting-researcher-def
-    name: 行业研究员
-    tools: [sense_project_peers, send_chat_message, project_file_write,
-            project_file_read, deliver_to_shared, project_todo_list,
-            project_todo_update]
-  - def: consulting-enterprise-def
-    name: 企业研究员
-    tools: [sense_project_peers, send_chat_message, project_file_write,
-            project_file_read, deliver_to_shared, project_todo_list,
-            project_todo_update]
-  - def: consulting-qc-def
-    name: 质控审查员
-    tools: [sense_project_peers, send_chat_message, project_file_read,
-            project_file_list, project_todo_list, project_todo_update]
-initial_todos: []   # S00 界定后由 PM 按客户情况拆解——进度=待办+skill
+- def: consulting-partner-def
+  name: 咨询合伙人
+  pm: true
+  tools:
+  - sense_project_peers
+  - send_chat_message
+  - project_file_write
+  - project_file_read
+  - deliver_to_shared
+  - project_todo_create
+  - project_todo_list
+  - project_todo_update
+- def: consulting-researcher-def
+  name: 行业研究员
+  tools:
+  - sense_project_peers
+  - send_chat_message
+  - project_file_write
+  - project_file_read
+  - deliver_to_shared
+  - project_todo_list
+  - project_todo_update
+- def: consulting-enterprise-def
+  name: 企业研究员
+  tools:
+  - sense_project_peers
+  - send_chat_message
+  - project_file_write
+  - project_file_read
+  - deliver_to_shared
+  - project_todo_list
+  - project_todo_update
+- def: consulting-qc-def
+  name: 质控审查员
+  tools:
+  - sense_project_peers
+  - send_chat_message
+  - project_file_read
+  - project_file_list
+  - project_todo_list
+  - project_todo_update
+initial_todos:
+- title: 需求界定与任务拆解
+  detail: 理解客户诉求，澄清目标与边界，拆解为研究与审查任务并指派
+  assign_role: 咨询合伙人
+- title: 🚚 行业研究交付
+  detail: 行业现状、竞品与可行路径研究，产出研究初稿
+  assign_role: 行业研究员
+- title: 🚚 企业情况研究交付
+  detail: 客户企业现状梳理与 AI 适用性分析，产出研究初稿
+  assign_role: 企业研究员
+- title: 交付质量审查
+  detail: 双线研究结论的一致性与完整性审查，出具合并意见
+  assign_role: 质控审查员
+- title: 🚩 结论定稿与客户汇报
+  detail: 合并双线结论与审查意见，定稿并汇报客户（里程碑）
+  assign_role: 咨询合伙人
+  kind: milestone

@@ -89,22 +89,105 @@ async function createAgent(){
   if(d.ok){closeDrawer();render();}else alert(d.error||'创建失败');
 }
 
-/* ── 项目模版编辑 ── */
+/* ── 项目模版编辑（结构化表单 + 源码模式） ── */
+let TPL={mode:'form'};
 async function tplEdit(tid){
-  const d=await jget('/api/admin/templates/'+tid);
-  openDrawer('模版 · '+tid,`
-   <textarea id="tpl-raw" style="width:100%;min-height:56vh;font-family:ui-monospace,monospace;font-size:12px;line-height:1.7;border:1px solid var(--bd);border-radius:10px;padding:12px">${esc(d.raw)}</textarea>
-   <div style="display:flex;gap:8px;margin-top:10px">
-    <button class="btn" style="background:#2563eb;color:#fff;border:none;padding:8px 18px" onclick="tplSave('${esc(tid)}')">保存</button>
-    <button class="btn" onclick="tplSave('${esc(tid)}',true)">校验不保存</button>
-   </div>`);
+  const [d,defs]=await Promise.all([jget('/api/admin/templates/'+tid),jget('/api/admin/defs')]);
+  TPL={id:tid,p:d.parsed||{},defs:defs.defs||[],mode:'form'};
+  openDrawer('模版 · '+tid,'<div id="tpl-body"></div>');
+  renderTpl();
 }
-async function tplSave(tid,dry){
-  const raw=document.getElementById('tpl-raw').value;
-  const r=await fetch('/api/admin/templates/'+tid,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({raw})});
+function renderTpl(){
+  const el=document.getElementById('tpl-body');if(!el)return;
+  const p=TPL.p;
+  if(TPL.mode==='raw'){
+    el.innerHTML=`<textarea id="tpl-raw" style="width:100%;min-height:56vh;font-family:ui-monospace,monospace;font-size:12px;line-height:1.7;border:1px solid var(--bd);border-radius:10px;padding:12px">${esc(TPL.raw||'')}</textarea>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button class="btn" style="background:#2563eb;color:#fff;border:none;padding:8px 18px" onclick="tplSaveRaw()">保存源码</button>
+      <button class="btn" onclick="TPL.mode='form';renderTpl()">← 返回表单</button>
+    </div>`;
+    if(!TPL.raw)jget('/api/admin/templates/'+TPL.id).then(x=>{TPL.raw=x.raw;const t=document.getElementById('tpl-raw');if(t)t.value=x.raw;});
+    return;
+  }
+  const roleNames=(p.roles||[]).map(r=>r.name||r.def);
+  el.innerHTML=`
+   <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+    <b style="font-size:13px">结构化编辑</b>
+    <button class="btn" style="margin-left:auto" onclick="TPL.mode='raw';renderTpl()">源码模式</button>
+   </div>
+   <div class="kv"><i>模版名</i><input id="t-name" value="${esc(p.name||'')}" style="font-size:13px;border:1px solid var(--bd);border-radius:8px;padding:7px 10px;flex:1"></div>
+   <div class="kv"><i>描述</i><input id="t-desc" value="${esc(p.description||'')}" style="font-size:13px;border:1px solid var(--bd);border-radius:8px;padding:7px 10px;flex:1"></div>
+   <div class="kv"><i>看门狗</i><label style="font-size:12.5px"><input type="checkbox" id="t-wd" ${p.watchdog?'checked':''}> 全员停摆时自动催 PM</label></div>
+   <div style="font-weight:600;margin:14px 0 6px">项目成员（${(p.roles||[]).length}）</div>
+   ${(p.roles||[]).map((r,i)=>`<div style="border:1px solid var(--bd);border-radius:10px;padding:10px;margin-bottom:8px">
+    <div style="display:flex;gap:6px;align-items:center">
+     <input value="${esc(r.def||'')}" list="def-list" placeholder="定义" onchange="TPL.p.roles[${i}].def=this.value" style="font-size:12px;border:1px solid var(--bd);border-radius:7px;padding:5px 8px;width:180px;font-family:ui-monospace,monospace">
+     <input value="${esc(r.name||'')}" placeholder="角色名" onchange="tplRoleRenamed(${i},this.value)" style="font-size:12.5px;border:1px solid var(--bd);border-radius:7px;padding:5px 8px;flex:1">
+     <label style="font-size:12px;white-space:nowrap"><input type="radio" name="t-pm" ${r.pm?'checked':''} onchange="tplSetPm(${i})"> PM</label>
+     <button class="btn" style="color:#c0353b;border-color:#e5b4b4" onclick="tplDelRole(${i})">删除</button>
+    </div>
+    <input value="${esc((r.tools||[]).join(', '))}" placeholder="工具面（逗号分隔，留空=默认全量）" onchange="TPL.p.roles[${i}].tools=this.value?this.value.split(',').map(x=>x.trim()).filter(Boolean):undefined" style="font-size:11.5px;border:1px solid var(--bd);border-radius:7px;padding:5px 8px;width:100%;margin-top:6px;font-family:ui-monospace,monospace">
+   </div>`).join('')}
+   <datalist id="def-list">${TPL.defs.map(d=>`<option value="${esc(d.def_id)}">${esc(d.display_name)}</option>`).join('')}</datalist>
+   <button class="btn" onclick="tplAddRole()">＋ 增加成员</button>
+   <div style="font-weight:600;margin:16px 0 6px">预设任务骨架（${(p.initial_todos||[]).length}）· 里程碑=特殊任务类型</div>
+   ${(p.initial_todos||[]).map((t,i)=>`<div style="border:1px solid var(--bd);border-radius:10px;padding:10px;margin-bottom:8px">
+    <div style="display:flex;gap:6px;align-items:center">
+     <input value="${esc(t.title||'')}" placeholder="任务标题" onchange="TPL.p.initial_todos[${i}].title=this.value" style="font-size:12.5px;border:1px solid var(--bd);border-radius:7px;padding:5px 8px;flex:1">
+     <select onchange="TPL.p.initial_todos[${i}].kind=this.value==='milestone'?'milestone':undefined" style="font-size:12px;border:1px solid var(--bd);border-radius:7px;padding:5px 6px">
+      <option value="task" ${t.kind!=='milestone'?'selected':''}>任务</option>
+      <option value="milestone" ${t.kind==='milestone'?'selected':''}>🚩 里程碑</option>
+     </select>
+     <button class="btn" style="color:#c0353b;border-color:#e5b4b4" onclick="tplDelTodo(${i})">删除</button>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:6px">
+     <input value="${esc(t.detail||'')}" placeholder="任务描述（可选）" onchange="TPL.p.initial_todos[${i}].detail=this.value" style="font-size:12px;border:1px solid var(--bd);border-radius:7px;padding:5px 8px;flex:1">
+     <select onchange="TPL.p.initial_todos[${i}].assign_role=this.value||undefined" style="font-size:12px;border:1px solid var(--bd);border-radius:7px;padding:5px 6px;max-width:130px">
+      <option value="">未指派</option>
+      ${roleNames.map(n=>`<option value="${esc(n)}" ${t.assign_role===n?'selected':''}>${esc(n)}</option>`).join('')}
+     </select>
+    </div>
+   </div>`).join('')}
+   <button class="btn" onclick="tplAddTodo()">＋ 增加预设任务</button>
+   <div style="display:flex;gap:8px;margin-top:14px">
+    <button class="btn" style="background:#2563eb;color:#fff;border:none;padding:8px 18px" onclick="tplSaveStructured()">保存模版</button>
+   </div>
+   <div class="hint">建项目时按此骨架生成任务（指派按角色名解析到成员）；删成员会自动清掉引用它的任务指派。</div>`;
+}
+function tplAddRole(){TPL.p.roles=TPL.p.roles||[];TPL.p.roles.push({def:'',name:''});renderTpl();}
+function tplDelRole(i){
+  const name=(TPL.p.roles[i].name||TPL.p.roles[i].def||'').trim();
+  TPL.p.roles.splice(i,1);
+  // 联动：引用该角色的预设任务指派置空
+  (TPL.p.initial_todos||[]).forEach(t=>{if((t.assign_role||'')===name)t.assign_role='';});
+  renderTpl();
+}
+function tplRoleRenamed(i,v){
+  const old=(TPL.p.roles[i].name||TPL.p.roles[i].def||'').trim();
+  TPL.p.roles[i].name=v;
+  (TPL.p.initial_todos||[]).forEach(t=>{if((t.assign_role||'')===old)t.assign_role=v;});
+}
+function tplSetPm(i){(TPL.p.roles||[]).forEach((r,j)=>r.pm=(j===i));renderTpl();}
+function tplAddTodo(){TPL.p.initial_todos=TPL.p.initial_todos||[];TPL.p.initial_todos.push({title:''});renderTpl();}
+function tplDelTodo(i){TPL.p.initial_todos.splice(i,1);renderTpl();}
+async function tplSaveStructured(){
+  collectTplHead();
+  const r=await fetch('/api/admin/templates/'+TPL.id+'/structured',{method:'PUT',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({template:TPL.p})});
   const d=await r.json();
-  if(d.ok){alert(dry?'YAML 语法 OK':'已保存（建项目链路即时使用新模版）');if(!dry)closeDrawer();}
-  else alert(d.error||'失败');
+  if(d.ok){TPL.raw=d.raw;alert('已保存（建项目即时生效）');render();}
+  else alert(d.error||'保存失败');
+}
+function collectTplHead(){
+  TPL.p.name=document.getElementById('t-name').value.trim();
+  TPL.p.description=document.getElementById('t-desc').value.trim();
+  TPL.p.watchdog=document.getElementById('t-wd').checked;
+}
+async function tplSaveRaw(){
+  const raw=document.getElementById('tpl-raw').value;
+  const r=await fetch('/api/admin/templates/'+TPL.id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({raw})});
+  const d=await r.json();
+  if(d.ok){alert('已保存');render();}else alert(d.error||'失败');
 }
 
 async function render(){
@@ -261,6 +344,14 @@ async function files(pid,path){
   }
 }
 render(); setInterval(render, 15000);
+// 从客户页「编辑项目模版」跳入：#tpl={id} 自动切 tab 并打开编辑器
+if(location.hash.startsWith('#tpl=')){
+  const _tid=decodeURIComponent(location.hash.slice(5));
+  history.replaceState(null,'','#services');
+  const _t=document.querySelector('.tab[data-t=\'templates\']');
+  if(_t)_t.click();
+  tplEdit(_tid);
+}
 </script>
 </body>
 </html>

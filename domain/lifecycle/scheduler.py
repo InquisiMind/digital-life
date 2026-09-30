@@ -1322,6 +1322,15 @@ def _wake_digital_life_inner_safe(
             _l4_lifecycle = L4_LIFECYCLE_PROMPT
         except Exception:
             pass
+        # 服务级 L4 覆盖（存在则整段替换引擎默认）
+        if instance_id:
+            try:
+                from domain.service.overlay import read_l4
+                _l4_override = read_l4(instance_id)
+                if _l4_override and _l4_override.strip():
+                    _l4_lifecycle = _l4_override
+            except Exception:
+                pass
         _persona = ""
         try:
             from domain.memory.context.selectors.persona import load_life_persona, MISSING_LIFE_PERSONA

@@ -60,6 +60,36 @@ def write_persona(service_id: str, content: str) -> bool:
     return True
 
 
+# ── L4 生命周期段落覆盖（默认=引擎常量，覆盖后整段替换） ────────────────
+
+
+def l4_path(service_id: str) -> Optional[Path]:
+    d = service_overlay_dir(service_id)
+    return (d / "persona" / "L4_PROMPT.md") if d else None
+
+
+def read_l4(service_id: str) -> Optional[str]:
+    p = l4_path(service_id)
+    if p is None or not p.exists():
+        return None
+    try:
+        return p.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def write_l4(service_id: str, content: str) -> bool:
+    p = l4_path(service_id)
+    if p is None:
+        return False
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if not content.strip():
+        p.unlink(missing_ok=True)
+        return True
+    p.write_text(content, encoding="utf-8")
+    return True
+
+
 # ── 附加指令（追加到 system prompt 尾部的服务级段落） ──────────────────
 
 

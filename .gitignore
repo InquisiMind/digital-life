@@ -173,3 +173,4 @@ shared/tools/tools_manifest.json
 # === 本地快照/备份 ===
 backup/
 *.bak_*
+.zcodeignore

@@ -121,7 +121,7 @@ button{font-family:var(--font)}
 .msg-u .who{font-size:11px;color:var(--tx-3)}
 .msg-u .bub{background:var(--pri-weak);padding:11px 16px;border-radius:16px 16px 4px 16px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
 .msg-a{display:flex;gap:10px;max-width:92%}
-.msg-a .ava{flex:none;width:30px;height:30px;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:650;margin-top:20px;cursor:pointer}
+.msg-a .ava{flex:none;width:30px;height:30px;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:650;margin-top:1px;cursor:pointer}
 .msg-a .c{min-width:0}
 .msg-a .hd{display:flex;align-items:baseline;gap:7px;margin:2px 0 4px 2px}
 .msg-a .hd b{font-size:12.5px;font-weight:600}
@@ -416,6 +416,8 @@ let cid=localStorage.getItem('yl_customer_id')||'';
 let projSel=localStorage.getItem('yl_last_proj')||'';
 let sig={chat:'',act:'',files:''};let filePath='';let rawMode=false;let projCache=[];
 const AVA=['#2f6bff','#0e9f6e','#c2790a','#7a5cff','#e0526d'];
+const MY_NAME='lan';  // 个人中心演示名；历史消息展示与新消息发送统一用它
+
 const esc=s=>(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
 const cleanId=t=>esc(t).replace(/\b(svc|ptodo|prj|cust)-[0-9a-f]{6,}\b/g,'').replace(/\s{2,}/g,' ');
 const icoN={
@@ -528,6 +530,7 @@ function newSession(){cid='';projSel='';
  localStorage.removeItem('yl_customer_id');localStorage.removeItem('yl_last_proj');
  sig={chat:'',act:'',files:''};filePath='';chatEl.innerHTML='';
  $('tab-comm').style.display='none';$('tab-tasks').style.display='none';$('tab-files').style.display='none';$('stage').style.display='none';
+ $('comp-wrap').style.display='none';$('attach').style.display='none';$('comp-note').textContent='';
  setPane('chat');closeRPage();welcome();renderHist();loadHead();}
 function loadHead(){
  if(cid&&projCache.length){const p=projCache.find(x=>x.project_id===projSel)||projCache[0];
@@ -566,11 +569,11 @@ async function loadProjects(){
 /* ── 对话 ── */
 function bubble(m){
  if(m.from==='customer'){
-  chatEl.insertAdjacentHTML('beforeend',`<div class="msg-u"><div class="who">${esc(m.sender_name||'我')}</div><div class="bub">${esc(m.text)}</div></div>`);return;}
+  chatEl.insertAdjacentHTML('beforeend',`<div class="msg-u"><div class="who">${esc(MY_NAME)}</div><div class="bub">${esc(m.text)}</div></div>`);return;}
  chatEl.insertAdjacentHTML('beforeend',`<div class="msg-a">
   <div class="ava" style="background:${avc(m.sender_name)}" onclick="openMember('${esc(m.sender_name||'咨询合伙人')}')">${esc((m.sender_name||'咨询').slice(0,2))}</div>
   <div class="c"><div class="hd"><b>${esc(m.sender_name||'咨询合伙人')}</b><span>元理咨询</span></div>
-  <div class="bub"><div class="body">${docify(trust(md(m.text)))}</div></div></div></div>`);}
+  <div class="bub" style="cursor:pointer" title="查看该成员的执行过程" onclick="msgToTrace('${esc(m.sender_name||'咨询合伙人')}', this)" data-mtext="${esc((m.text||'').slice(0,60))}"><div class="body">${docify(trust(md(m.text)))}</div></div></div></div>`);}
 function typing(){chatEl.insertAdjacentHTML('beforeend',`<div class="msg-a" id="typing">
  <div class="ava" style="background:#8f91a3">…</div><div><div class="typing"><i></i><i></i><i></i> 正在思考…</div></div></div>`);}
 let heroFiles=[];
@@ -715,8 +718,12 @@ async function openMember(role, locateText){
  $('drawer').classList.add('open');
  // 定位：找到含该消息文本的唤醒轨迹 → 展开并滚动
  if(locateText){
+  // 轨迹侧是 md 渲染后的纯文本，比对前两边都归一化去 md 符号与空白
+  const norm=t=>(t||'').replace(/[*#>`~_]/g,'').replace(/\s+/g,'');
+  const key=norm(locateText).slice(0,20);
   const trcs=[...document.querySelectorAll('.trc')];
-  const hit=trcs.find(t=>t.textContent.includes(locateText.slice(0,24)));
+  // 客户窗口的最终回复走工具通道，轨迹发言步骤里没有原文——定位不到就展开最新唤醒兜底
+  const hit=trcs.find(t=>norm(t.textContent).includes(key))||trcs[0];
   if(hit){hit.classList.add('open');
    setTimeout(()=>hit.scrollIntoView({behavior:'smooth',block:'start'}),120);}
  }
@@ -848,7 +855,7 @@ poll=async function(){await _origPoll();
 /* ── 发送 ── */
 sendBtn.onclick=async()=>{
  const text=textEl.value.trim();if(!text)return;
- const customer_name='用户';
+ const customer_name=MY_NAME;
  chatEl.innerHTML='';
  bubble({from:'customer',sender_name:customer_name,text});typing();sendBtn.disabled=true;
  try{const r=await fetch('/api/customer/sessions',{method:'POST',headers:{'Content-Type':'application/json'},

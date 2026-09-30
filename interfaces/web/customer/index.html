@@ -24,9 +24,20 @@ button{font-family:var(--font)}
 /* ══ 布局骨架：左 rail + 中 main + 右 drawer ══ */
 .app{height:100vh;display:flex}
 .rail{width:264px;flex:none;background:var(--rail);border-right:1px solid var(--bd);display:flex;flex-direction:column}
-.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.main{flex:1;min-width:0;display:flex;flex-direction:column;position:relative}
 .drawer{width:0;flex:none;background:var(--bg);border-left:1px solid var(--bd);overflow:hidden;transition:width .18s ease;display:flex;flex-direction:column}
 .drawer.open{width:340px}
+
+/* ══ 右侧整页：项目配置 / 个人中心（执行轨迹才用浮窗抽屉） ══ */
+.rpage{position:absolute;inset:0;background:var(--bg);z-index:20;transform:translateX(100%);visibility:hidden;transition:transform .22s ease,visibility .22s;display:flex;flex-direction:column}
+.rpage.open{transform:none;visibility:visible}
+.rp-head{flex:none;height:58px;display:flex;align-items:center;gap:10px;padding:0 20px;border-bottom:1px solid var(--bd)}
+.rp-back{display:inline-flex;align-items:center;border:none;background:none;color:var(--pri);font-size:13px;font-weight:600;cursor:pointer;padding:7px 10px;border-radius:9px}
+.rp-back:hover{background:var(--pri-weak)}
+.rp-title{font-size:15px;font-weight:650}
+.rp-title small{display:block;font-size:11.5px;color:var(--tx-3);font-weight:400;margin-top:1px}
+.rp-body{flex:1;overflow-y:auto;padding:20px 24px 32px}
+.rp-inner{max-width:720px;margin:0 auto}
 
 /* ══ 左侧栏 ══ */
 .rail-brand{display:flex;align-items:center;padding:14px 16px 10px}
@@ -47,7 +58,7 @@ button{font-family:var(--font)}
 .sess .more{display:none;position:absolute;top:8px;right:8px;border:none;background:transparent;color:var(--tx-3);border-radius:6px;padding:2px 6px;font-size:13px;font-weight:700;cursor:pointer;letter-spacing:1px}
 .sess:hover .more{display:block}
 .sess .more:hover{background:var(--bd);color:var(--tx)}
-.sess .menu{display:none;position:absolute;top:32px;right:8px;background:var(--bg);border:1px solid var(--bd);border-radius:10px;box-shadow:var(--sh-2);z-index:6;min-width:100px;padding:4px}
+.sess .menu{display:none;position:fixed;background:var(--bg);border:1px solid var(--bd);border-radius:10px;box-shadow:var(--sh-2);z-index:60;min-width:104px;padding:4px}
 .sess.menu-open .menu{display:block}
 .sess .menu button{display:block;width:100%;text-align:left;border:none;background:none;padding:7px 10px;font-size:12.5px;color:var(--tx-2);border-radius:7px;cursor:pointer}
 .sess .menu button:hover{background:var(--bg-sunken);color:var(--tx)}
@@ -160,30 +171,30 @@ button{font-family:var(--font)}
 .hf-att{flex:none;width:34px;height:34px;border:none;background:transparent;border-radius:10px;color:var(--tx-3);display:flex;align-items:center;justify-content:center;cursor:pointer}
 .hf-att:hover{background:var(--bg-sunken);color:var(--pri)}
 .hf-att svg{width:17px;height:17px}
-.hf-btn{margin-left:auto;flex:none;border:none;color:#fff;border-radius:10px;padding:8px 18px;font-size:13px;font-weight:600;cursor:pointer;background:linear-gradient(110deg,#3b6bf5,#7c3aed 45%,#f5319e 55%,#3b6bf5);background-size:220% 100%;animation:hfFlow 6s ease-in-out infinite;transition:box-shadow .15s}
+.hf-btn{margin-left:auto;flex:none;border:none;color:#fff;border-radius:10px;padding:8px 18px;font-size:13px;font-weight:600;cursor:pointer;background:linear-gradient(115deg,#3b6bf5 0%,#7c3aed 32%,#f5319e 50%,#7c3aed 68%,#3b6bf5 100%);background-size:200% 100%;animation:hfFlow 3.5s linear infinite;transition:box-shadow .15s}
 .hf-btn:hover{box-shadow:0 4px 16px rgba(124,58,237,.30)}
-@keyframes hfFlow{0%,100%{background-position:0% 0}50%{background-position:100% 0}}
+@keyframes hfFlow{from{background-position:200% 0}to{background-position:0% 0}}
 .hf-files{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
 .hf-file{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--tx-2);background:var(--bg-subtle);border:1px solid var(--bd);border-radius:8px;padding:4px 8px;max-width:230px}
 .hf-file b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
 .hf-file button{border:none;background:none;color:var(--tx-3);cursor:pointer;font-size:14px;padding:0 1px;line-height:1}
 .hf-file button:hover{color:#c0353b}
 .hf-file svg{width:13px;height:13px;color:var(--tx-3);flex:none}
-/* composer */
+/* composer：输入在上，工具条在下（＋附件 / 发送），附件不是输入框的左邻 */
 .comp-wrap{flex:none;padding:8px 20px 14px;background:linear-gradient(transparent,var(--bg) 34%)}
-.comp{max-width:760px;margin:0 auto;border:1px solid var(--bd-2);border-radius:var(--r-l);padding:9px 12px;display:flex;gap:10px;align-items:flex-end;transition:all .15s;box-shadow:var(--sh-1)}
+.comp{max-width:760px;margin:0 auto;border:1px solid var(--bd-2);border-radius:var(--r-l);padding:10px 14px 8px;display:flex;flex-direction:column;gap:2px;transition:all .15s;box-shadow:var(--sh-1)}
 .comp:focus-within{border-color:var(--pri);box-shadow:0 0 0 3px var(--pri-weak)}
-.comp .nm{flex:none;width:92px;border:none;background:transparent;font-size:13px;color:var(--tx-2);padding:10px 2px}
-.comp .nm:focus,.comp textarea:focus{outline:none}
-.comp textarea{flex:1;border:none;background:transparent;resize:none;font-family:var(--font);font-size:14px;line-height:1.6;padding:10px 2px;max-height:120px}
-.comp .send{flex:none;width:36px;height:36px;border-radius:11px;border:none;background:var(--pri);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background .15s}
-.comp .send:hover{background:var(--pri-deep)}
-.comp .send:disabled{background:var(--bd-2);cursor:default}
-.comp .send svg{width:16px;height:16px}
-.foot-note{max-width:760px;margin:7px auto 0;text-align:center;font-size:11px;color:var(--tx-3)}
-.comp .attach{flex:none;width:34px;height:34px;border:none;background:transparent;border-radius:10px;color:var(--tx-3);display:flex;align-items:center;justify-content:center;cursor:pointer;margin-bottom:1px}
+.comp textarea{width:100%;border:none;background:transparent;resize:none;font-family:var(--font);font-size:14px;line-height:1.6;padding:2px;max-height:120px}
+.comp textarea:focus{outline:none}
+.comp-bar{display:flex;align-items:center;gap:6px}
+.comp .attach{flex:none;width:30px;height:30px;border:none;background:transparent;border-radius:9px;color:var(--tx-3);display:flex;align-items:center;justify-content:center;cursor:pointer}
 .comp .attach:hover{background:var(--bg-sunken);color:var(--pri)}
 .comp .attach svg{width:17px;height:17px}
+.comp .send{margin-left:auto;flex:none;width:32px;height:32px;border-radius:10px;border:none;background:var(--pri);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background .15s}
+.comp .send:hover{background:var(--pri-deep)}
+.comp .send:disabled{background:var(--bd-2);cursor:default}
+.comp .send svg{width:15px;height:15px}
+.foot-note{max-width:760px;margin:7px auto 0;text-align:center;font-size:11px;color:var(--tx-3)}
 .up-ing{font-size:11px;color:var(--pri)}
 .fchip{display:inline-flex;align-items:center;gap:4px;padding:1px 8px;border-radius:6px;background:var(--pri-weak);color:var(--pri-deep);font-size:11.5px;font-weight:550;cursor:pointer;vertical-align:1px;margin:0 2px}
 .fchip:hover{background:#dfe8ff}
@@ -256,7 +267,8 @@ button{font-family:var(--font)}
 .dw-head .x{margin-left:auto;border:none;background:none;font-size:15px;color:var(--tx-3);cursor:pointer;padding:4px 8px;border-radius:7px}
 .dw-head .x:hover{background:var(--bg-subtle)}
 .dw-body{flex:1;overflow-y:auto;padding:14px 16px}
-.dw-body h6{font-size:11px;color:var(--tx-3);letter-spacing:1.5px;margin:12px 0 8px;font-weight:600}
+.dw-body h6,.rp-body h6{font-size:11px;color:var(--tx-3);letter-spacing:1.5px;margin:12px 0 8px;font-weight:600}
+.rp-body h6:first-child{margin-top:0}
 .dw-todo{display:flex;gap:9px;padding:7px 8px;font-size:12.5px;align-items:flex-start}
 .dw-todo .bx{flex:none;width:15px;height:15px;border-radius:5px;border:1.5px solid var(--bd-2);margin-top:2px}
 .dw-todo.done .bx{background:var(--ok);border-color:var(--ok)}
@@ -313,7 +325,6 @@ button{font-family:var(--font)}
   .veil.on{opacity:1;pointer-events:auto}
   .ch-name{max-width:150px;font-size:14px}
   .col,.grp,.tl,.steps,.fwrap,.comp{padding-left:14px;padding-right:14px}
-  .comp .nm{width:72px}
   .drawer.open{width:min(320px,88vw);position:fixed;right:0;top:0;bottom:0;z-index:40;box-shadow:var(--sh-2)}
 }
 @media(max-width:560px){
@@ -365,10 +376,12 @@ button{font-family:var(--font)}
       <div class="scroll"><div class="col" id="chat"></div></div>
       <div class="comp-wrap" id="comp-wrap" style="display:none">
         <div class="comp">
-          <button class="attach" id="attach" title="添加附件" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.05 12.25 20.2a6 6 0 0 1-8.49-8.49l8.57-8.57a4 4 0 1 1 5.66 5.66l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
-          <input type="file" id="file-in" style="display:none" multiple>
           <textarea id="text" placeholder="输入消息…"></textarea>
-          <button id="send" class="send" title="发送"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+          <input type="file" id="file-in" style="display:none" multiple>
+          <div class="comp-bar">
+            <button class="attach" id="attach" title="添加附件" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+            <button id="send" class="send" title="发送"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+          </div>
         </div>
         <div class="foot-note" id="comp-note"> </div>
       </div>
@@ -379,6 +392,14 @@ button{font-family:var(--font)}
       <div class="tl" id="tl"></div>
     </div></div>
     <div class="pane" id="p-files"><div class="scroll"><div class="fwrap" id="files"></div></div></div>
+
+    <div class="rpage" id="rpage">
+      <header class="rp-head">
+        <button class="rp-back" onclick="rpBackFn()">‹ 返回</button>
+        <div class="rp-title" id="rp-title"></div>
+      </header>
+      <div class="rp-body" id="rp-body"></div>
+    </div>
   </div>
 
   <!-- 右：明细抽屉 -->
@@ -460,12 +481,19 @@ function renderHist(){
 }
 function toggleSessMenu(e,pid){
  e.stopPropagation();
+ const btn=e.target.closest('.more');
  const card=document.querySelector(`.sess[data-pid="${pid}"]`);
  const was=card.classList.contains('menu-open');
  document.querySelectorAll('.sess.menu-open').forEach(x=>x.classList.remove('menu-open'));
- if(!was)card.classList.add('menu-open');
+ if(!was&&btn){
+  // 从点击位置向右下展开（fixed 定位，逃出 rail 的 overflow 裁剪）
+  const r=btn.getBoundingClientRect(),menu=card.querySelector('.menu');
+  menu.style.left=Math.max(8,Math.min(r.left-2,innerWidth-116))+'px';
+  menu.style.top=(r.bottom+4)+'px';
+  card.classList.add('menu-open');}
 }
 document.addEventListener('click',()=>document.querySelectorAll('.sess.menu-open').forEach(x=>x.classList.remove('menu-open')));
+$('hist').addEventListener('scroll',()=>document.querySelectorAll('.sess.menu-open').forEach(x=>x.classList.remove('menu-open')));
 function renameProj(e,pid){
  e.stopPropagation();
  const row=projCache.find(p=>p.project_id===pid);if(!row)return;
@@ -494,12 +522,12 @@ function switchProj(pid){
  cid=row.customer_id;projSel=pid;
  localStorage.setItem('yl_customer_id',cid);localStorage.setItem('yl_last_proj',projSel);
  sig={chat:'',act:'',files:''};commSig='';filePath='';chatEl.innerHTML='';
- loadHead();poll();pollComm();pollTeam();pollFiles();renderHist();}
+ closeRPage();loadHead();poll();pollComm();pollTeam();pollFiles();renderHist();}
 function newSession(){cid='';projSel='';
  localStorage.removeItem('yl_customer_id');localStorage.removeItem('yl_last_proj');
  sig={chat:'',act:'',files:''};filePath='';chatEl.innerHTML='';
  $('tab-comm').style.display='none';$('tab-tasks').style.display='none';$('tab-files').style.display='none';$('stage').style.display='none';
- setPane('chat');welcome();renderHist();loadHead();}
+ setPane('chat');closeRPage();welcome();renderHist();loadHead();}
 function loadHead(){
  if(cid&&projCache.length){const p=projCache.find(x=>x.project_id===projSel)||projCache[0];
   if(p){$('ch-name').textContent=p.name;$('ch-sub').textContent=p.status==='active'?'咨询团队工作中 · 过程实时可见':'本轮分析已完成 · 可继续追问迭代';}}
@@ -543,7 +571,7 @@ function bubble(m){
   <div class="c"><div class="hd"><b>${esc(m.sender_name||'咨询合伙人')}</b><span>元理咨询</span></div>
   <div class="bub"><div class="body">${docify(trust(md(m.text)))}</div></div></div></div>`);}
 function typing(){chatEl.insertAdjacentHTML('beforeend',`<div class="msg-a" id="typing">
- <div class="ava" style="background:#8f91a3">…</div><div><div class="typing"><i></i><i></i><i></i> 团队工作中</div></div></div>`);}
+ <div class="ava" style="background:#8f91a3">…</div><div><div class="typing"><i></i><i></i><i></i> 正在思考…</div></div></div>`);}
 let heroFiles=[];
 function welcome(){chatEl.innerHTML=`<div class="hero">
  <img class="hero-logo" src="/customer/assets/brand-anim.gif" alt="元理智能">
@@ -552,7 +580,7 @@ function welcome(){chatEl.innerHTML=`<div class="hero">
   <div class="hf-box">
    <textarea id="hf-text" placeholder="一句话描述您的企业和想解决的问题…（Enter 开始）"></textarea>
    <div class="hf-acts">
-    <button class="hf-att" id="hf-att" title="添加附件"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.05 12.25 20.2a6 6 0 0 1-8.49-8.49l8.57-8.57a4 4 0 1 1 5.66 5.66l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
+    <button class="hf-att" id="hf-att" title="添加附件"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
     <button class="hf-btn" id="hf-go">开始咨询</button>
    </div>
   </div>
@@ -693,6 +721,15 @@ async function openMember(role, locateText){
  }
 }
 
+/* ── 右侧整页（项目配置 / 个人中心；执行轨迹才走浮窗抽屉） ── */
+let rpBackFn=()=>{};
+function openRPage(title,small,html,onBack){
+ rpBackFn=onBack||closeRPage;
+ $('rp-title').innerHTML=`${esc(title)}${small?`<small>${esc(small)}</small>`:''}`;
+ $('rp-body').innerHTML=`<div class="rp-inner">${html}</div>`;
+ $('rpage').classList.add('open');}
+function closeRPage(){$('rpage').classList.remove('open');}
+
 /* ── 项目配置（成员 · 订阅/工具面/能力 · 看门狗 · 增加成员） ── */
 const ALL_TOOLS=['sense_project_peers','send_chat_message','project_file_list','project_file_read','project_file_write','deliver_to_shared','project_todo_create','project_todo_list','project_todo_update'];
 const ALL_SUBS=['message','group_message','timer','project_stall'];
@@ -708,9 +745,7 @@ async function openProjCfg(){
   aget('/api/admin/projects'),aget('/api/admin/defs'),aget('/api/admin/services')]);
  const proj=(pl.projects||[]).find(p=>p.project_id===cfgPid);
  const members=(svcs.services||[]).filter(s=>s.project_id===cfgPid);
- $('dw-head').innerHTML=`<div class="a" style="background:#565a6b">${svg('gear',16)}</div>
-  <div><b>项目配置</b><small>${esc(proj?proj.name:'')} · 成员与工具面</small></div><button class="x" onclick="closeDrawer()">✕</button>`;
- $('dw-body').innerHTML=`
+ openRPage('项目配置',(proj?proj.name:'')+' · 成员与工具面',`
   <h6>看门狗（自动催办）</h6>
   <div class="cfg-card"><span class="cfg-note">有未完成待办但全员停摆时，自动唤醒项目经理</span>
    <span class="mk ${proj&&proj.watchdog?'mk-draft':'mk-todo'}" style="margin-left:auto">${proj&&proj.watchdog?'开':'关'}</span>
@@ -728,9 +763,7 @@ async function openProjCfg(){
    <select class="cfg-in" id="add-def" style="flex:none;width:150px">${(defs.defs||[]).map(x=>`<option value="${x.def_id}">${esc(x.display_name)}</option>`).join('')}</select>
    <button class="cfg-btn pri" style="flex:none" onclick="addProjMember()">加入项目</button>
   </div>
-  <div class="cfg-note" style="margin-top:14px">配置改动即时生效于该成员的下一次唤醒；工具面/订阅默认来自项目模版，可在此按需收紧。</div>`;
- $('drawer').classList.add('open');
-}
+  <div class="cfg-note" style="margin-top:14px">配置改动即时生效于该成员的下一次唤醒；工具面/订阅默认来自项目模版，可在此按需收紧。</div>`);}
 async function toggleWd(){
  const pl=await aget('/api/admin/projects');
  const pr=(pl.projects||[]).find(p=>p.project_id===cfgPid);
@@ -742,21 +775,19 @@ async function openSvcCfg(sid){
  const d=await aget('/api/admin/services/'+sid);
  const s=d.service;
  const chk=(list,all)=>all.map(x=>`<label class="cfg-chk"><input type="checkbox" value="${x}" ${(list||[]).includes(x)?'checked':''}>${x}</label>`).join('');
- $('dw-body').innerHTML=`
-  <div class="cfg-back" onclick="openProjCfg()">‹ 返回项目配置</div>
-  <div class="cfg-sec">${esc(s.role)} · agent 配置</div>
+ openRPage(s.role+' · agent 配置',s.agent_def_id||'',`
   <div class="cfg-card"><span class="cfg-mono" style="flex:none">角色名</span><input class="cfg-in" id="cfg-name" value="${esc(s.role)}"></div>
   <div class="cfg-card"><span class="cfg-mono" style="flex:none">定义</span><span class="cfg-mono">${esc(s.agent_def_id)}</span></div>
   <div class="cfg-sec">事件订阅</div><div>${chk(s.subscriptions,ALL_SUBS)}</div>
   <div class="cfg-sec">工具面${s.tools?'':' <span class="cfg-mono">（默认全量，勾选即收紧）</span>'}</div><div>${chk(s.tools||ALL_TOOLS,ALL_TOOLS)}</div>
   <div class="cfg-sec">能力开关</div><div>${ALL_CAPS.map(c=>`<label class="cfg-chk"><input type="checkbox" data-cap="${c}" ${((s.capabilities||{})[c]===true)?'checked':''}>${c}</label>`).join('')}</div>
   <button class="cfg-btn pri" id="cfg-save" style="margin-top:14px" onclick="saveSvcCfg('${sid}')">保存配置</button>
-  <div class="cfg-note" style="margin-top:8px">即时生效于该成员的下一次唤醒</div>`;
+  <div class="cfg-note" style="margin-top:8px">即时生效于该成员的下一次唤醒</div>`,openProjCfg);
 }
 async function saveSvcCfg(sid){
  const name=document.getElementById('cfg-name').value.trim();
  if(!name){alert('角色名不能为空');return;}
- const boxes=[...document.querySelectorAll('#dw-body input[type=checkbox]')];
+ const boxes=[...document.querySelectorAll('#rp-body input[type=checkbox]')];
  const caps={};boxes.filter(b=>b.dataset.cap).forEach(b=>caps[b.dataset.cap]=b.checked);
  const tools=boxes.filter(b=>!b.dataset.cap&&ALL_TOOLS.includes(b.value)&&b.checked).map(b=>b.value);
  const subs=boxes.filter(b=>!b.dataset.cap&&ALL_SUBS.includes(b.value)&&b.checked).map(b=>b.value);
@@ -777,9 +808,7 @@ async function addProjMember(){
 
 /* ── 个人中心（演示态） ── */
 function openProfile(){
- $('dw-head').innerHTML=`<div class="a" style="background:linear-gradient(135deg,#3b6bf5,#f5319e)">L</div>
-  <div><b>lan</b><small>个人中心</small></div><button class="x" onclick="closeDrawer()">✕</button>`;
- $('dw-body').innerHTML=`
+ openRPage('个人中心','lan 的账号与偏好',`
   <div class="pf-hero"><span class="ava">L</span>
    <div><b>lan</b><div class="cfg-note">欢迎回来，今天也从一句话开始</div></div></div>
   <h6>账号</h6>
@@ -787,8 +816,7 @@ function openProfile(){
   <div class="cfg-card"><span class="cfg-mono" style="flex:none">角色</span><span class="cfg-mono" style="margin-left:auto">企业客户 · 演示</span></div>
   <div class="cfg-card"><span class="cfg-mono" style="flex:none">咨询数</span><span class="cfg-mono" style="margin-left:auto">${projCache.length}</span></div>
   <h6>更多</h6>
-  <div class="cfg-card"><span class="cfg-note">通知偏好、账单与团队设置将在正式版出现</span></div>`;
- $('drawer').classList.add('open');
+  <div class="cfg-card"><span class="cfg-note">通知偏好、账单与团队设置将在正式版出现</span></div>`);
 }
 
 /* ── 附件 ── */
@@ -806,7 +834,7 @@ $('file-in').onchange=async()=>{
  const files=[...$('file-in').files];if(!files.length)return;
  $('attach').innerHTML='<span class="up-ing">上传中</span>';
  for(const f of files)await uploadFile(f);
- $('attach').innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.05 12.25 20.2a6 6 0 0 1-8.49-8.49l8.57-8.57a4 4 0 1 1 5.66 5.66l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>';
+ $('attach').innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
  $('file-in').value='';poll();pollFiles(true);
 };
 const _origPoll=poll;

@@ -93,7 +93,8 @@ CREATE TABLE IF NOT EXISTS project_todos (
     created_by TEXT DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    kind TEXT DEFAULT 'task'
+    kind TEXT DEFAULT 'task',
+    depends_on TEXT DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_project_todos ON project_todos(project_id, status);
 CREATE TABLE IF NOT EXISTS project_todo_events (
@@ -124,6 +125,7 @@ _MIGRATION_COLUMNS = {
     },
     "project_todos": {
         "kind": "TEXT DEFAULT 'task'",
+        "depends_on": "TEXT DEFAULT '[]'",
     },
 }
 
@@ -328,20 +330,25 @@ def new_todo_id() -> str:
 def create_project_todo(project_id: str, title: str, *, parent_id: str = "",
                         detail: str = "", assignee_id: str = "",
                         due_at: str | None = None, created_by: str = "",
-                        kind: str = "task") -> dict:
+                        kind: str = "task", depends_on: list | None = None,
+                        status: str = "open") -> dict:
     _ensure_schema()
     tid = new_todo_id()
     now = _now_iso()
+    st = status if status in ("open", "blocked") else "open"
     with _connect() as conn:
         conn.execute(
             "INSERT INTO project_todos (todo_id, project_id, parent_id, title, detail,"
-            " assignee_id, status, due_at, created_by, created_at, updated_at, kind)"
-            " VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)",
-            (tid, project_id, parent_id, title, detail, assignee_id, due_at,
-             created_by, now, now, kind if kind in ("task", "milestone") else "task"),
+            " assignee_id, status, due_at, created_by, created_at, updated_at, kind, depends_on)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (tid, project_id, parent_id, title, detail, assignee_id, st, due_at,
+             created_by, now, now,
+             kind if kind in ("task", "milestone") else "task",
+             json.dumps([str(x) for x in depends_on], ensure_ascii=False) if depends_on else "[]"),
         )
         _log_todo_event(conn, tid, project_id, "created", title,
-                        actor=created_by or "system")
+                        actor=created_by or "system",
+                        **{"to": st})
     row = get_project_todo(tid)
     assert row is not None
     return row
@@ -411,7 +418,41 @@ def update_project_todo(todo_id: str, *, title: str | None = None,
                             **{"from": before.get("assignee_id") or "",
                                "to": assignee_id if assignee_id is not None
                                      else before.get("assignee_id") or ""})
+        if ok and status == "done":
+            _unlock_dependents(conn, before["project_id"],
+                               done_title=(title or before["title"]))
     return ok
+
+
+def _unlock_dependents(conn, project_id: str, done_title: str) -> None:
+    """编排器：任务完成后解锁前置全部满足的 blocked 任务（标题引用）。"""
+    rows = conn.execute(
+        "SELECT todo_id, title, depends_on FROM project_todos"
+        " WHERE project_id = ? AND status = 'blocked'",
+        (project_id,),
+    ).fetchall()
+    if not rows:
+        return
+    done_titles = {
+        r["title"] for r in conn.execute(
+            "SELECT title FROM project_todos WHERE project_id = ? AND status = 'done'",
+            (project_id,),
+        ).fetchall()
+    }
+    done_titles.add(done_title)
+    for r in rows:
+        try:
+            deps = json.loads(r["depends_on"] or "[]")
+        except (TypeError, ValueError):
+            deps = []
+        if isinstance(deps, list) and deps and all(d in done_titles for d in deps):
+            conn.execute(
+                "UPDATE project_todos SET status = 'open', updated_at = ? WHERE todo_id = ?",
+                (_now_iso(), r["todo_id"]),
+            )
+            _log_todo_event(conn, r["todo_id"], project_id, "unblocked",
+                            r["title"], actor="orchestrator",
+                            **{"to": "、".join(str(d) for d in deps)})
 
 
 # ── todo 变更日志（任务过程时间线的审计真相） ────────────────────────────

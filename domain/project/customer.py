@@ -148,11 +148,14 @@ def create_project_from_template(
     todos = []
     for t in template["initial_todos"]:
         assignee = role_to_sid.get(t.get("assign_role") or "", "")
+        after = [str(x) for x in t.get("after") or [] if str(x).strip()]
         todos.append(
             services_registry.create_project_todo(
                 pid, t["title"], detail=t.get("detail", ""),
                 assignee_id=assignee, created_by=final_pm,
                 kind=t.get("kind") or "task",
+                depends_on=after or None,
+                status="blocked" if after else "open",
             )
         )
 

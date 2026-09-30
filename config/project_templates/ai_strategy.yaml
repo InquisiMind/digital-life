@@ -50,13 +50,22 @@ initial_todos:
 - title: 🚚 行业研究交付
   detail: 行业现状、竞品与可行路径研究，产出研究初稿
   assign_role: 行业研究员
+  after:
+  - 需求界定与任务拆解
 - title: 🚚 企业情况研究交付
   detail: 客户企业现状梳理与 AI 适用性分析，产出研究初稿
   assign_role: 企业研究员
+  after:
+  - 需求界定与任务拆解
 - title: 交付质量审查
   detail: 双线研究结论的一致性与完整性审查，出具合并意见
   assign_role: 质控审查员
+  after:
+  - 🚚 行业研究交付
+  - 🚚 企业情况研究交付
 - title: 🚩 结论定稿与客户汇报
   detail: 合并双线结论与审查意见，定稿并汇报客户（里程碑）
   assign_role: 咨询合伙人
   kind: milestone
+  after:
+  - 交付质量审查

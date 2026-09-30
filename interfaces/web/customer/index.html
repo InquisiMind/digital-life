@@ -126,6 +126,8 @@ button{font-family:var(--font)}
 .tb-card{display:flex;gap:8px;align-items:flex-start;background:var(--bg);border:1px solid var(--bd);border-radius:var(--r-s);padding:8px 10px;margin-bottom:6px}
 .tb-card .bx{flex:none;width:14px;height:14px;border-radius:5px;border:1.5px solid var(--bd-2);margin-top:2px}
 .tb-card.done .bx{background:var(--ok);border-color:var(--ok)}
+.tb-card.blocked{opacity:.62}
+.tb-card.blocked .bx{background:var(--bg-sunken);border-color:var(--bd-2)}
 .tb-card b{font-size:12.5px;font-weight:550;line-height:1.5}
 .tb-card.done b{color:var(--tx-3);text-decoration:line-through}
 
@@ -706,17 +708,17 @@ function renderTasks(){
  const total=todosCache.length,done=todosCache.filter(t=>t.status==='done').length;
  $('steps').innerHTML=`<div class="tb-head">任务看板 · ${done}/${total} 已完成</div><div class="tb">`+
   Object.entries(by).map(([a,ts])=>`<div class="tb-col"><div class="tb-cap">${esc(a)}<span>${ts.filter(t=>t.status==='done').length}/${ts.length}</span></div>
-   ${ts.map(t=>`<div class="tb-card ${t.status}"><span class="bx"></span><div><b>${t.kind==='milestone'?'🚩 ':''}${esc(t.title)}</b><div class="cfg-mono" style="margin-top:2px">${t.kind==='milestone'?'里程碑 · ':''}${t.status==='done'?'已完成':'进行中'} · 建 ${esc((t.created_at||'').slice(5,10))}</div></div></div>`).join('')}
+   ${ts.map(t=>`<div class="tb-card ${t.status}"><span class="bx"></span><div><b>${t.kind==='milestone'?'🚩 ':''}${esc(t.title)}</b><div class="cfg-mono" style="margin-top:2px">${t.kind==='milestone'?'里程碑 · ':''}${t.status==='done'?'已完成':t.status==='blocked'?'🔒 待解锁（前置未完成）':'进行中'} · 建 ${esc((t.created_at||'').slice(5,10))}</div></div></div>`).join('')}
   </div>`).join('')+`</div>`||'<div class="cfg-note">尚无任务</div>';
  // 任务时间线：todo 变更事件流（引擎审计：创建/更新/完成/重启/改派）
  const KTXT={created:'创建任务',updated:'更新任务',completed:'完成任务',reopened:'重启任务',reassigned:'改派任务'};
  $('tl').innerHTML=`<div class="tl-head"><span class="h">任务动态 · 变更记录</span></div>`+
-  evCache.map(e=>`<div class="ev k-${e.kind==='completed'?'done':e.kind==='reassigned'?'assign':'note'}">
-   <div class="n">${svg(e.kind==='completed'?'done':e.kind==='reassigned'?'assign':'note',13)}</div>
+  evCache.map(e=>`<div class="ev k-${e.kind==='completed'?'done':(e.kind==='reassigned'||e.kind==='unblocked')?'assign':'note'}">
+   <div class="n">${svg(e.kind==='completed'?'done':(e.kind==='reassigned'||e.kind==='unblocked')?'assign':'note',13)}</div>
    <div class="c"><div class="l1"><b style="cursor:pointer" onclick="openMember('${esc(e.actor)}')">${esc(e.actor)}</b><span class="act-t">${TXT_SAFE(e.kind)} · ${esc(e.title)}</span><span class="t">${esc((e.at||'').slice(5,16))}</span></div></div></div>`).join('')
   ||'<div class="cfg-note">尚无任务动态（新项目的任务动作会实时出现在这里）</div>';
 }
-function TXT_SAFE(k){return{created:'创建任务',updated:'更新任务',completed:'完成任务',reopened:'重启任务',reassigned:'改派任务'}[k]||'任务变更';}
+function TXT_SAFE(k){return{created:'创建任务',updated:'更新任务',completed:'完成任务',reopened:'重启任务',reassigned:'改派任务',unblocked:'🔓 解锁任务（前置已全部完成）'}[k]||'任务变更';}
 async function pollTeam(force){
  if(!cid)return;
  const g=JSON.stringify([todosCache,evCache]);

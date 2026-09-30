@@ -253,17 +253,17 @@ function setAgentTab(t){AG.tab=t;
 function renderAgentTab(){
   const el=$('ag-tab');if(!el)return;
   if(AG.tab==='overview'){
+   const ins=AG.instances, running=ins.filter(x=>x.status==='active');
    el.innerHTML=`
-   <h6>运行实例（${AG.instances.length}）· 实例不可配置，要调整就改本页类型配置或其项目模版</h6>
-   ${AG.instances.map(x=>`<div class="cfg-card">
-    <div style="width:30px;height:30px;border-radius:50%;background:${avc(x.role)};color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:650;flex:none">${esc((x.role||'?').slice(0,2))}</div>
-    <b>${esc(x.role)}</b>
-    <span class="badge ${x.status==='active'?'b-green':'b-gray'}">${x.status==='active'?'运行':'归档'}</span>
-    <span class="cfg-mono">${esc(x.project_name||'独立（未挂项目）')}</span>
-    <span class="cfg-mono" style="margin-left:auto">唤醒 ${x.wakes} · 消息 ${x.messages} · 积压 ${x.open_events||0}</span>
-    <button class="btn ${x.status==='active'?'':'pri'}" onclick="toggleSvc('${x.service_id}','${x.status==='active'?'archived':'active'}')">${x.status==='active'?'归档':'恢复'}</button>
-   </div>`).join('')||'<div class="cfg-note">尚无运行实例——实例由项目模版实例化产生：在项目模版中把本类型加为角色，客户发起新咨询即会拉起本类型的服务</div>'}
-   <div class="cfg-note" style="margin-top:10px">实例的逐次唤醒思考与工具过程，在客户页点该成员头像查看。</div>`;
+   <h6>运行统计</h6>
+   <div class="cfg-card">
+    <div class="stat"><b>${ins.length}</b><span>服务实例</span></div>
+    <div class="stat"><b>${running.length}</b><span>运行中</span></div>
+    <div class="stat"><b>${running.reduce((a,x)=>a+(x.wakes||0),0)}</b><span>累计唤醒</span></div>
+    <div class="stat"><b>${running.reduce((a,x)=>a+(x.messages||0),0)}</b><span>消息</span></div>
+    <div class="stat"><b>${running.reduce((a,x)=>a+(x.open_events||0),0)}</b><span>积压</span></div>
+   </div>
+   <div class="cfg-note">实例由项目模版实例化产生并归属各项目运行，逐次唤醒的思考与工具过程在客户页点成员头像查看。</div>`;
   }else if(AG.tab==='basic'){
    const p=AG.profile;
    el.innerHTML=`
@@ -307,19 +307,48 @@ async function saveProfile(){
   }catch(e){btn.textContent='保存失败：'+e.message;btn.disabled=false;}
 }
 
-/* Skill（定义层编辑 + app.yaml 注册） */
+/* Skill：系统清单（启用开关）+ 本类型自定义（新增/zip 上传/编辑/删除） */
 async function loadSkills(){
   const d=await jget(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/skills`);
   AG.skills=d.skills||[];
   const el=$('skill-list');if(!el)return;
+  const sys=AG.skills.filter(x=>x.source==='system');
+  const own=AG.skills.filter(x=>x.source!=='system');
+  const sw=(sk)=>`<input type="checkbox" ${sk.registered?'checked':''} onchange="toggleSkill('${esc(sk.name)}',this.checked)" title="启用=注册，该类型实例唤醒即可调用">`;
   el.innerHTML=`
-   <div class="cfg-card"><input class="cfg-in" id="new-skill" placeholder="新增 skill 名（字母数字与 _ -）"><button class="btn pri" style="flex:none" onclick="newSkill()">新建</button></div>
-   <div class="cfg-note" style="margin:0 0 8px">编辑写入定义层 skills/ 并自动注册——同类型全部实例下次唤醒可调用。</div>
-   ${AG.skills.map(sk=>`<div class="skill-row" data-skill="${esc(sk.name)}">
+   <div class="cfg-note" style="margin:0 0 8px">开关=启用（注册）：启用后同类型实例唤醒时即可调用该 skill；系统 skill 只开关不改正文。</div>
+   <h6>系统 skill 清单（${sys.length}）</h6>
+   ${sys.map(sk=>`<div class="cfg-card">
+     <b style="font-size:12.5px">${esc(sk.name)}</b>
+     <span class="cfg-mono" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(sk.description)}</span>
+     ${sw(sk)}
+    </div>`).join('')||'<div class="cfg-note">无</div>'}
+   <h6>本类型自定义 skill（${own.length}）· 点击行名展开编辑</h6>
+   <div class="cfg-card">
+    <input class="cfg-in" id="new-skill" placeholder="新建 skill 名（字母数字与 _ -）">
+    <button class="btn" style="flex:none" onclick="zipUpload.click()">上传 .zip</button>
+    <input type="file" id="zipUpload" accept=".zip" style="display:none" onchange="uploadSkillZip(this)">
+    <button class="btn pri" style="flex:none" onclick="newSkill()">新建</button>
+   </div>
+   ${own.map(sk=>`<div class="skill-row" data-skill="${esc(sk.name)}">
     <div class="sr-h" onclick="toggleSkillRow(this,'${esc(sk.name)}')">
-     <b>${esc(sk.name)}</b>${sk.registered?'<span class="mk-src src-def">已注册</span>':''}<span class="d">${esc(sk.description)}</span>
-     <span class="mk-src ${sk.source==='def'?'src-def':'src-system'}">${sk.source==='def'?'本类型':'系统'}</span>
-    </div><div class="sr-b"></div></div>`).join('')||'<div class="cfg-note">还没有 skill</div>'}`;
+     <b>${esc(sk.name)}</b><span class="d">${esc(sk.description)}</span>
+     ${sw(sk)}
+    </div><div class="sr-b"></div></div>`).join('')||'<div class="cfg-note">还没有自定义 skill——新建、或上传 zip（内含 SKILL.md）</div>'}`;
+}
+async function toggleSkill(name,on){
+  await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/skills/${encodeURIComponent(name)}/toggle`,{
+   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on})});
+}
+async function uploadSkillZip(inp){
+  const f=inp.files[0];if(!f)return;
+  const fd=new FormData();fd.append('file',f);
+  const btn=inp.previousElementSibling;
+  const r=await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/skills/upload`,{method:'POST',body:fd});
+  const d=await r.json();
+  if(d.ok){alert('已上传并启用：'+d.skill+'（'+d.files+' 个文件）');loadSkills();}
+  else alert(d.error||'上传失败');
+  inp.value='';
 }
 async function toggleSkillRow(head,name){
   const row=head.parentElement,body=row.querySelector('.sr-b');
@@ -329,11 +358,10 @@ async function toggleSkillRow(head,name){
    body.dataset.loaded=1;
    body.innerHTML=`<div style="padding:10px 12px;border-top:1px solid var(--bd)">
     <textarea class="cfg-area" id="sk-md" rows="14">${esc(d.content)}</textarea>
-    <div class="cfg-note" style="margin:6px 0 0">来源：${d.source==='def'?'本类型（直接编辑）':'系统内置（保存后覆盖为本类型版本）'}</div>
     <div style="display:flex;gap:8px;margin-top:8px">
-     <button class="btn pri" onclick="saveSkill('${esc(name)}')">保存到定义层</button>
+     <button class="btn pri" onclick="saveSkill('${esc(name)}')">保存</button>
      <button class="btn" onclick="dlSkill('${esc(name)}')">下载 .md</button>
-     ${d.source==='def'?`<button class="btn danger" onclick="delSkill('${esc(name)}')">删除</button>`:''}
+     <button class="btn danger" onclick="delSkill('${esc(name)}')">删除</button>
     </div></div>`;
   }
 }
@@ -359,35 +387,47 @@ function newSkill(){
   const name=($('new-skill').value||'').trim();
   if(!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)){alert('skill 名仅限字母数字与 _ -');return;}
   if(AG.skills.some(sk=>sk.name===name)){alert('同名 skill 已存在，展开编辑即可');return;}
-  AG.skills.unshift({name,description:'',source:'def'});
+  AG.skills.unshift({name,description:'',source:'def',registered:true});
   $('skill-list').querySelector('.cfg-card').insertAdjacentHTML('afterend',`<div class="skill-row open" data-skill="${esc(name)}">
-   <div class="sr-h" onclick="toggleSkillRow(this,'${esc(name)}')"><b>${esc(name)}</b><span class="d"></span><span class="mk-src src-def">本类型</span></div>
+   <div class="sr-h" onclick="toggleSkillRow(this,'${esc(name)}')"><b>${esc(name)}</b><span class="d"></span>
+    <input type="checkbox" checked onchange="toggleSkill('${esc(name)}',this.checked)"></div>
    <div class="sr-b" data-loaded="1"><div style="padding:10px 12px;border-top:1px solid var(--bd)">
     <textarea class="cfg-area" id="sk-md" rows="14">---\nname: ${esc(name)}\ndescription: 一句话描述该技能的用途\n---\n\n# ${esc(name)}\n\n在这里写方法论正文（Markdown）。</textarea>
-    <div style="display:flex;gap:8px;margin-top:8px"><button class="btn pri" onclick="saveSkill('${esc(name)}')">保存到定义层</button></div>
+    <div style="display:flex;gap:8px;margin-top:8px"><button class="btn pri" onclick="saveSkill('${esc(name)}')">保存</button></div>
    </div></div></div>`);
 }
 
-/* Tool：类型默认工具面（app.yaml tools；实例显式面来自模版角色，优先于默认） */
-let DEFTOOLS={explicit:null};
+/* Tool：类型默认工具面——默认显示已启用，可切换全部（含 registry 全量与服务运行时面） */
+let TOOLVIEW={all:false};
 async function loadDefTools(){
-  const [dt]=await Promise.all([jget(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/tools`)]);
-  DEFTOOLS={explicit:Array.isArray(dt.tools)?dt.tools:null};
+  const [dt,sv]=await Promise.all([
+   jget(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/tools`),
+   jget('/api/admin/services')]);
+  const explicit=Array.isArray(dt.tools)?dt.tools:null;
+  // 该类型任一实例的显式面（来自模版）也并入清单（只读标注，编辑走模版）
+  const svcTools=new Set();
+  (sv.services||[]).filter(x=>x.agent_def_id===AG.defId)
+   .forEach(x=>(x.tools||[]).forEach(t=>svcTools.add(t)));
+  const regNames=new Set(AG.tools.map(t=>t.name));
+  const enabled=new Set(explicit??AG.tools.map(t=>t.name));
+  const rows=[...AG.tools];
+  svcTools.forEach(n=>{if(!regNames.has(n))rows.push({name:n,toolset:'模版角色',description:'项目模版为角色显式配置的工具（在模版上调整）',schema:{name:n,parameters:{}}});});
   const el=$('tool-tab');if(!el)return;
-  const enabled=new Set(DEFTOOLS.explicit??AG.tools.map(t=>t.name));
+  const shown=TOOLVIEW.all?rows:rows.filter(t=>enabled.has(t.name));
   el.innerHTML=`
-  <div class="cfg-note" style="margin:0 0 10px">类型默认工具面：当前${DEFTOOLS.explicit?'为显式清单':'未配置 = 全量'}。项目模版给角色显式配置工具面时以模版为准，否则用这里的类型默认。点行展开 schema。</div>
-  ${AG.tools.map(t=>{const on=enabled.has(t.name);return `<div class="tool-row">
+  <div class="cfg-note" style="margin:0 0 10px">类型默认工具面：当前${explicit?'为显式清单':'未配置 = 默认全量'}。项目模版给角色显式配置的工具面以模版为准。点行展开 schema；自定义工具暂不支持。</div>
+  <div style="margin-bottom:10px"><button class="btn" onclick="TOOLVIEW.all=!TOOLVIEW.all;loadDefTools()">${TOOLVIEW.all?'只看已启用':'查看全部（'+rows.length+'）'}</button></div>
+  ${shown.map(t=>{const on=enabled.has(t.name);return `<div class="tool-row">
    <div class="tr-h" onclick="this.parentElement.classList.toggle('open')">
     <input type="checkbox" data-tool="${esc(t.name)}" ${on?'checked':''} onclick="event.stopPropagation()">
     <b>${esc(t.name)}</b><span class="ts">${esc(t.toolset)}</span>
     <span class="d" style="flex:1;font-size:12px;color:var(--tx-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.description)}</span>
    </div>
    <div class="tr-b"><pre>${esc(JSON.stringify(t.schema,null,2))}</pre></div>
-  </div>`}).join('')}
+  </div>`}).join('')||'<div class="cfg-note">无启用的工具</div>'}
   <div style="display:flex;gap:8px;margin-top:12px">
    <button class="btn pri" onclick="saveDefTools()">保存类型默认</button>
-   ${DEFTOOLS.explicit?'<button class="btn" onclick="clearDefTools()">清除默认（回全量）</button>':''}
+   ${explicit?'<button class="btn" onclick="clearDefTools()">清除默认（回全量）</button>':''}
   </div>`;
 }
 async function saveDefTools(){
@@ -422,61 +462,17 @@ async function createAgentDef(){
   else alert(d.error||'创建失败');
 }
 
-/* ══ 项目运行操作（挂在模版实例化区块：群沟通/交付物/归档） ══ */
-let PRJ={};
-async function projGroup(pid,name){
-  PRJ={pid,proj:{name}};
-  const d=await jget(`/api/admin/projects/${pid}/group`);
-  openDrawer('群沟通 · '+name,(d.messages||[]).map(m=>`
-   <div class="msg"><div class="m">${esc(m.sender_name)} · ${esc(m.ts)}</div>${esc(m.text)}</div>`).join('')||'<div class="empty">暂无群消息</div>');
-}
-async function projFiles(pid,name,path){
-  PRJ={pid,proj:{name}};
-  const d=await jget(`/api/admin/projects/${pid}/files?path=${encodeURIComponent(path)}`);
-  if(d.kind==='dir'){
-   openDrawer('交付物 · '+(path||'shared/'),(path?`<div class="back" onclick="projFiles('${pid}','${esc(name)}','${path.split('/').slice(0,-1).join('/')}')">‥ 上级</div>`:'')+
-    (d.entries||[]).map(e=>e.type==='dir'
-     ?`<div class="file" onclick="projFiles('${pid}','${esc(name)}','${e.rel}')">📂 <b>${esc(e.name)}</b>/</div>`
-     :`<div class="file" onclick="projFiles('${pid}','${esc(name)}','${e.rel}')">📄 ${esc(e.name)} <span style="margin-left:auto;color:var(--tx-3)">${(e.size/1000).toFixed(1)}k</span></div>`).join('')||'<div class="empty">空</div>');
-  }else{
-   openDrawer('📄 '+path,`<div class="back" onclick="projFiles('${pid}','${esc(name)}','${path.split('/').slice(0,-1).join('/')}')">‥ 上级</div><pre class="doc">${esc(d.content)}</pre>`);
-  }
-}
-async function projArchive(pid,archived){
-  if(archived!==undefined&&!confirm(archived?'恢复该项目？':'归档该项目？'))return;
-  await fetch(`/api/admin/projects/${pid}/config`,{method:'PATCH',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({status:archived?'active':'archived'})});
-  if(TPL.id)tplDetail(TPL.id);renderList();
-}
-
 /* ══ 模版详情（结构化编辑 · 整页） ══ */
 let TPL={mode:'form'};
 async function tplDetail(tid){
-  const [d,defs,pl]=await Promise.all([jget('/api/admin/templates/'+tid),jget('/api/admin/defs'),jget('/api/admin/projects')]);
-  TPL={id:tid,p:d.parsed||{},defs:defs.defs||[],mode:'form',raw:d.raw,
-       projects:(pl.projects||[]).filter(x=>x.template_id===tid)};
-  $('rp-title').innerHTML=`<b>模版 · ${esc((d.parsed&&d.parsed.name)||tid)}</b><small>定义层 · 角色班子与预设任务骨架 · 建项目时生效</small>`;
+  const [d,defs]=await Promise.all([jget('/api/admin/templates/'+tid),jget('/api/admin/defs')]);
+  TPL={id:tid,p:d.parsed||{},defs:defs.defs||[],mode:'form',raw:d.raw};
+  $('rp-title').innerHTML=`<b>模版 · ${esc((d.parsed&&d.parsed.name)||tid)}</b><small>定义层 · 角色班子与任务编排 · 建项目时生效</small>`;
   $('rp-ops').innerHTML=`<button class="btn" onclick="TPL.mode=TPL.mode==='form'?'raw':'form';renderTpl()">${TPL.mode==='form'?'源码模式':'表单模式'}</button>
    <button class="btn pri" onclick="tplSaveStructured()">保存</button>`;
   $('rp-body').innerHTML='<div class="rp-inner" id="tpl-body"></div>';
   $('rpage').classList.add('open');
   renderTpl();
-  renderTplProjects();
-}
-function renderTplProjects(){
-  const el=$('tpl-projects');if(!el)return;
-  el.innerHTML=`
-   <h6>实例化项目（${TPL.projects.length}）· 运行实例只观察不配置</h6>
-   ${TPL.projects.map(x=>`<div class="cfg-card">
-    <b>${esc(x.name)}</b>
-    <span class="badge ${x.status==='active'?'b-green':'b-gray'}">${x.status==='active'?'运行中':'已归档'}</span>
-    <span class="cfg-mono">${x.members.length} 成员 · 待办 ${x.todos_done}/${x.todos_total}${x.watchdog?' · 看门狗':''}</span>
-    <span style="margin-left:auto;display:flex;gap:6px">
-     <button class="btn" onclick="projGroup('${x.project_id}','${esc(x.name)}')">群沟通</button>
-     <button class="btn" onclick="projFiles('${x.project_id}','${esc(x.name)}','')">交付物</button>
-     <button class="btn ${x.status==='active'?'':'pri'}" onclick="projArchive('${x.project_id}',${x.status!=='active'})">${x.status==='active'?'归档':'恢复'}</button>
-    </span>
-   </div>`).join('')||'<div class="cfg-note">尚无项目使用此模版——客户页发起新咨询即按此模版实例化</div>'}`;
 }
 function renderTpl(){
   const el=$('tpl-body');if(!el)return;
@@ -492,19 +488,20 @@ function renderTpl(){
    <div class="cfg-card"><span class="cfg-mono" style="flex:none">模版名</span><input class="cfg-in" id="t-name" value="${esc(p.name||'')}"></div>
    <div class="cfg-card"><span class="cfg-mono" style="flex:none">描述</span><input class="cfg-in" id="t-desc" value="${esc(p.description||'')}"></div>
    <div class="cfg-card"><span class="cfg-mono" style="flex:none">看门狗</span><label style="font-size:12.5px"><input type="checkbox" id="t-wd" ${p.watchdog?'checked':''}> 全员停摆时自动催 PM</label></div>
-   <h6>项目成员（${(p.roles||[]).length}）· 删除成员自动清空引用它的任务指派</h6>
+   <h6>项目成员（${(p.roles||[]).length}）· 引用 agent 类型——人设/工具面在类型上配置</h6>
    ${(p.roles||[]).map((r,i)=>`<div class="cfg-card" style="flex-wrap:wrap">
-    <input value="${esc(r.def||'')}" list="def-list" placeholder="定义" onchange="TPL.p.roles[${i}].def=this.value" style="font-size:12px;border:1px solid var(--bd-2);border-radius:7px;padding:6px 8px;width:190px;font-family:ui-monospace,monospace">
+    <input value="${esc(r.def||'')}" list="def-list" placeholder="agent 类型" onchange="TPL.p.roles[${i}].def=this.value" style="font-size:12px;border:1px solid var(--bd-2);border-radius:7px;padding:6px 8px;width:190px;font-family:ui-monospace,monospace">
     <input value="${esc(r.name||'')}" placeholder="角色名" onchange="tplRoleRenamed(${i},this.value)" style="font-size:12.5px;border:1px solid var(--bd-2);border-radius:7px;padding:6px 8px;flex:1;min-width:110px">
     <label style="font-size:12px;white-space:nowrap"><input type="radio" name="t-pm" ${r.pm?'checked':''} onchange="tplSetPm(${i})"> PM</label>
+    ${r.def?`<button class="btn" style="flex:none" onclick="defDetail('${esc(r.def)}')">类型配置 ↗</button>`:''}
     <button class="btn danger" style="flex:none" onclick="tplDelRole(${i})">删除</button>
-    <input value="${esc((r.tools||[]).join(', '))}" placeholder="工具面（逗号分隔，留空=默认全量）" onchange="TPL.p.roles[${i}].tools=this.value?this.value.split(',').map(x=>x.trim()).filter(Boolean):undefined" style="font-size:11.5px;border:1px solid var(--bd-2);border-radius:7px;padding:5px 8px;width:100%;margin-top:6px;font-family:ui-monospace,monospace">
    </div>`).join('')}
    <datalist id="def-list">${TPL.defs.map(d=>`<option value="${esc(d.def_id)}">${esc(d.display_name)}</option>`).join('')}</datalist>
    <button class="btn" onclick="tplAddRole()">＋ 增加成员</button>
-   <h6>预设任务骨架（${(p.initial_todos||[]).length}）· 里程碑=特殊任务类型</h6>
+   <h6>任务骨架与编排（${(p.initial_todos||[]).length}）· 勾选前置＝前置全部完成后自动解锁</h6>
+   <div id="tpl-flow" style="margin-bottom:10px"></div>
    ${(p.initial_todos||[]).map((t,i)=>`<div class="cfg-card" style="flex-wrap:wrap">
-    <input value="${esc(t.title||'')}" placeholder="任务标题" onchange="TPL.p.initial_todos[${i}].title=this.value" style="font-size:12.5px;border:1px solid var(--bd-2);border-radius:7px;padding:6px 8px;flex:1;min-width:160px">
+    <input value="${esc(t.title||'')}" placeholder="任务标题" onchange="tplTitleChanged(${i},this.value)" style="font-size:12.5px;border:1px solid var(--bd-2);border-radius:7px;padding:6px 8px;flex:1;min-width:150px">
     <select onchange="TPL.p.initial_todos[${i}].kind=this.value==='milestone'?'milestone':undefined" style="font-size:12px;border:1px solid var(--bd-2);border-radius:7px;padding:6px">
      <option value="task" ${t.kind!=='milestone'?'selected':''}>任务</option>
      <option value="milestone" ${t.kind==='milestone'?'selected':''}>🚩 里程碑</option>
@@ -515,10 +512,18 @@ function renderTpl(){
     </select>
     <button class="btn danger" style="flex:none" onclick="tplDelTodo(${i})">删除</button>
     <input value="${esc(t.detail||'')}" placeholder="任务描述（可选）" onchange="TPL.p.initial_todos[${i}].detail=this.value" style="font-size:12px;border:1px solid var(--bd-2);border-radius:7px;padding:5px 8px;width:100%;margin-top:6px">
+    ${(()=>{const others=(p.initial_todos||[]).filter((_,j)=>j!==i);
+      if(!others.length)return '';
+      return `<div style="width:100%;display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:4px;padding-top:6px;border-top:1px dashed var(--bd)">
+       <span class="cfg-mono" style="flex:none">前置：</span>
+       ${others.map(o=>{const on=(t.after||[]).includes(o.title||'');
+        return `<label style="font-size:11.5px;color:var(--tx-2);display:inline-flex;gap:4px;align-items:center">
+        <input type="checkbox" ${on?'checked':''} onchange="tplToggleAfter(${i},'${esc(o.title||'')}',this.checked)">${esc((o.title||'未命名').slice(0,14))}</label>`;}).join('')}
+      </div>`;})()}
    </div>`).join('')}
-   <button class="btn" onclick="tplAddTodo()">＋ 增加预设任务</button>
-   <div class="cfg-note" style="margin-top:12px">建项目时按此骨架生成任务（指派按角色名解析到成员）。指派角色被删除时对应任务的指派自动置空。</div>
-   <div id="tpl-projects"></div>`;
+   <button class="btn" onclick="tplAddTodo()">＋ 增加任务</button>
+   <div class="cfg-note" style="margin-top:12px">有前置的任务建项目时以「待解锁」状态存在，前置全部完成后由编排器自动解锁（变更进任务动态）。指派角色被删除时指派自动置空。</div>`;
+  renderTplFlow();
 }
 function tplAddRole(){TPL.p.roles=TPL.p.roles||[];TPL.p.roles.push({def:'',name:''});renderTpl();}
 function tplDelRole(i){
@@ -533,8 +538,61 @@ function tplRoleRenamed(i,v){
   (TPL.p.initial_todos||[]).forEach(t=>{if((t.assign_role||'')===old)t.assign_role=v;});
 }
 function tplSetPm(i){(TPL.p.roles||[]).forEach((r,j)=>r.pm=(j===i));renderTpl();}
+function tplTitleChanged(i,v){
+  const old=(TPL.p.initial_todos[i].title||'').trim();
+  TPL.p.initial_todos[i].title=v;
+  (TPL.p.initial_todos||[]).forEach(t=>{
+    if(Array.isArray(t.after))t.after=t.after.map(x=>x===old?v:x);});
+  renderTpl();
+}
+function tplToggleAfter(i,dep,on){
+  const t=TPL.p.initial_todos[i];
+  t.after=Array.isArray(t.after)?[...t.after]:[];
+  if(on&&!t.after.includes(dep))t.after.push(dep);
+  if(!on)t.after=t.after.filter(x=>x!==dep);
+  if(!t.after.length)t.after=undefined;
+  renderTpl();
+}
 function tplAddTodo(){TPL.p.initial_todos=TPL.p.initial_todos||[];TPL.p.initial_todos.push({title:''});renderTpl();}
-function tplDelTodo(i){TPL.p.initial_todos.splice(i,1);renderTpl();}
+function tplDelTodo(i){
+  const title=(TPL.p.initial_todos[i].title||'').trim();
+  TPL.p.initial_todos.splice(i,1);
+  (TPL.p.initial_todos||[]).forEach(t=>{
+    if(Array.isArray(t.after))t.after=t.after.filter(x=>x!==title);});
+  renderTpl();
+}
+function renderTplFlow(){
+  const el=$('tpl-flow');if(!el)return;
+  const ts=(TPL.p.initial_todos||[]);
+  if(ts.length<2){el.innerHTML='';return;}
+  const idx={};ts.forEach((t,i)=>idx[(t.title||'').trim()]=i);
+  const layer=Array(ts.length).fill(-1);
+  const depth=t=>{const i=idx[(t.title||'').trim()];
+    if(layer[i]>=0)return layer[i];
+    const deps=(t.after||[]).map(d=>idx[d]).filter(x=>x!==undefined);
+    layer[i]=deps.length?Math.max(...deps.map(d=>{if(d===i)return 0;return depth(ts[d])+1;})):0;
+    return layer[i];};
+  ts.forEach(depth);
+  const W=210,H=46,GX=46,GY=22;
+  const cols={};ts.forEach((t,i)=>{const l=layer[i];cols[l]=cols[l]||[];cols[l].push(i);});
+  const maxCol=Math.max(...Object.values(cols).map(a=>a.length));
+  const svgW=Object.keys(cols).length*(W+GX)+GX, svgH=maxCol*(H+GY)+GY;
+  const pos={};
+  Object.entries(cols).forEach(([l,arr])=>arr.forEach((ti,row)=>{pos[ti]={x:GX+Number(l)*(W+GX),y:GY+row*(H+GY)+(maxCol-arr.length)*(H+GY)/2};}));
+  let svg=`<svg viewBox="0 0 ${svgW} ${svgH}" style="width:100%;max-width:900px;height:auto;background:var(--bg-subtle);border:1px solid var(--bd);border-radius:10px">`;
+  svg+=`<defs><marker id="ar" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#9095a6"/></marker></defs>`;
+  ts.forEach((t,i)=>{(t.after||[]).forEach(d=>{const di=idx[d];if(di===undefined||di===i||!pos[di]||!pos[i])return;
+    const a=pos[di],b=pos[i];
+    svg+=`<line x1="${a.x+W}" y1="${a.y+H/2}" x2="${b.x-4}" y2="${b.y+H/2}" stroke="#9095a6" stroke-width="1.4" marker-end="url(#ar)"/>`;});});
+  ts.forEach((t,i)=>{const q=pos[i];if(!q)return;
+    const ms=t.kind==='milestone';
+    svg+=`<rect x="${q.x}" y="${q.y}" width="${W}" height="${H}" rx="9" fill="${ms?'#f6f0ff':'#fff'}" stroke="${ms?'#b79cf2':'#dfe0e8'}" stroke-width="${ms?1.6:1}"/>`;
+    const label=(t.title||'未命名').slice(0,15)+(t.title&&t.title.length>15?'…':'');
+    svg+=`<text x="${q.x+12}" y="${q.y+H/2+1}" dominant-baseline="middle" font-size="12" fill="#1b1c22" font-weight="${ms?650:500}">${ms?'🚩 ':''}${esc(label)}</text>`;
+    if(t.assign_role)svg+=`<text x="${q.x+W-10}" y="${q.y+H-9}" text-anchor="end" font-size="9.5" fill="#9095a6">${esc(t.assign_role)}</text>`;});
+  svg+='</svg>';
+  el.innerHTML='<div class="cfg-mono" style="margin-bottom:4px">编排预览（左→右为执行顺序）</div>'+svg;
+}
 async function tplSaveStructured(){
   if(TPL.mode==='raw'){
    const raw=$('tpl-raw').value;

@@ -245,6 +245,87 @@ async def handle_def_skill_delete(request: web.Request) -> web.Response:
     return _json({"ok": True})
 
 
+async def handle_def_skill_toggle(request: web.Request) -> web.Response:
+    """POST /api/admin/agent-defs/{def}/skills/{name}/toggle {on} — 启用/停用（注册开关）。"""
+    def_id = request.match_info["def_id"]
+    name = request.match_info["name"]
+    if not _def_exists(def_id):
+        return _json({"ok": False, "error": "定义不存在"}, 404)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    _set_def_registered(def_id, name, bool(body.get("on")))
+    logger.info("AGENT_DEF_SKILL_TOGGLED def=%s skill=%s on=%s",
+                def_id, name, bool(body.get("on")))
+    return _json({"ok": True, "registered": bool(body.get("on"))})
+
+
+async def handle_def_skill_upload(request: web.Request) -> web.Response:
+    """POST /api/admin/agent-defs/{def}/skills/upload — zip 包上传为自定义 skill。
+
+    zip 内需含 SKILL.md（根级，或唯一一级子目录下——目录名即 skill 名）。
+    安全闸：拒绝路径穿越成员、>2MB、>100 文件、非文本/常见静态后缀。
+    """
+    import io
+    import zipfile
+
+    def_id = request.match_info["def_id"]
+    if not _def_exists(def_id):
+        return _json({"ok": False, "error": "定义不存在"}, 404)
+    reader = await request.multipart()
+    field = await reader.next()
+    if field is None or not field.name:
+        return _json({"ok": False, "error": "缺少文件字段"}, 400)
+    data = await field.read(decode=False)
+    if len(data) > 2 * 1024 * 1024:
+        return _json({"ok": False, "error": "zip 超过 2MB 上限"}, 400)
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except Exception:  # noqa: BLE001
+        return _json({"ok": False, "error": "不是合法的 zip 文件"}, 400)
+
+    ALLOW_EXT = {".md", ".yaml", ".yml", ".json", ".txt", ".py", ".sh", ".csv", ".png", ".jpg", ".svg"}
+    members = [m for m in zf.namelist() if not m.endswith("/")]
+    if not members or len(members) > 100:
+        return _json({"ok": False, "error": "zip 需含 1-100 个文件"}, 400)
+    for m in members:
+        if m.startswith("/") or ".." in m.split("/") or Path(m).suffix.lower() not in ALLOW_EXT:
+            return _json({"ok": False, "error": f"不支持的成员: {m}"}, 400)
+
+    tops = {m.split("/")[0] for m in members}
+    root_skill = "SKILL.md" in members
+    if root_skill:
+        skill_name = Path(field.filename or "skill.zip").stem or "skill"
+        prefix = ""
+    elif len(tops) == 1:
+        skill_name = tops.pop()
+        prefix = skill_name + "/"
+        if f"{prefix}SKILL.md" not in members:
+            return _json({"ok": False, "error": "zip 需在根或唯一子目录下含 SKILL.md"}, 400)
+    else:
+        return _json({"ok": False, "error": "zip 需在根或唯一子目录下含 SKILL.md"}, 400)
+    if not _SAFE_NAME.match(skill_name):
+        return _json({"ok": False, "error": f"skill 名不合法: {skill_name}"}, 400)
+
+    from domain.service.overlay import def_skills_dir
+
+    sdir = def_skills_dir(def_id) or (_def_dir(def_id) / "skills")
+    target = sdir / skill_name
+    target.mkdir(parents=True, exist_ok=True)
+    for m in members:
+        rel = m[len(prefix):] if prefix else m
+        if not rel:
+            continue
+        dest = target / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(zf.read(m))
+    _set_def_registered(def_id, skill_name, True)
+    logger.info("AGENT_DEF_SKILL_UPLOADED def=%s skill=%s files=%d",
+                def_id, skill_name, len(members))
+    return _json({"ok": True, "skill": skill_name, "files": len(members)})
+
+
 # ── 类型默认工具面（app.yaml tools；实例工具面仍由模版角色决定） ─────────
 
 
@@ -286,6 +367,15 @@ async def handle_def_tools_put(request: web.Request) -> web.Response:
 async def handle_tools_list(_request: web.Request) -> web.Response:
     from interfaces.tools.registry import registry
 
+    # 工具注册是 import 副作用：显式装载全部模块，master 进程也能拿全量清单
+    for _mod in ("sense_tools", "action_tools", "memory_cognition_tools",
+                 "capability_tools", "vision_tool", "terminal_tool",
+                 "skills_tool", "perception_tools", "service_collab_tools",
+                 "code_execution_tool"):
+        try:
+            __import__(f"interfaces.tools.{_mod}")
+        except Exception:  # noqa: BLE001 — 单模块装载失败不拦清单
+            pass
     tools = []
     for name in sorted(registry.get_all_tool_names()):
         schema = registry.get_schema(name) or {}
@@ -449,6 +539,7 @@ async def handle_template_put_structured(request: web.Request) -> web.Response:
     if not isinstance(todos, list):
         todos = []
     role_names = {str(r.get("name") or r.get("def") or "") for r in roles}
+    todo_titles = {str(t.get("title") or "").strip() for t in todos if isinstance(t, dict)}
     for t in todos:
         if not isinstance(t, dict) or not str(t.get("title") or "").strip():
             return _json({"ok": False, "error": "预设任务每项需 title"}, 400)
@@ -457,6 +548,13 @@ async def handle_template_put_structured(request: web.Request) -> web.Response:
             return _json({"ok": False, "error": f"预设任务的执行角色不存在: {ar}"}, 400)
         if t.get("kind") not in (None, "task", "milestone"):
             return _json({"ok": False, "error": "kind 仅 task / milestone"}, 400)
+        after = t.get("after")
+        if after is not None:
+            if not isinstance(after, list):
+                return _json({"ok": False, "error": "after 需为前置任务标题数组"}, 400)
+            for dep in after:
+                if str(dep).strip() not in todo_titles:
+                    return _json({"ok": False, "error": f"前置任务不存在: {dep}"}, 400)
 
     out = {
         "name": str(tpl.get("name") or tid)[:60],
@@ -482,6 +580,8 @@ async def handle_template_put_structured(request: web.Request) -> web.Response:
                 **({"detail": str(t.get("detail"))[:1000]} if t.get("detail") else {}),
                 **({"assign_role": str(t.get("assign_role"))} if t.get("assign_role") else {}),
                 **({"kind": t.get("kind")} if t.get("kind") else {}),
+                **({"after": [str(x) for x in t.get("after")]}
+                   if isinstance(t.get("after"), list) and t.get("after") else {}),
             }
             for t in todos
         ],
@@ -502,6 +602,8 @@ def register_into(router: web.Application) -> None:
     router.router.add_get("/agent-defs/{def_id}/skills/{name}", handle_def_skill_get)
     router.router.add_put("/agent-defs/{def_id}/skills/{name}", handle_def_skill_put)
     router.router.add_delete("/agent-defs/{def_id}/skills/{name}", handle_def_skill_delete)
+    router.router.add_post("/agent-defs/{def_id}/skills/{name}/toggle", handle_def_skill_toggle)
+    router.router.add_post("/agent-defs/{def_id}/skills/upload", handle_def_skill_upload)
     router.router.add_get("/agent-defs/{def_id}/tools", handle_def_tools_get)
     router.router.add_put("/agent-defs/{def_id}/tools", handle_def_tools_put)
     router.router.add_get("/tools", handle_tools_list)

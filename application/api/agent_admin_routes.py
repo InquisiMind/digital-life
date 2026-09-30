@@ -301,25 +301,68 @@ async def handle_tools_list(_request: web.Request) -> web.Response:
 # ── 新建独立 agent（不挂项目；加入项目走模版角色或项目成员端点） ────────
 
 
-async def handle_agent_create(request: web.Request) -> web.Response:
+async def handle_def_create(request: web.Request) -> web.Response:
+    """POST /api/admin/agent-defs — 新建 agent 类型（定义层）。
+
+    配置管理是类型域：新建的应是"类型"（可被项目模版引用为角色），
+    服务实例只由项目实例化产生。目录骨架：config/app.yaml（标记
+    runtime_kind: definition + 默认模型段抄自现有定义）+ persona 模板
+    初稿 + 空 skills/。密钥不入 app.yaml（沿用环境/secrets 机制）。
+    """
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
         body = {}
-    def_id = str(body.get("def") or "").strip()
     name = str(body.get("name") or "").strip()[:30]
-    if not def_id or not name:
-        return _json({"ok": False, "error": "def 和名称必填"}, 400)
-    if not _def_exists(def_id):
-        return _json({"ok": False, "error": f"定义不存在: {def_id}"}, 404)
-    from domain.service.registry import create_service
+    def_id = str(body.get("def_id") or "").strip()
+    if not name:
+        return _json({"ok": False, "error": "名称必填"}, 400)
+    if not def_id:
+        slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:24]
+        import uuid as _uuid
 
-    try:
-        sid = create_service(def_id, project_id="", display_name=name)
-    except Exception as exc:  # noqa: BLE001
-        return _json({"ok": False, "error": str(exc)}, 400)
-    logger.info("AGENT_CREATED def=%s service=%s name=%s", def_id, sid[:12], name)
-    return _json({"ok": True, "service_id": sid})
+        def_id = slug or f"agent-{_uuid.uuid4().hex[:6]}"  # 中文名 slug 为空时随机短 id
+    if not _SAFE_NAME.match(def_id):
+        return _json({"ok": False, "error": "ID 仅限字母数字与 _ -"}, 400)
+    d = _def_dir(def_id)
+    if d.exists():
+        return _json({"ok": False, "error": f"类型已存在: {def_id}"}, 400)
+
+    # 默认模型段抄自任一现有定义（同机同端点，密钥仍在环境层）
+    model_cfg = {
+        "name": "glm-5.3", "provider": "glm",
+        "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+    }
+    from infrastructure.config import get_project_root
+
+    _apps = get_project_root() / "apps"
+    for existing in sorted(_apps.iterdir()) if _apps.is_dir() else []:
+        try:
+            cfg = yaml.safe_load((existing / "config" / "app.yaml").read_text(encoding="utf-8")) or {}
+            if str(cfg.get("runtime_kind") or "") == "definition" and isinstance(cfg.get("model"), dict):
+                model_cfg = cfg["model"]
+                break
+        except Exception:  # noqa: BLE001
+            continue
+
+    (d / "config").mkdir(parents=True, exist_ok=True)
+    (d / "config" / "app.yaml").write_text(yaml.safe_dump({
+        "runtime_kind": "definition",
+        "active": False,
+        "display_name": name,
+        "model": model_cfg,
+        "channels": {},
+        "skills": [],
+    }, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    (d / "persona").mkdir(parents=True, exist_ok=True)
+    (d / "persona" / "LIFE_PERSONA.md").write_text(
+        f"# {name}\n\n"
+        "在这里写这一类 agent 的人设：身份、职责、行为习惯、输出风格。\n"
+        "保存即对同类型全部实例生效（实例由项目模版实例化产生）。\n",
+        encoding="utf-8")
+    (d / "skills").mkdir(parents=True, exist_ok=True)
+    logger.info("AGENT_DEF_CREATED def=%s name=%s", def_id, name)
+    return _json({"ok": True, "def_id": def_id})
 
 
 # ── 项目模版：列表 / 读取 / 保存（raw + structured） ─────────────────────
@@ -462,7 +505,7 @@ def register_into(router: web.Application) -> None:
     router.router.add_get("/agent-defs/{def_id}/tools", handle_def_tools_get)
     router.router.add_put("/agent-defs/{def_id}/tools", handle_def_tools_put)
     router.router.add_get("/tools", handle_tools_list)
-    router.router.add_post("/agents", handle_agent_create)
+    router.router.add_post("/agent-defs", handle_def_create)
     router.router.add_get("/templates", handle_templates_list)
     router.router.add_get("/templates/{template_id}", handle_template_get)
     router.router.add_put("/templates/{template_id}", handle_template_put)

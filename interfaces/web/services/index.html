@@ -262,7 +262,7 @@ function renderAgentTab(){
     <span class="cfg-mono">${esc(x.project_name||'独立（未挂项目）')}</span>
     <span class="cfg-mono" style="margin-left:auto">唤醒 ${x.wakes} · 消息 ${x.messages} · 积压 ${x.open_events||0}</span>
     <button class="btn ${x.status==='active'?'':'pri'}" onclick="toggleSvc('${x.service_id}','${x.status==='active'?'archived':'active'}')">${x.status==='active'?'归档':'恢复'}</button>
-   </div>`).join('')||'<div class="cfg-note">尚无运行实例——在项目模版里引用本类型，或从模版实例化的项目中生成</div>'}
+   </div>`).join('')||'<div class="cfg-note">尚无运行实例——实例由项目模版实例化产生：在项目模版中把本类型加为角色，客户发起新咨询即会拉起本类型的服务</div>'}
    <div class="cfg-note" style="margin-top:10px">实例的逐次唤醒思考与工具过程，在客户页点该成员头像查看。</div>`;
   }else if(AG.tab==='basic'){
    const p=AG.profile;
@@ -404,21 +404,22 @@ async function clearDefTools(){
   loadDefTools();
 }
 
-/* 新建 agent */
+/* 新建 agent 类型（定义层）——服务实例只由项目模版实例化产生 */
 async function newAgent(){
-  const defs=await jget('/api/admin/defs');
-  openDrawer('新建 Agent',`
-   <div class="kv"><i>名称</i><input id="na-name" placeholder="如：数据分析师" style="font-size:13px;border:1px solid var(--bd);border-radius:8px;padding:7px 10px;flex:1"></div>
-   <div class="kv"><i>定义</i><select id="na-def" class="btn" style="font-size:13px;flex:1">${(defs.defs||[]).map(d=>`<option value="${d.def_id}">${esc(d.display_name)}</option>`).join('')}</select></div>
-   <div class="kv" style="font-size:12px;color:var(--tx-3)">创建后为独立 agent（不挂项目）；要进项目：项目详情 → 成员 → 增加。</div>
-   <button class="btn pri" style="margin-top:10px" onclick="createAgent()">创建</button>`);
+  openDrawer('新建 Agent 类型',`
+   <div class="kv"><i>类型名称</i><input id="na-name" placeholder="如：数据分析师" style="font-size:13px;border:1px solid var(--bd);border-radius:8px;padding:7px 10px;flex:1"></div>
+   <div class="kv"><i>类型 ID</i><input id="na-id" placeholder="留空=按名称自动生成（字母数字-_）" style="font-size:13px;border:1px solid var(--bd);border-radius:8px;padding:7px 10px;flex:1"></div>
+   <div class="kv" style="font-size:12px;color:var(--tx-3)">创建的是 agent 类型（定义层）：人设模板初稿 + 默认模型配置。创建后即可深度配置，并在项目模版中引用为角色——真正运行的服务实例，在下次用该模版建项目时诞生。</div>
+   <button class="btn pri" style="margin-top:10px" onclick="createAgentDef()">创建类型</button>`);
 }
-async function createAgent(){
-  const name=$('na-name').value.trim(),def=$('na-def').value;
+async function createAgentDef(){
+  const name=$('na-name').value.trim();
   if(!name){alert('名称必填');return;}
-  const r=await fetch('/api/admin/agents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({def,name})});
+  const r=await fetch('/api/admin/agent-defs',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({name,def_id:$('na-id').value.trim()||undefined})});
   const d=await r.json();
-  if(d.ok){closeDrawer();renderList();}else alert(d.error||'创建失败');
+  if(d.ok){closeDrawer();renderList();defDetail(d.def_id);}
+  else alert(d.error||'创建失败');
 }
 
 /* ══ 项目运行操作（挂在模版实例化区块：群沟通/交付物/归档） ══ */

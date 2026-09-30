@@ -22,7 +22,10 @@ _ROUTER = web.Application()
 
 
 def _json(data, status: int = 200) -> web.Response:
-    return web.json_response(data, status=status)
+    resp = web.json_response(data, status=status)
+    # 管理/回放数据随库实时变，禁止浏览器启发式缓存旧响应
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 def _svc_db(service_id: str, filename: str):
@@ -143,7 +146,8 @@ async def handle_service_detail(request: web.Request) -> web.Response:
             })
     return _json({
         "ok": True,
-        "service": {**svc, **_service_stats(sid)},
+        # role 与列表端点对齐（= display_name）；前端两处标题都依赖它
+        "service": {**svc, "role": svc.get("display_name") or "", **_service_stats(sid)},
         "wakes": wakes,
     })
 
@@ -303,7 +307,10 @@ async def handle_service_config(request: web.Request) -> web.Response:
         return _json({"ok": False, "error": "服务不存在"}, 404)
     kw = {}
     if "display_name" in body:
-        kw["display_name"] = str(body["display_name"])[:30]
+        # 空名是清空语义之外的误操作（前端表单读不到旧值时会提交 ''）——不覆盖
+        name = str(body["display_name"]).strip()[:30]
+        if name:
+            kw["display_name"] = name
     if "subscriptions" in body and isinstance(body["subscriptions"], list):
         kw["subscriptions"] = [str(x) for x in body["subscriptions"]][:20]
     if "tools" in body and isinstance(body["tools"], list):

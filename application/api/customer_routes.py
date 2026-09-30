@@ -27,7 +27,10 @@ _ROUTER = web.Application()
 
 
 def _json(data, status: int = 200) -> web.Response:
-    return web.json_response(data, status=status)
+    resp = web.json_response(data, status=status)
+    # 会话/团队/轨迹数据随唤醒实时变，禁止浏览器启发式缓存旧响应
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 async def _body(request: web.Request) -> dict:

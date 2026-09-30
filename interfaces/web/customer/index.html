@@ -54,6 +54,21 @@ button{font-family:var(--font)}
 .rail-cfg svg{width:15px;height:15px;color:var(--tx-3)}
 .rail-cfg.danger:hover{color:#c0353b}
 .rail-cfg b{font-weight:550;color:var(--tx)}
+/* ── 项目配置抽屉 ── */
+.cfg-card{border:1px solid var(--bd);border-radius:var(--r-m);padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.cfg-card b{font-size:13px}
+.cfg-mono{font-family:ui-monospace,monospace;font-size:11px;color:var(--tx-3)}
+.cfg-chk{display:inline-flex;gap:5px;align-items:center;margin:3px 10px 3px 0;font-size:12.5px;color:var(--tx-2);cursor:pointer}
+.cfg-chk input{accent-color:var(--pri)}
+.cfg-in{font-size:13px;border:1px solid var(--bd-2);border-radius:var(--r-s);padding:7px 10px;font-family:var(--font);flex:1;min-width:0;background:var(--bg);color:var(--tx)}
+.cfg-in:focus{outline:none;border-color:var(--pri)}
+.cfg-btn{border:1px solid var(--bd-2);background:var(--bg);border-radius:var(--r-s);padding:6px 12px;font-size:12px;cursor:pointer;color:var(--tx-2)}
+.cfg-btn:hover{border-color:var(--pri);color:var(--pri)}
+.cfg-btn.pri{background:var(--pri);color:#fff;border-color:var(--pri)}
+.cfg-btn.pri:hover{background:var(--pri-deep);color:#fff}
+.cfg-sec{font-weight:650;font-size:12.5px;margin:12px 0 6px;color:var(--tx)}
+.cfg-note{font-size:11.5px;color:var(--tx-3);line-height:1.6}
+.cfg-back{cursor:pointer;color:var(--pri);font-size:12px;margin-bottom:10px;display:inline-block}
 
 /* ══ 会话头 ══ */
 .ch-head{flex:none;height:58px;display:flex;align-items:center;gap:14px;padding:0 20px;border-bottom:1px solid var(--bd)}
@@ -312,6 +327,7 @@ button{font-family:var(--font)}
     <div class="rail-cap">咨询记录</div>
     <div class="rail-list" id="hist"></div>
     <div class="rail-foot">
+      <div class="rail-cfg" id="cfg-entry" onclick="openProjCfg()" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>项目配置</div>
       <div class="rail-cfg danger" onclick="resetAll()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>清空本地会话</div>
     </div>
   </aside>
@@ -363,7 +379,7 @@ button{font-family:var(--font)}
 const $=id=>document.getElementById(id);
 const chatEl=$('chat'),textEl=$('text'),sendBtn=$('send');
 let cid=localStorage.getItem('yl_customer_id')||'';
-let projSel=localStorage.getItem('yl_proj_'+cid)||'';
+let projSel=localStorage.getItem('yl_last_proj')||'';
 let sig={chat:'',act:'',files:''};let filePath='';let rawMode=false;let projCache=[];
 const AVA=['#2f6bff','#0e9f6e','#c2790a','#7a5cff','#e0526d'];
 const esc=s=>(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
@@ -383,6 +399,7 @@ const icoN={
  factory:'<path d="M2 20h20V9l-6 4V9l-6 4V4H2z"/>',
  chart:'<path d="M3 3v18h18M8 17V9M13 17V5M18 17v-6"/>',
  user:'<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+ gear:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
 };
 const svg=(n,w=15)=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:${w}px;height:${w}px">${icoN[n]}</svg>`;
 const avc=n=>{let s=0;for(const c of(n||'x'))s+=c.charCodeAt(0);return AVA[s%AVA.length]};
@@ -424,10 +441,14 @@ function renderHist(){
    <div class="t">${esc(p.name)}</div>
    <div class="m"><span class="dot-st ${p.stage==='已完成'||p.stage==='已归档'?'fin':''}"></span>${esc(p.stage||'…')} · ${esc((p.created_at||'').slice(5,10))}</div></div>`).join('');
 }
-function switchProj(pid){projSel=pid;localStorage.setItem('yl_proj_'+cid,projSel);
+function switchProj(pid){
+ const row=projCache.find(p=>p.project_id===pid);if(!row)return;
+ cid=row.customer_id;projSel=pid;
+ localStorage.setItem('yl_customer_id',cid);localStorage.setItem('yl_last_proj',projSel);
  sig={chat:'',act:'',files:''};commSig='';filePath='';chatEl.innerHTML='';
  loadHead();poll();pollComm();pollTeam();pollFiles();renderHist();}
-function newSession(){cid='';projSel='';projCache=[];localStorage.removeItem('yl_customer_id');
+function newSession(){cid='';projSel='';projCache=[];
+ localStorage.removeItem('yl_customer_id');localStorage.removeItem('yl_last_proj');
  sig={chat:'',act:'',files:''};filePath='';chatEl.innerHTML='';
  $('tab-comm').style.display='none';$('tab-tasks').style.display='none';$('tab-files').style.display='none';$('stage').style.display='none';
  setPane('chat');welcome();renderHist();loadHead();}
@@ -439,6 +460,7 @@ function loadHead(){
   if(p){$('ch-name').textContent=p.name;$('ch-sub').textContent=p.status==='active'?'咨询团队工作中 · 过程实时可见':'本轮分析已完成 · 可继续追问迭代';}}
  else{$('ch-name').textContent='新的咨询';$('ch-sub').textContent='描述您的企业问题，团队即刻组建';}
  $('seg').style.display=(cid&&projCache.length)?'flex':'none';
+ $('cfg-entry').style.display=(cid&&projSel)?'flex':'none';
 }
 function setPane(p){document.querySelectorAll('#seg button').forEach(b=>b.classList.toggle('on',b.dataset.p===p));
  document.querySelectorAll('.pane').forEach(x=>x.classList.toggle('on',x.id==='p-'+p));}
@@ -454,11 +476,17 @@ async function jget(u){
   const [p,q]=u.split('?');u=p+'?'+((q?q+'&':'')+'project_id='+encodeURIComponent(projSel));}
  const r=await fetch(u);return r.json()}
 async function loadProjects(){
- if(!cid)return;
- try{const d=await jget('/api/customer/sessions?customer_id='+encodeURIComponent(cid));
-  if(d.projects&&d.projects.length){projCache=d.projects;
-   if(!projSel){projSel=d.projects[0].project_id;localStorage.setItem('yl_proj_'+cid,projSel);}
-   renderHist();loadHead();}
+ try{const d=await jget('/api/customer/sessions');
+  // 客户页只列/只绑带 customer_id 的会话；内部项目（无客户）归 /services 管
+  projCache=(d.projects||[]).filter(p=>p.customer_id);
+  // 绑定顺序：当前选中 > 上次看过 > 该客户最近 > 全局最新；有数据默认进会话
+  let row=projCache.find(p=>p.project_id===projSel);
+  if(!row)row=projCache.find(p=>p.customer_id===cid);
+  if(!row&&projCache.length)row=projCache.reduce((a,b)=>((a.created_at||'')>=(b.created_at||'')?a:b));
+  if(row){cid=row.customer_id;projSel=row.project_id;
+   localStorage.setItem('yl_customer_id',cid);localStorage.setItem('yl_last_proj',projSel);}
+  else{cid='';projSel='';}
+  renderHist();loadHead();
  }catch(e){}}
 
 /* ── 对话 ── */
@@ -621,6 +649,84 @@ async function openMember(role, locateText){
  }
 }
 
+/* ── 项目配置（成员 · 订阅/工具面/能力 · 看门狗 · 增加成员） ── */
+const ALL_TOOLS=['sense_project_peers','send_chat_message','project_file_list','project_file_read','project_file_write','deliver_to_shared','project_todo_create','project_todo_list','project_todo_update'];
+const ALL_SUBS=['message','group_message','timer','project_stall'];
+const ALL_CAPS=['vitals','routines','perception','projects'];
+async function aget(u){const r=await fetch(u);return r.json()}
+async function openProjCfg(){
+ if(!cid||!projSel)return;
+ const [pl,defs,svcs]=await Promise.all([
+  aget('/api/admin/projects'),aget('/api/admin/defs'),aget('/api/admin/services')]);
+ const proj=(pl.projects||[]).find(p=>p.project_id===projSel);
+ const members=(svcs.services||[]).filter(s=>s.project_id===projSel);
+ $('dw-head').innerHTML=`<div class="a" style="background:#565a6b">${svg('gear',16)}</div>
+  <div><b>项目配置</b><small>${esc(proj?proj.name:'')} · 成员与工具面</small></div><button class="x" onclick="closeDrawer()">✕</button>`;
+ $('dw-body').innerHTML=`
+  <h6>看门狗（自动催办）</h6>
+  <div class="cfg-card"><span class="cfg-note">有未完成待办但全员停摆时，自动唤醒项目经理</span>
+   <span class="mk ${proj&&proj.watchdog?'mk-draft':'mk-todo'}" style="margin-left:auto">${proj&&proj.watchdog?'开':'关'}</span>
+   <button class="cfg-btn" onclick="toggleWd()">${proj&&proj.watchdog?'关闭':'开启'}</button></div>
+  <h6>成员（${members.length}）· 每人可调订阅/工具/能力</h6>
+  ${members.map(s=>`<div class="cfg-card">
+    <b>${esc(s.role)}</b><span class="cfg-mono">${esc((s.agent_def_id||'').replace('consulting-','').replace('-def',''))}</span>
+    <span class="mk ${s.status==='active'?'mk-draft':'mk-todo'}">${s.status==='active'?'运行':'归档'}</span>
+    <span class="cfg-mono">唤醒 ${s.wakes} · 消息 ${s.messages}</span>
+    <button class="cfg-btn" style="margin-left:auto" onclick="openSvcCfg('${s.service_id}')">配置</button>
+   </div>`).join('')||'<div class="cfg-note">无成员</div>'}
+  <h6>增加成员</h6>
+  <div class="cfg-card">
+   <input class="cfg-in" id="add-role" placeholder="角色名，如：数据分析师">
+   <select class="cfg-in" id="add-def" style="flex:none;width:150px">${(defs.defs||[]).map(x=>`<option value="${x.def_id}">${esc(x.display_name)}</option>`).join('')}</select>
+   <button class="cfg-btn pri" style="flex:none" onclick="addProjMember()">加入项目</button>
+  </div>
+  <div class="cfg-note" style="margin-top:14px">配置改动即时生效于该成员的下一次唤醒；工具面/订阅默认来自项目模版，可在此按需收紧。</div>`;
+ $('drawer').classList.add('open');
+}
+async function toggleWd(){
+ const pl=await aget('/api/admin/projects');
+ const pr=(pl.projects||[]).find(p=>p.project_id===projSel);
+ await fetch(`/api/admin/projects/${projSel}/watchdog`,{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({enabled:!(pr&&pr.watchdog)})});
+ openProjCfg();
+}
+async function openSvcCfg(sid){
+ const d=await aget('/api/admin/services/'+sid);
+ const s=d.service;
+ const chk=(list,all)=>all.map(x=>`<label class="cfg-chk"><input type="checkbox" value="${x}" ${(list||[]).includes(x)?'checked':''}>${x}</label>`).join('');
+ $('dw-body').innerHTML=`
+  <div class="cfg-back" onclick="openProjCfg()">‹ 返回项目配置</div>
+  <div class="cfg-sec">${esc(s.role)} · agent 配置</div>
+  <div class="cfg-card"><span class="cfg-mono" style="flex:none">角色名</span><input class="cfg-in" id="cfg-name" value="${esc(s.role)}"></div>
+  <div class="cfg-card"><span class="cfg-mono" style="flex:none">定义</span><span class="cfg-mono">${esc(s.agent_def_id)}</span></div>
+  <div class="cfg-sec">事件订阅</div><div>${chk(s.subscriptions,ALL_SUBS)}</div>
+  <div class="cfg-sec">工具面${s.tools?'':' <span class="cfg-mono">（默认全量，勾选即收紧）</span>'}</div><div>${chk(s.tools||ALL_TOOLS,ALL_TOOLS)}</div>
+  <div class="cfg-sec">能力开关</div><div>${ALL_CAPS.map(c=>`<label class="cfg-chk"><input type="checkbox" data-cap="${c}" ${((s.capabilities||{})[c]===true)?'checked':''}>${c}</label>`).join('')}</div>
+  <button class="cfg-btn pri" id="cfg-save" style="margin-top:14px" onclick="saveSvcCfg('${sid}')">保存配置</button>
+  <div class="cfg-note" style="margin-top:8px">即时生效于该成员的下一次唤醒</div>`;
+}
+async function saveSvcCfg(sid){
+ const name=document.getElementById('cfg-name').value.trim();
+ if(!name){alert('角色名不能为空');return;}
+ const boxes=[...document.querySelectorAll('#dw-body input[type=checkbox]')];
+ const caps={};boxes.filter(b=>b.dataset.cap).forEach(b=>caps[b.dataset.cap]=b.checked);
+ const tools=boxes.filter(b=>!b.dataset.cap&&ALL_TOOLS.includes(b.value)&&b.checked).map(b=>b.value);
+ const subs=boxes.filter(b=>!b.dataset.cap&&ALL_SUBS.includes(b.value)&&b.checked).map(b=>b.value);
+ const btn=$('cfg-save');btn.textContent='保存中…';btn.disabled=true;
+ try{await fetch(`/api/admin/services/${sid}/config`,{method:'PATCH',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({display_name:name,subscriptions:subs,tools,capabilities:caps})});
+  btn.textContent='已保存 ✓';setTimeout(()=>{btn.textContent='保存配置';btn.disabled=false;},1600);
+ }catch(e){btn.textContent='保存失败';btn.disabled=false;}
+}
+async function addProjMember(){
+ const role=document.getElementById('add-role').value.trim();
+ const def=document.getElementById('add-def').value;
+ if(!role)return;
+ const r=await fetch(`/api/admin/projects/${projSel}/members`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({def,role})});
+ const d=await r.json();
+ if(d.ok)openProjCfg();else alert(d.error||'添加失败');
+}
+
 /* ── 附件 ── */
 async function uploadFile(f){
  const fd=new FormData();fd.append('file',f);
@@ -664,7 +770,10 @@ sendBtn.onclick=async()=>{
 textEl.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendBtn.click();}});
 
 /* ── init ── */
-if(cid){loadProjects();poll();pollComm();pollTeam();}else{welcome();loadHead();}
+// 先拉全部会话：有历史默认进最近一个（而不是空欢迎页），全新环境才走欢迎页
+loadProjects().then(()=>{
+ if(cid){poll();pollComm();pollTeam();pollFiles();}
+ else{welcome();loadHead();}});
 setInterval(()=>{poll();pollComm();pollTeam();},5000);
 </script>
 </body>

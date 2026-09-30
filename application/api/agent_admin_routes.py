@@ -273,7 +273,10 @@ async def handle_def_skill_upload(request: web.Request) -> web.Response:
     def_id = request.match_info["def_id"]
     if not _def_exists(def_id):
         return _json({"ok": False, "error": "定义不存在"}, 404)
-    reader = await request.multipart()
+    try:
+        reader = await request.multipart()
+    except Exception:  # noqa: BLE001 — 非 multipart 请求体
+        return _json({"ok": False, "error": "需 multipart/form-data 上传"}, 400)
     field = await reader.next()
     if field is None or not field.name:
         return _json({"ok": False, "error": "缺少文件字段"}, 400)

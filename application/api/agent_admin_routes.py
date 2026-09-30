@@ -1,8 +1,11 @@
-"""Agent 管理后台 API：profile（人设/附加指令/头像）、skills CRUD、工具面 schema、新建 agent、项目模版。
+"""Agent 类型（定义层）配置 API + 工具 schema + 新建 agent + 项目模版。
 
-调试口子（内部）：给 /customer 项目配置页与 /services 服务台提供
-agent 深度配置能力。读写一律走服务级 overlay（domain.service.overlay），
-定义层共享资产只读不写——见 D1=B 兼容说明。
+配置作用域 = agent 类型（apps/{def}/）：人设 / 附加指令 / L4 覆盖 /
+头像 / skills / 类型默认工具面，全部直接读写定义层，作用于同定义的
+所有服务实例（新建的也生效）。服务级 overlay 保留为引擎兼容层
+（存在则优先），但配置入口不再写它。
+
+调试口子（内部），/api/admin/ 前缀（并入 services_admin 的 _ROUTER）。
 """
 
 import json
@@ -10,11 +13,10 @@ import logging
 import re
 from pathlib import Path
 
+import yaml
 from aiohttp import web
 
 logger = logging.getLogger(__name__)
-
-_ROUTER = web.Application()
 
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
@@ -25,123 +27,122 @@ def _json(data, status: int = 200) -> web.Response:
     return resp
 
 
-def _svc(sid: str) -> dict | None:
-    from infrastructure.persistence import services_registry
+def _def_dir(def_id: str) -> Path:
+    from infrastructure.config import get_project_root
 
-    return services_registry.lookup_service(sid)
-
-
-# ── profile：基本信息（名称 / 头像 / 人设 / 附加指令） ───────────────────
+    return get_project_root() / "apps" / def_id
 
 
-async def handle_profile_get(request: web.Request) -> web.Response:
-    sid = request.match_info["service_id"]
-    svc = _svc(sid)
-    if svc is None:
-        return _json({"ok": False, "error": "服务不存在"}, 404)
+def _def_app_yaml(def_id: str) -> Path:
+    return _def_dir(def_id) / "config" / "app.yaml"
+
+
+def _def_exists(def_id: str) -> bool:
+    return _SAFE_NAME.match(def_id) and _def_app_yaml(def_id).exists()
+
+
+def _load_def_cfg(def_id: str) -> dict:
+    try:
+        return yaml.safe_load(_def_app_yaml(def_id).read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _save_def_cfg(def_id: str, cfg: dict) -> None:
+    p = _def_app_yaml(def_id)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
+# ── profile（名称 / 头像 / 人设 / 附加指令 / L4）—— 作用域：定义层 ──────
+
+
+async def handle_def_profile_get(request: web.Request) -> web.Response:
+    def_id = request.match_info["def_id"]
+    if not _def_exists(def_id):
+        return _json({"ok": False, "error": "定义不存在"}, 404)
     from domain.service import overlay
 
-    persona_overlay = overlay.read_persona(sid)
-    # 人设展示：覆盖优先，否则定义层共享原文（只读参考）
-    persona_content = persona_overlay
-    persona_source = "overlay" if persona_overlay is not None else "def"
-    if persona_overlay is None:
-        from domain.memory.context.selectors.persona import (
-            get_life_persona_path,
-            MISSING_LIFE_PERSONA,
-        )
-
-        try:
-            persona_content = get_life_persona_path(sid).read_text(encoding="utf-8")
-        except Exception:  # noqa: BLE001
-            persona_content = ""
-        if not persona_content:
-            persona_source = "none"
-            persona_content = ""
-
-    meta = overlay.read_agent_meta(sid)
-    l4_overlay = overlay.read_l4(sid)
+    cfg = _load_def_cfg(def_id)
+    persona_path = _def_dir(def_id) / "persona" / "LIFE_PERSONA.md"
+    try:
+        persona = persona_path.read_text(encoding="utf-8")
+    except OSError:
+        persona = ""
     try:
         from domain.identity.system_prompts import L4_LIFECYCLE_PROMPT as _L4
     except Exception:  # noqa: BLE001
         _L4 = ""
+    l4 = overlay.read_def_file(def_id, "L4_PROMPT.md")
     return _json({
         "ok": True,
-        "name": svc.get("display_name") or "",
-        "avatar": meta.get("avatar") or "",
-        "def_id": svc.get("agent_def_id") or "",
-        "status": svc.get("status") or "",
-        "persona": {"content": persona_content, "source": persona_source},
-        "extra_prompt": overlay.read_extra_prompt(sid),
-        "l4": {"content": l4_overlay if l4_overlay is not None else _L4,
-               "source": "overlay" if l4_overlay is not None else "engine"},
+        "def_id": def_id,
+        "name": cfg.get("display_name") or def_id,
+        "avatar": overlay.read_def_agent_meta(def_id).get("avatar") or "",
+        "persona": persona,
+        "extra_prompt": (overlay.read_def_file(def_id, "EXTRA_PROMPT.md") or "").strip(),
+        "l4": {"content": l4 if l4 is not None else _L4,
+               "source": "overlay" if l4 is not None else "engine"},
     })
 
 
-async def handle_profile_put(request: web.Request) -> web.Response:
-    sid = request.match_info["service_id"]
-    if _svc(sid) is None:
-        return _json({"ok": False, "error": "服务不存在"}, 404)
+async def handle_def_profile_put(request: web.Request) -> web.Response:
+    def_id = request.match_info["def_id"]
+    if not _def_exists(def_id):
+        return _json({"ok": False, "error": "定义不存在"}, 404)
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
         body = {}
     from domain.service import overlay
-    from infrastructure.persistence import services_registry
 
     touched: list[str] = []
+    cfg = _load_def_cfg(def_id)
     if "name" in body:
         name = str(body["name"] or "").strip()[:30]
         if name:
-            services_registry.update_service_fields(sid, display_name=name)
+            cfg["display_name"] = name
             touched.append("name")
     if "avatar" in body:
-        overlay.write_agent_meta(sid, {"avatar": str(body["avatar"] or "").strip()[:16]})
+        overlay.write_def_agent_meta(def_id, {"avatar": str(body["avatar"] or "").strip()[:16]})
         touched.append("avatar")
     if "persona" in body:
         content = str(body["persona"] or "").strip()
-        if content:
-            overlay.write_persona(sid, content)
-        else:
-            p = overlay.persona_path(sid)
-            if p is not None:
-                p.unlink(missing_ok=True)  # 清空 = 回到定义层共享人设
+        p = _def_dir(def_id) / "persona" / "LIFE_PERSONA.md"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
         touched.append("persona")
     if "extra_prompt" in body:
-        overlay.write_extra_prompt(sid, str(body["extra_prompt"] or ""))
+        overlay.write_def_file(def_id, "EXTRA_PROMPT.md", str(body["extra_prompt"] or ""))
         touched.append("extra_prompt")
     if "l4" in body:
-        overlay.write_l4(sid, str(body["l4"] or ""))
+        overlay.write_def_file(def_id, "L4_PROMPT.md", str(body["l4"] or ""))
         touched.append("l4")
+    if "name" in body:
+        _save_def_cfg(def_id, cfg)
     if not touched:
         return _json({"ok": False, "error": "无可更新字段"}, 400)
-    logger.info("AGENT_PROFILE_UPDATED %s fields=%s", sid[:12], touched)
+    logger.info("AGENT_DEF_PROFILE_UPDATED def=%s fields=%s", def_id, touched)
     return _json({"ok": True, "fields": touched})
 
 
-# ── skills：列表 / 读取 / 覆盖写入 / 删除（全部落在服务 overlay） ─────────
+# ── skills（定义层 apps/{def}/skills/ + app.yaml 注册） ─────────────────
 
 
-def _collect_skills(sid: str) -> list[dict]:
-    from domain.service import overlay
+def _collect_def_skills(def_id: str) -> list[dict]:
     from interfaces.skills import (
-        get_instance_registered_skills,
+        get_system_skills_dir,
         iter_skill_files,
         parse_frontmatter,
     )
-    from infrastructure.config import get_instance_skills_dir
-    from infrastructure.persistence import services_registry
+    from domain.service.overlay import def_skills_dir
 
-    def_id = services_registry.resolve_service_def(sid) or ""
-    registered = set(get_instance_registered_skills(sid))
-    from interfaces.skills import get_system_skills_dir
-
+    cfg = _load_def_cfg(def_id)
+    registered = set(cfg.get("skills") or [])
     out: dict[str, dict] = {}
-    # 顺序：系统 → 定义层 → overlay（后写覆盖）
     layers = [
         ("system", get_system_skills_dir()),
-        ("def", get_instance_skills_dir(sid)),
-        ("overlay", overlay.service_skills_dir(sid)),
+        ("def", def_skills_dir(def_id)),
     ]
     for source, base in layers:
         if base is None or not Path(base).is_dir():
@@ -162,42 +163,49 @@ def _collect_skills(sid: str) -> list[dict]:
     return sorted(out.values(), key=lambda x: x["name"])
 
 
-async def handle_skills_list(request: web.Request) -> web.Response:
-    sid = request.match_info["service_id"]
-    if _svc(sid) is None:
-        return _json({"ok": False, "error": "服务不存在"}, 404)
-    return _json({"ok": True, "skills": _collect_skills(sid)})
+async def handle_def_skills_list(request: web.Request) -> web.Response:
+    def_id = request.match_info["def_id"]
+    if not _def_exists(def_id):
+        return _json({"ok": False, "error": "定义不存在"}, 404)
+    return _json({"ok": True, "skills": _collect_def_skills(def_id)})
 
 
-def _skill_search_paths(sid: str, name: str) -> list[tuple[str, Path]]:
-    from domain.service import overlay
-    from interfaces.skills import get_system_skills_dir
-    from infrastructure.config import get_instance_skills_dir
-
-    return [
-        ("overlay", overlay.service_skills_dir(sid) / name / "SKILL.md"),
-        ("def", get_instance_skills_dir(sid) / name / "SKILL.md"),
-        ("system", get_system_skills_dir() / name / "SKILL.md"),
-    ]
-
-
-async def handle_skill_get(request: web.Request) -> web.Response:
-    sid = request.match_info["service_id"]
+async def handle_def_skill_get(request: web.Request) -> web.Response:
+    def_id = request.match_info["def_id"]
     name = request.match_info["name"]
-    if _svc(sid) is None:
-        return _json({"ok": False, "error": "服务不存在"}, 404)
-    for source, p in _skill_search_paths(sid, name):
-        if p.exists():
-            return _json({"ok": True, "name": name, "source": source,
-                          "content": p.read_text(encoding="utf-8")})
+    if not _def_exists(def_id):
+        return _json({"ok": False, "error": "定义不存在"}, 404)
+    from domain.service.overlay import def_skills_dir
+
+    p = (def_skills_dir(def_id) or _def_dir(def_id) / "skills") / name / "SKILL.md"
+    if p.exists():
+        return _json({"ok": True, "name": name, "source": "def",
+                      "content": p.read_text(encoding="utf-8")})
+    from interfaces.skills import get_system_skills_dir
+
+    sp = get_system_skills_dir() / name / "SKILL.md"
+    if sp.exists():
+        return _json({"ok": True, "name": name, "source": "system",
+                      "content": sp.read_text(encoding="utf-8")})
     return _json({"ok": False, "error": "skill 不存在"}, 404)
 
 
-async def handle_skill_put(request: web.Request) -> web.Response:
-    sid = request.match_info["service_id"]
+def _set_def_registered(def_id: str, name: str, on: bool) -> None:
+    cfg = _load_def_cfg(def_id)
+    skills = [str(x) for x in (cfg.get("skills") or [])]
+    if on and name not in skills:
+        skills.append(name)
+    elif not on and name in skills:
+        skills = [x for x in skills if x != name]
+    cfg["skills"] = skills
+    _save_def_cfg(def_id, cfg)
+
+
+async def handle_def_skill_put(request: web.Request) -> web.Response:
+    def_id = request.match_info["def_id"]
     name = request.match_info["name"]
-    if _svc(sid) is None:
-        return _json({"ok": False, "error": "服务不存在"}, 404)
+    if not _def_exists(def_id):
+        return _json({"ok": False, "error": "定义不存在"}, 404)
     if not _SAFE_NAME.match(name):
         return _json({"ok": False, "error": "skill 名仅限字母数字与 _ -"}, 400)
     try:
@@ -207,46 +215,72 @@ async def handle_skill_put(request: web.Request) -> web.Response:
     content = str(body.get("content") or "").strip()
     if not content:
         return _json({"ok": False, "error": "content 不能为空"}, 400)
-    from domain.service import overlay
+    from domain.service.overlay import def_skills_dir
 
-    sdir = overlay.service_skills_dir(sid)
-    if sdir is None:
-        return _json({"ok": False, "error": "非服务实例"}, 400)
+    sdir = def_skills_dir(def_id) or (_def_dir(def_id) / "skills")
     target = sdir / name / "SKILL.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
-    # overlay 注册（agent.json skills 数组，去重追加）
-    meta = overlay.read_agent_meta(sid)
-    skills = [s for s in meta.get("skills", []) if isinstance(s, str)]
-    if name not in skills:
-        skills.append(name)
-    overlay.write_agent_meta(sid, {"skills": skills})
-    logger.info("AGENT_SKILL_WRITTEN %s skill=%s", sid[:12], name)
-    return _json({"ok": True, "name": name, "source": "overlay"})
+    _set_def_registered(def_id, name, True)
+    logger.info("AGENT_DEF_SKILL_WRITTEN def=%s skill=%s", def_id, name)
+    return _json({"ok": True, "name": name, "source": "def"})
 
 
-async def handle_skill_delete(request: web.Request) -> web.Response:
-    sid = request.match_info["service_id"]
+async def handle_def_skill_delete(request: web.Request) -> web.Response:
+    def_id = request.match_info["def_id"]
     name = request.match_info["name"]
-    if _svc(sid) is None:
-        return _json({"ok": False, "error": "服务不存在"}, 404)
-    from domain.service import overlay
+    if not _def_exists(def_id):
+        return _json({"ok": False, "error": "定义不存在"}, 404)
+    from domain.service.overlay import def_skills_dir
 
-    sdir = overlay.service_skills_dir(sid)
+    sdir = def_skills_dir(def_id)
     target = (sdir / name) if sdir else None
     if target is None or not target.exists():
-        return _json({"ok": False, "error": "该 skill 无服务级覆盖可删"}, 404)
+        return _json({"ok": False, "error": "定义层无此 skill"}, 404)
     import shutil
 
     shutil.rmtree(target)
-    meta = overlay.read_agent_meta(sid)
-    skills = [s for s in meta.get("skills", []) if isinstance(s, str) and s != name]
-    overlay.write_agent_meta(sid, {"skills": skills})
-    logger.info("AGENT_SKILL_DELETED %s skill=%s", sid[:12], name)
+    _set_def_registered(def_id, name, False)
+    logger.info("AGENT_DEF_SKILL_DELETED def=%s skill=%s", def_id, name)
     return _json({"ok": True})
 
 
-# ── tools：全量工具清单 + schema（订阅开关沿用 services/{sid}/config） ───
+# ── 类型默认工具面（app.yaml tools；实例工具面仍由模版角色决定） ─────────
+
+
+async def handle_def_tools_get(request: web.Request) -> web.Response:
+    def_id = request.match_info["def_id"]
+    if not _def_exists(def_id):
+        return _json({"ok": False, "error": "定义不存在"}, 404)
+    cfg = _load_def_cfg(def_id)
+    return _json({"ok": True, "tools": cfg.get("tools") if isinstance(cfg.get("tools"), list) else None})
+
+
+async def handle_def_tools_put(request: web.Request) -> web.Response:
+    def_id = request.match_info["def_id"]
+    if not _def_exists(def_id):
+        return _json({"ok": False, "error": "定义不存在"}, 404)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    cfg = _load_def_cfg(def_id)
+    if "tools" in body:
+        tools = body["tools"]
+        if tools is None:
+            cfg.pop("tools", None)
+        elif isinstance(tools, list):
+            cfg["tools"] = [str(x)[:60] for x in tools][:40]
+        else:
+            return _json({"ok": False, "error": "tools 需数组或 null"}, 400)
+        _save_def_cfg(def_id, cfg)
+        logger.info("AGENT_DEF_TOOLS_UPDATED def=%s n=%s", def_id,
+                    len(cfg.get("tools") or []) if cfg.get("tools") is not None else "clear")
+        return _json({"ok": True, "tools": cfg.get("tools")})
+    return _json({"ok": False, "error": "缺少 tools 字段"}, 400)
+
+
+# ── 工具 schema（registry 全量） ─────────────────────────────────────────
 
 
 async def handle_tools_list(_request: web.Request) -> web.Response:
@@ -264,7 +298,7 @@ async def handle_tools_list(_request: web.Request) -> web.Response:
     return _json({"ok": True, "tools": tools})
 
 
-# ── 新建独立 agent（不挂项目；加入项目走 projects/{pid}/members） ────────
+# ── 新建独立 agent（不挂项目；加入项目走模版角色或项目成员端点） ────────
 
 
 async def handle_agent_create(request: web.Request) -> web.Response:
@@ -276,12 +310,10 @@ async def handle_agent_create(request: web.Request) -> web.Response:
     name = str(body.get("name") or "").strip()[:30]
     if not def_id or not name:
         return _json({"ok": False, "error": "def 和名称必填"}, 400)
-    from domain.service.registry import create_service
-    from infrastructure.config import get_project_root
-
-    def_dir = get_project_root() / "apps" / def_id
-    if not def_dir.is_dir():
+    if not _def_exists(def_id):
         return _json({"ok": False, "error": f"定义不存在: {def_id}"}, 404)
+    from domain.service.registry import create_service
+
     try:
         sid = create_service(def_id, project_id="", display_name=name)
     except Exception as exc:  # noqa: BLE001
@@ -290,7 +322,7 @@ async def handle_agent_create(request: web.Request) -> web.Response:
     return _json({"ok": True, "service_id": sid})
 
 
-# ── 项目模版：列表 / 读取 / 保存（config/project_templates/*.yaml） ───────
+# ── 项目模版：列表 / 读取 / 保存（raw + structured） ─────────────────────
 
 
 def _templates_dir() -> Path:
@@ -317,19 +349,37 @@ async def handle_template_get(request: web.Request) -> web.Response:
     if not _SAFE_NAME.match(tid) or not f.exists():
         return _json({"ok": False, "error": "模版不存在"}, 404)
     raw = f.read_text(encoding="utf-8")
-    # 结构化视图：roles / initial_todos 供表单编辑（raw 保留给源码模式）
-    import yaml as _yaml
-
     try:
-        parsed = _yaml.safe_load(raw) or {}
+        parsed = yaml.safe_load(raw) or {}
     except Exception:  # noqa: BLE001
         parsed = {}
     return _json({"ok": True, "id": tid, "raw": raw, "parsed": parsed})
 
 
+async def handle_template_put(request: web.Request) -> web.Response:
+    tid = request.match_info["template_id"]
+    if not _SAFE_NAME.match(tid):
+        return _json({"ok": False, "error": "模版 id 非法"}, 400)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    raw = str(body.get("raw") or "")
+    if not raw.strip():
+        return _json({"ok": False, "error": "raw 不能为空"}, 400)
+    try:
+        yaml.safe_load(raw)
+    except Exception as exc:  # noqa: BLE001
+        return _json({"ok": False, "error": f"YAML 语法错误: {exc}"}, 400)
+    f = _templates_dir() / f"{tid}.yaml"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(raw, encoding="utf-8")
+    logger.info("TEMPLATE_SAVED id=%s existed=%s", tid, f.exists())
+    return _json({"ok": True})
+
+
 async def handle_template_put_structured(request: web.Request) -> web.Response:
     # PUT /api/admin/templates/{tid}/structured — 结构化保存（表单编辑器）。
-    # 白名单字段写回 YAML；写回会丢文件头注释（调试口子可接受）。
     tid = request.match_info["template_id"]
     if not _SAFE_NAME.match(tid):
         return _json({"ok": False, "error": "模版 id 非法"}, 400)
@@ -393,9 +443,7 @@ async def handle_template_put_structured(request: web.Request) -> web.Response:
             for t in todos
         ],
     }
-    import yaml as _yaml
-
-    raw = _yaml.safe_dump(out, allow_unicode=True, sort_keys=False)
+    raw = yaml.safe_dump(out, allow_unicode=True, sort_keys=False)
     f = _templates_dir() / f"{tid}.yaml"
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(raw, encoding="utf-8")
@@ -403,47 +451,20 @@ async def handle_template_put_structured(request: web.Request) -> web.Response:
     return _json({"ok": True, "raw": raw})
 
 
-async def handle_template_put(request: web.Request) -> web.Response:
-    tid = request.match_info["template_id"]
-    if not _SAFE_NAME.match(tid):
-        return _json({"ok": False, "error": "模版 id 非法"}, 400)
-    try:
-        body = await request.json()
-    except Exception:  # noqa: BLE001
-        body = {}
-    raw = str(body.get("raw") or "")
-    if not raw.strip():
-        return _json({"ok": False, "error": "raw 不能为空"}, 400)
-    # 语法闸：保存前先过 YAML 解析，防止写坏模版砸了建项目链路
-    try:
-        import yaml
-
-        yaml.safe_load(raw)
-    except Exception as exc:  # noqa: BLE001
-        return _json({"ok": False, "error": f"YAML 语法错误: {exc}"}, 400)
-    f = _templates_dir() / f"{tid}.yaml"
-    existed = f.exists()
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(raw, encoding="utf-8")
-    logger.info("TEMPLATE_SAVED id=%s existed=%s", tid, existed)
-    return _json({"ok": True})
-
-
 def register_into(router: web.Application) -> None:
-    """把 agent 深度配置路由并进 services_admin 的 /api/admin/ 子应用。
-
-    必须在 add_subapp（freeze）之前调用；aiohttp 不支持同前缀两个 subapp。
-    """
-    router.router.add_get("/agents/{service_id}/profile", handle_profile_get)
-    router.router.add_put("/agents/{service_id}/profile", handle_profile_put)
-    router.router.add_get("/agents/{service_id}/skills", handle_skills_list)
-    router.router.add_get("/agents/{service_id}/skills/{name}", handle_skill_get)
-    router.router.add_put("/agents/{service_id}/skills/{name}", handle_skill_put)
-    router.router.add_delete("/agents/{service_id}/skills/{name}", handle_skill_delete)
+    """并进 services_admin 的 /api/admin/ 子应用（须在 add_subapp freeze 之前）。"""
+    router.router.add_get("/agent-defs/{def_id}/profile", handle_def_profile_get)
+    router.router.add_put("/agent-defs/{def_id}/profile", handle_def_profile_put)
+    router.router.add_get("/agent-defs/{def_id}/skills", handle_def_skills_list)
+    router.router.add_get("/agent-defs/{def_id}/skills/{name}", handle_def_skill_get)
+    router.router.add_put("/agent-defs/{def_id}/skills/{name}", handle_def_skill_put)
+    router.router.add_delete("/agent-defs/{def_id}/skills/{name}", handle_def_skill_delete)
+    router.router.add_get("/agent-defs/{def_id}/tools", handle_def_tools_get)
+    router.router.add_put("/agent-defs/{def_id}/tools", handle_def_tools_put)
     router.router.add_get("/tools", handle_tools_list)
     router.router.add_post("/agents", handle_agent_create)
     router.router.add_get("/templates", handle_templates_list)
     router.router.add_get("/templates/{template_id}", handle_template_get)
     router.router.add_put("/templates/{template_id}", handle_template_put)
     router.router.add_put("/templates/{template_id}/structured", handle_template_put_structured)
-    logger.info("Agent admin routes registered into /api/admin/ (shared router)")
+    logger.info("Agent-def admin routes registered into /api/admin/")

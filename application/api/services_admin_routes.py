@@ -184,6 +184,7 @@ async def handle_list_projects(_request: web.Request) -> web.Response:
             "status": p["status"],
             "pm_id": p.get("pm_id") or "",
             "customer_id": p.get("customer_id") or "",
+            "template_id": p.get("template_id") or "",
             "watchdog": bool(p.get("watchdog_enabled")),
             "members": [m.get("display_name") or m["service_id"][:10] for m in members],
             "todos_done": sum(1 for t in todos if t["status"] == "done"),

@@ -94,6 +94,24 @@ def project_tools_allowed(runtime_id: str | None = None) -> set[str] | None:
     tools = svc.get("tools")
     if isinstance(tools, list) and tools:
         return set(tools)
+    # 类型级默认：定义层 app.yaml 的 tools（模版角色未显式收紧时按 agent 类型默认面）
+    try:
+        import yaml as _yaml
+
+        from infrastructure.config import get_project_root
+        from infrastructure.persistence.services_registry import (
+            resolve_service_def,
+        )
+
+        def_id = resolve_service_def(rid) or ""
+        if def_id:
+            cfg = get_project_root() / "apps" / def_id / "config" / "app.yaml"
+            data = _yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+            dtools = data.get("tools")
+            if isinstance(dtools, list) and dtools:
+                return set(str(x) for x in dtools)
+    except Exception:  # noqa: BLE001 — 定义层默认读取失败按全量
+        pass
     return None
 
 

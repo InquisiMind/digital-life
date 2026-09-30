@@ -147,12 +147,10 @@ pre.doc{background:var(--bg-subtle);border:1px solid var(--bd);border-radius:10p
       <div class="mark">台</div>
       <div><b>元理服务台</b><small>管理台 · 内部</small></div>
     </div>
-    <div class="nav-cap">管理</div>
+    <div class="nav-cap">配置管理</div>
     <div class="nav" id="nav">
-      <div class="nav-item on" data-v="agents" title="服务型 Agent 实例"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Agents</span></div>
-      <div class="nav-item" data-v="projects" title="项目与成员"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg><span>项目</span></div>
-      <div class="nav-item" data-v="templates" title="项目模版（定义层）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 15l2 2 4-4"/></svg><span>项目模版</span></div>
-      <div class="nav-item" data-v="defs" title="Agent 定义（定义层，只读）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v4m0 14v4M4.2 4.2l2.8 2.8m10 10 2.8 2.8M1 12h4m14 0h4M4.2 19.8l2.8-2.8m10-10 2.8-2.8"/></svg><span>Agent 定义</span></div>
+      <div class="nav-item on" data-v="agents" title="Agent 类型配置（定义层，作用于同类型全部实例）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Agent 配置</span></div>
+      <div class="nav-item" data-v="templates" title="项目模版配置（成员班子 / 预设任务骨架）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 15l2 2 4-4"/></svg><span>项目模版</span></div>
     </div>
     <div class="rail-foot">
       <div class="foot-link" onclick="window.open('/customer','_blank')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>客户入口 ↗</span></div>
@@ -200,69 +198,51 @@ document.querySelectorAll('.nav-item').forEach(n=>n.onclick=()=>{
 
 async function renderList(){
   const list=$('list');list.innerHTML='<div class="empty">加载中…</div>';
-  $('mh-title').textContent={agents:'Agents',projects:'项目',templates:'项目模版',defs:'Agent 定义'}[VIEW];
+  $('mh-title').textContent={agents:'Agent 配置',templates:'项目模版'}[VIEW]||'';
   if(VIEW==='agents'){
-    $('mh-sub').textContent='服务型 agent 实例 · 点开配置';
-    $('mh-ops').innerHTML='<button class="btn pri" onclick="newAgent()">＋ 新建 Agent</button>';
-    const d=await jget('/api/admin/services');
-    if(!d.services.length){list.innerHTML='<div class="empty">还没有 agent——右上新建，或到客户入口发起一单</div>';return;}
-    list.innerHTML=d.services.map(s=>`<div class="rowcard" onclick="agentDetail('${s.service_id}')">
-     <div class="ava" style="background:${avc(s.role)}">${esc((s.role||'?').slice(0,2))}</div>
-     <div><b>${esc(s.role)}</b><div class="meta">${esc(s.project_name||'独立（未挂项目）')} · ${esc((s.agent_def_id||'').replace('consulting-','').replace('-def',''))}</div></div>
-     <div class="side">
-      <span class="badge ${s.status==='active'?'b-green':'b-gray'}">${s.status==='active'?'运行':'归档'}</span>
-      <div class="stat"><b>${s.wakes}</b><span>唤醒</span></div>
-      <div class="stat"><b>${s.messages}</b><span>消息</span></div>
-      <div class="stat"><b>${s.open_events||0}</b><span>积压</span></div>
-     </div></div>`).join('');
-  }else if(VIEW==='projects'){
-    $('mh-sub').textContent='项目与成员组织 · 点开管理';
+    $('mh-sub').textContent='Agent 类型（定义层）· 配置作用于同类型全部实例';
     $('mh-ops').innerHTML='';
-    const d=await jget('/api/admin/projects');
-    if(!d.projects.length){list.innerHTML='<div class="empty">暂无项目</div>';return;}
-    list.innerHTML=d.projects.map(p=>`<div class="rowcard" onclick="projDetail('${p.project_id}')">
-     <div class="ava" style="background:${avc(p.name)}">${esc((p.name||'?').slice(0,2))}</div>
-     <div><b>${esc(p.name)}</b><div class="meta">${p.members.length} 成员 · 模版 ${esc(p.template_id||'—')} · 客户 ${esc(p.customer_id?p.customer_id.slice(0,12)+'…':'—')}</div></div>
-     <div class="side">
-      <span class="badge ${p.status==='active'?'b-green':'b-gray'}">${p.status==='active'?'运行中':'已归档'}</span>
-      <div class="stat"><b>${p.todos_done}/${p.todos_total}</b><span>待办</span></div>
-      ${p.watchdog?'<span class="badge b-amber">看门狗</span>':''}
-     </div></div>`).join('');
+    const [dd,sv]=await Promise.all([jget('/api/admin/defs'),jget('/api/admin/services')]);
+    const svcs=sv.services||[];
+    list.innerHTML=(dd.defs||[]).map(x=>{
+      const mine=svcs.filter(v=>v.agent_def_id===x.def_id);
+      const running=mine.filter(v=>v.status==='active').length;
+      return `<div class="rowcard" onclick="defDetail('${esc(x.def_id)}')">
+       <div class="ava" style="background:${avc(x.display_name)}">${esc((x.display_name||'?').slice(0,2))}</div>
+       <div><b>${esc(x.display_name)}</b><div class="meta">${esc(x.def_id)} · ${mine.length} 实例（${running} 运行）· 人设 / Skill / 工具面</div></div>
+       <div class="side"><button class="btn">配置 →</button></div></div>`;}).join('')
+      ||'<div class="empty">无 agent 定义</div>';
   }else if(VIEW==='templates'){
-    $('mh-sub').textContent='定义层 · 角色班子与预设任务骨架';
+    $('mh-sub').textContent='成员班子与预设任务骨架 · 建项目时实例化';
     $('mh-ops').innerHTML='';
     const d=await jget('/api/admin/templates');
     if(!d.templates.length){list.innerHTML='<div class="empty">暂无模版</div>';return;}
-    list.innerHTML=d.templates.map(t=>`<div class="rowcard" onclick="tplDetail('${esc(t.id)}')">
-     <div class="ava" style="background:linear-gradient(135deg,#4d7cff,#b078ec)">T</div>
-     <div><b>${esc(t.name)}</b><div class="meta">${esc(t.id)}.yaml · ${(t.size/1000).toFixed(1)} KB · 建项目时按此生成班子与任务骨架</div></div>
-     <div class="side"><button class="btn">编辑 →</button></div></div>`).join('');
-  }else if(VIEW==='defs'){
-    $('mh-sub').textContent='定义层共享资产（只读）· 同定义的所有 agent 共享';
-    $('mh-ops').innerHTML='';
-    const d=await jget('/api/admin/defs');
-    list.innerHTML=(d.defs||[]).map(x=>`<div class="rowcard" onclick="defDetail('${esc(x.def_id)}')">
-     <div class="ava" style="background:${avc(x.display_name)}">${esc((x.display_name||'?').slice(0,2))}</div>
-     <div><b>${esc(x.display_name)}</b><div class="meta">${esc(x.def_id)}</div></div>
-     <div class="side"><button class="btn">查看 →</button></div></div>`).join('')||'<div class="empty">无定义</div>';
+    const pl=await jget('/api/admin/projects');
+    list.innerHTML=d.templates.map(t=>{
+      const n=(pl.projects||[]).filter(p=>p.template_id===t.id).length;
+      return `<div class="rowcard" onclick="tplDetail('${esc(t.id)}')">
+       <div class="ava" style="background:linear-gradient(135deg,#4d7cff,#b078ec)">T</div>
+       <div><b>${esc(t.name)}</b><div class="meta">${esc(t.id)}.yaml · ${(t.size/1000).toFixed(1)} KB · 已实例化 ${n} 个项目</div></div>
+       <div class="side"><button class="btn">配置 →</button></div></div>`;}).join('');
   }
 }
 
-/* ══ Agent 详情（概览 / 配置[基本信息·Skill·Tool]） ══ */
+/* ══ Agent 配置（对象=定义层，作用于同类型全部实例） ══ */
 let AG={};
-async function agentDetail(sid){
-  const [d,pf,tl]=await Promise.all([
-    jget('/api/admin/services/'+sid),
-    jget('/api/admin/agents/'+sid+'/profile'),
-    jget('/api/admin/tools')]);
-  AG={sid,detail:d,profile:pf,tools:tl.tools||[],tab:'overview'};
-  $('rp-title').innerHTML=`<b>${esc(pf.name||d.service.role||'agent')}</b><small>${esc(pf.def_id)} · ${esc(d.service.status)}</small>`;
-  $('rp-ops').innerHTML=`<button class="btn ${d.service.status==='active'?'':'pri'}" onclick="toggleAgent()">${d.service.status==='active'?'归档':'恢复'}</button>`;
+async function defDetail(defId){
+  const [pf,tl,sv]=await Promise.all([
+    jget('/api/admin/agent-defs/'+encodeURIComponent(defId)+'/profile'),
+    jget('/api/admin/tools'),
+    jget('/api/admin/services')]);
+  AG={defId,profile:pf,tools:tl.tools||[],
+      instances:(sv.services||[]).filter(x=>x.agent_def_id===defId),tab:'overview'};
+  $('rp-title').innerHTML=`<b>${esc(pf.name||defId)}</b><small>${esc(defId)} · ${AG.instances.length} 运行实例 · 配置作用于全部实例</small>`;
+  $('rp-ops').innerHTML='';
   $('rp-body').innerHTML=`<div class="cfg-tabs">
-    <button data-t="overview" class="on" onclick="setAgentTab('overview')">概览</button>
-    <button data-t="basic" onclick="setAgentTab('basic')">配置 · 基本信息</button>
-    <button data-t="skill" onclick="setAgentTab('skill')">配置 · Skill</button>
-    <button data-t="tool" onclick="setAgentTab('tool')">配置 · Tool</button>
+    <button data-t="overview" class="on" onclick="setAgentTab('overview')">概览 · 运行实例</button>
+    <button data-t="basic" onclick="setAgentTab('basic')">基本信息</button>
+    <button data-t="skill" onclick="setAgentTab('skill')">Skill</button>
+    <button data-t="tool" onclick="setAgentTab('tool')">Tool · 默认工具面</button>
    </div><div id="ag-tab"></div>`;
   $('rpage').classList.add('open');
   renderAgentTab();
@@ -272,138 +252,132 @@ function setAgentTab(t){AG.tab=t;
   renderAgentTab();}
 function renderAgentTab(){
   const el=$('ag-tab');if(!el)return;
-  const s=AG.detail.service;
   if(AG.tab==='overview'){
    el.innerHTML=`
-   <h6>运行统计</h6>
-   <div class="cfg-card">
-    <div class="stat"><b>${AG.detail.wakes.length}</b><span>累计唤醒</span></div>
-    <div class="stat"><b>${s.messages}</b><span>消息</span></div>
-    <div class="stat"><b>${s.open_events||0}</b><span>积压事件</span></div>
-    <div class="stat"><b>${(s.subscriptions||[]).length}</b><span>事件订阅</span></div>
-   </div>
-   <h6>订阅 / 工具面 / 能力</h6>
-   <div class="cfg-card"><span class="cfg-mono" style="flex:none">订阅</span><span class="cfg-mono">${esc((s.subscriptions||[]).join(', ')||'—')}</span></div>
-   <div class="cfg-card"><span class="cfg-mono" style="flex:none">工具面</span><span class="cfg-mono">${Array.isArray(s.tools)?esc(s.tools.join(', ')):'默认全量'}</span></div>
-   <div class="cfg-card"><span class="cfg-mono" style="flex:none">能力</span><span class="cfg-mono">${esc(JSON.stringify(s.capabilities||{}))}</span></div>
-   <h6>最近唤醒（新 → 旧）</h6>
-   ${AG.detail.wakes.map(w=>`<div class="wake"><b>#${w.seq} ${esc(w.reason||'')}</b><div class="m">${esc(w.started_at||'')} ${w.tokens?'· '+w.tokens+' tok':''}</div></div>`).join('')||'<div class="cfg-note">无唤醒记录</div>'}
-   <div class="cfg-note" style="margin-top:12px">逐次唤醒的思考与工具过程，在客户页点该成员头像查看。</div>`;
+   <h6>运行实例（${AG.instances.length}）· 实例不可配置，要调整就改本页类型配置或其项目模版</h6>
+   ${AG.instances.map(x=>`<div class="cfg-card">
+    <div style="width:30px;height:30px;border-radius:50%;background:${avc(x.role)};color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:650;flex:none">${esc((x.role||'?').slice(0,2))}</div>
+    <b>${esc(x.role)}</b>
+    <span class="badge ${x.status==='active'?'b-green':'b-gray'}">${x.status==='active'?'运行':'归档'}</span>
+    <span class="cfg-mono">${esc(x.project_name||'独立（未挂项目）')}</span>
+    <span class="cfg-mono" style="margin-left:auto">唤醒 ${x.wakes} · 消息 ${x.messages} · 积压 ${x.open_events||0}</span>
+    <button class="btn ${x.status==='active'?'':'pri'}" onclick="toggleSvc('${x.service_id}','${x.status==='active'?'archived':'active'}')">${x.status==='active'?'归档':'恢复'}</button>
+   </div>`).join('')||'<div class="cfg-note">尚无运行实例——在项目模版里引用本类型，或从模版实例化的项目中生成</div>'}
+   <div class="cfg-note" style="margin-top:10px">实例的逐次唤醒思考与工具过程，在客户页点该成员头像查看。</div>`;
   }else if(AG.tab==='basic'){
    const p=AG.profile;
    el.innerHTML=`
+   <div class="cfg-note" style="margin:0 0 10px">作用域：<b>agent 类型</b>——保存即对同定义的全部实例（含未来新建）生效。本类型下各实例的差异化仅来自项目模版角色（名称 / 工具面收紧）。</div>
    <h6>名称与头像</h6>
    <div class="cfg-card"><span class="cfg-mono" style="flex:none">名称</span><input class="cfg-in" id="cfg-name" value="${esc(p.name)}"></div>
-   <div class="cfg-card"><span class="cfg-mono" style="flex:none">头像</span><input class="cfg-in" id="cfg-avatar" value="${esc(p.avatar)}" placeholder="emoji 或 #色值，如 🧭 / #7a5cff"><span id="ava-prev" style="width:30px;height:30px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:650;color:#fff;background:${p.avatar&&!p.avatar.startsWith('#')?'linear-gradient(135deg,#4d7cff,#b078ec)':(p.avatar||avc(p.name))}">${esc(p.avatar&&!p.avatar.startsWith('#')?p.avatar:(p.name||'A').slice(0,2))}</span></div>
+   <div class="cfg-card"><span class="cfg-mono" style="flex:none">头像</span><input class="cfg-in" id="cfg-avatar" value="${esc(p.avatar)}" placeholder="emoji 或 #色值，如 🧭 / #7a5cff"><span style="width:30px;height:30px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:650;color:#fff;background:${p.avatar&&!p.avatar.startsWith('#')?'linear-gradient(135deg,#4d7cff,#b078ec)':(p.avatar||avc(p.name))}">${esc(p.avatar&&!p.avatar.startsWith('#')?p.avatar:(p.name||'A').slice(0,2))}</span></div>
    <h6>人设（persona · 身份层）</h6>
-   <div class="cfg-note" style="margin:0 0 6px">来源 <span class="mk-src ${p.persona.source==='overlay'?'src-overlay':p.persona.source==='def'?'src-def':'src-system'}">${p.persona.source==='overlay'?'服务级覆盖':p.persona.source==='def'?'定义层共享':'缺失'}</span>：保存写入本 agent 私有覆盖；清空保存 = 回到定义层。</div>
-   <textarea class="cfg-area" id="cfg-persona" rows="10">${esc(p.persona.content)}</textarea>
+   <div class="cfg-note" style="margin:0 0 6px">定义层共享人设，直接编辑生效于全部实例。</div>
+   <textarea class="cfg-area" id="cfg-persona" rows="10">${esc(p.persona)}</textarea>
    <h6>附加指令（追加到系统提示词尾部）</h6>
-   <div class="cfg-note" style="margin:0 0 6px">本 agent 私有，留空 = 无附加。</div>
+   <div class="cfg-note" style="margin:0 0 6px">类型级追加段，留空 = 无附加。</div>
    <textarea class="cfg-area" id="cfg-extra" rows="4" placeholder="例如：输出务必分点、结论先行…">${esc(p.extra_prompt)}</textarea>
    <h6>生命周期段落（L4 · 高级）</h6>
-   <div class="cfg-note" style="margin:0 0 6px">来源 <span class="mk-src ${p.l4&&p.l4.source==='overlay'?'src-overlay':'src-system'}">${p.l4&&p.l4.source==='overlay'?'服务级覆盖':'引擎默认'}</span>：躯体状态机与工具习惯段。覆盖需谨慎，清空保存 = 回默认。</div>
+   <div class="cfg-note" style="margin:0 0 6px">来源 <span class="mk-src ${p.l4&&p.l4.source==='overlay'?'src-overlay':'src-system'}">${p.l4&&p.l4.source==='overlay'?'类型覆盖':'引擎默认'}</span>：躯体状态机与工具习惯段。清空保存 = 回默认。</div>
    <textarea class="cfg-area" id="cfg-l4" rows="8" style="font-size:12px">${esc(p.l4?p.l4.content:'')}</textarea>
-   <div style="margin-top:14px"><button class="btn pri" id="cfg-save" onclick="saveProfile()">保存基本信息</button></div>`;
+   <div style="margin-top:14px"><button class="btn pri" id="cfg-save" onclick="saveProfile()">保存（全部实例生效）</button></div>`;
   }else if(AG.tab==='skill'){
    el.innerHTML='<div id="skill-list" class="cfg-note">加载中…</div>';loadSkills();
   }else{
-   el.innerHTML=cfgToolHTML();
+   el.innerHTML='<div id="tool-tab" class="cfg-note">加载中…</div>';loadDefTools();
   }
 }
-async function toggleAgent(){
-  const s=AG.detail.service;
-  await fetch(`/api/admin/services/${AG.sid}/status`,{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({status:s.status==='active'?'archived':'active'})});
-  agentDetail(AG.sid);renderList();
+async function toggleSvc(sid,status){
+  await fetch(`/api/admin/services/${sid}/status`,{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({status})});
+  defDetail(AG.defId);renderList();
 }
 async function saveProfile(){
   const btn=$('cfg-save');btn.textContent='保存中…';btn.disabled=true;
   try{
-   const r=await fetch(`/api/admin/agents/${AG.sid}/profile`,{method:'PUT',headers:{'Content-Type':'application/json'},
+   const r=await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/profile`,{method:'PUT',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({name:$('cfg-name').value.trim(),avatar:$('cfg-avatar').value.trim(),
      persona:$('cfg-persona').value,extra_prompt:$('cfg-extra').value,l4:$('cfg-l4')?$('cfg-l4').value:''})});
    const d=await r.json();
    if(!d.ok)throw new Error(d.error||'未知错误');
-   AG.profile=await jget(`/api/admin/agents/${AG.sid}/profile`);
-   $('rp-title').querySelector('b').textContent=AG.profile.name||'agent';
-   btn.textContent='已保存 ✓';setTimeout(()=>{btn.textContent='保存基本信息';btn.disabled=false;},1500);
+   AG.profile=await jget(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/profile`);
+   $('rp-title').querySelector('b').textContent=AG.profile.name||AG.defId;
+   btn.textContent='已保存 ✓';setTimeout(()=>{btn.textContent='保存（全部实例生效）';btn.disabled=false;},1500);
    renderList();
   }catch(e){btn.textContent='保存失败：'+e.message;btn.disabled=false;}
 }
 
-/* Skill（写入服务级覆盖，与客户页同逻辑） */
+/* Skill（定义层编辑 + app.yaml 注册） */
 async function loadSkills(){
-  const d=await jget(`/api/admin/agents/${AG.sid}/skills`);
+  const d=await jget(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/skills`);
   AG.skills=d.skills||[];
   const el=$('skill-list');if(!el)return;
   el.innerHTML=`
    <div class="cfg-card"><input class="cfg-in" id="new-skill" placeholder="新增 skill 名（字母数字与 _ -）"><button class="btn pri" style="flex:none" onclick="newSkill()">新建</button></div>
-   <div class="cfg-note" style="margin:0 0 8px">编辑与新增均写入本 agent 私有覆盖（同名覆盖定义层/系统）；下载导出 .md；删除仅对覆盖有效。</div>
-   ${AG.skills.map(s=>`<div class="skill-row" data-skill="${esc(s.name)}">
-    <div class="sr-h" onclick="toggleSkillRow(this,'${esc(s.name)}')">
-     <b>${esc(s.name)}</b>${s.registered?'<span class="mk-src src-def">已注册</span>':''}<span class="d">${esc(s.description)}</span>
-     <span class="mk-src ${s.source==='overlay'?'src-overlay':s.source==='def'?'src-def':'src-system'}">${s.source==='overlay'?'覆盖':s.source==='def'?'定义层':'系统'}</span>
+   <div class="cfg-note" style="margin:0 0 8px">编辑写入定义层 skills/ 并自动注册——同类型全部实例下次唤醒可调用。</div>
+   ${AG.skills.map(sk=>`<div class="skill-row" data-skill="${esc(sk.name)}">
+    <div class="sr-h" onclick="toggleSkillRow(this,'${esc(sk.name)}')">
+     <b>${esc(sk.name)}</b>${sk.registered?'<span class="mk-src src-def">已注册</span>':''}<span class="d">${esc(sk.description)}</span>
+     <span class="mk-src ${sk.source==='def'?'src-def':'src-system'}">${sk.source==='def'?'本类型':'系统'}</span>
     </div><div class="sr-b"></div></div>`).join('')||'<div class="cfg-note">还没有 skill</div>'}`;
 }
 async function toggleSkillRow(head,name){
   const row=head.parentElement,body=row.querySelector('.sr-b');
   const opening=row.classList.toggle('open');
   if(opening&&!body.dataset.loaded){
-   const d=await jget(`/api/admin/agents/${AG.sid}/skills/${encodeURIComponent(name)}`);
+   const d=await jget(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/skills/${encodeURIComponent(name)}`);
    body.dataset.loaded=1;
    body.innerHTML=`<div style="padding:10px 12px;border-top:1px solid var(--bd)">
     <textarea class="cfg-area" id="sk-md" rows="14">${esc(d.content)}</textarea>
-    <div class="cfg-note" style="margin:6px 0 0">当前来源：${d.source==='overlay'?'服务级覆盖':'保存后在本 agent 生效为覆盖'}</div>
+    <div class="cfg-note" style="margin:6px 0 0">来源：${d.source==='def'?'本类型（直接编辑）':'系统内置（保存后覆盖为本类型版本）'}</div>
     <div style="display:flex;gap:8px;margin-top:8px">
-     <button class="btn pri" onclick="saveSkill('${esc(name)}')">保存到服务覆盖</button>
+     <button class="btn pri" onclick="saveSkill('${esc(name)}')">保存到定义层</button>
      <button class="btn" onclick="dlSkill('${esc(name)}')">下载 .md</button>
-     ${d.source==='overlay'?`<button class="btn danger" onclick="delSkill('${esc(name)}')">删除覆盖</button>`:''}
+     ${d.source==='def'?`<button class="btn danger" onclick="delSkill('${esc(name)}')">删除</button>`:''}
     </div></div>`;
   }
 }
 async function saveSkill(name){
   const ta=document.getElementById('sk-md');if(!ta||!ta.value.trim()){alert('内容不能为空');return;}
-  const r=await fetch(`/api/admin/agents/${AG.sid}/skills/${encodeURIComponent(name)}`,{
+  const r=await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/skills/${encodeURIComponent(name)}`,{
    method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:ta.value})});
   const d=await r.json();
   if(d.ok)loadSkills();else alert(d.error||'保存失败');
 }
 async function dlSkill(name){
-  try{const d=await jget(`/api/admin/agents/${AG.sid}/skills/${encodeURIComponent(name)}`);
+  try{const d=await jget(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/skills/${encodeURIComponent(name)}`);
    const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([d.content],{type:'text/markdown'}));
    a.download=name+'.SKILL.md';a.click();}catch(e){alert('下载失败');}
 }
 async function delSkill(name){
-  if(!confirm('删除「'+name+'」的服务级覆盖？'))return;
-  const r=await fetch(`/api/admin/agents/${AG.sid}/skills/${encodeURIComponent(name)}`,{method:'DELETE'});
+  if(!confirm('删除「'+name+'」？'))return;
+  const r=await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/skills/${encodeURIComponent(name)}`,{method:'DELETE'});
   const d=await r.json();
   if(d.ok)loadSkills();else alert(d.error||'删除失败');
 }
 function newSkill(){
   const name=($('new-skill').value||'').trim();
   if(!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)){alert('skill 名仅限字母数字与 _ -');return;}
-  if(AG.skills.some(s=>s.name===name)){alert('同名 skill 已存在，展开编辑即可');return;}
-  AG.skills.unshift({name,description:'',source:'overlay'});
+  if(AG.skills.some(sk=>sk.name===name)){alert('同名 skill 已存在，展开编辑即可');return;}
+  AG.skills.unshift({name,description:'',source:'def'});
   $('skill-list').querySelector('.cfg-card').insertAdjacentHTML('afterend',`<div class="skill-row open" data-skill="${esc(name)}">
-   <div class="sr-h" onclick="toggleSkillRow(this,'${esc(name)}')"><b>${esc(name)}</b><span class="d"></span><span class="mk-src src-overlay">覆盖</span></div>
+   <div class="sr-h" onclick="toggleSkillRow(this,'${esc(name)}')"><b>${esc(name)}</b><span class="d"></span><span class="mk-src src-def">本类型</span></div>
    <div class="sr-b" data-loaded="1"><div style="padding:10px 12px;border-top:1px solid var(--bd)">
     <textarea class="cfg-area" id="sk-md" rows="14">---\nname: ${esc(name)}\ndescription: 一句话描述该技能的用途\n---\n\n# ${esc(name)}\n\n在这里写方法论正文（Markdown）。</textarea>
-    <div style="display:flex;gap:8px;margin-top:8px"><button class="btn pri" onclick="saveSkill('${esc(name)}')">保存到服务覆盖</button></div>
+    <div style="display:flex;gap:8px;margin-top:8px"><button class="btn pri" onclick="saveSkill('${esc(name)}')">保存到定义层</button></div>
    </div></div></div>`);
 }
 
-/* Tool：registry 全量 ∪ 服务面 */
-function cfgToolHTML(){
-  const explicit=Array.isArray(AG.detail.service.tools);
-  const regNames=new Set(AG.tools.map(t=>t.name));
-  const extra=(explicit?AG.detail.service.tools:[]).filter(n=>n&&!regNames.has(n))
-   .map(n=>({name:n,toolset:'service',description:'服务运行时注册的工具',schema:{name:n,parameters:{}}}));
-  const rows=[...AG.tools,...extra];
-  const enabled=new Set(explicit?AG.detail.service.tools:rows.map(t=>t.name));
-  return `
-  <div class="cfg-note" style="margin:0 0 10px">工具面：当前${explicit?'为显式清单':'未配置 = 默认全量'}。保存任意勾选即成为显式清单（勾=启用），即时生效于下次唤醒。点行展开完整 schema。</div>
-  ${rows.map(t=>{const on=enabled.has(t.name);return `<div class="tool-row">
+/* Tool：类型默认工具面（app.yaml tools；实例显式面来自模版角色，优先于默认） */
+let DEFTOOLS={explicit:null};
+async function loadDefTools(){
+  const [dt]=await Promise.all([jget(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/tools`)]);
+  DEFTOOLS={explicit:Array.isArray(dt.tools)?dt.tools:null};
+  const el=$('tool-tab');if(!el)return;
+  const enabled=new Set(DEFTOOLS.explicit??AG.tools.map(t=>t.name));
+  el.innerHTML=`
+  <div class="cfg-note" style="margin:0 0 10px">类型默认工具面：当前${DEFTOOLS.explicit?'为显式清单':'未配置 = 全量'}。项目模版给角色显式配置工具面时以模版为准，否则用这里的类型默认。点行展开 schema。</div>
+  ${AG.tools.map(t=>{const on=enabled.has(t.name);return `<div class="tool-row">
    <div class="tr-h" onclick="this.parentElement.classList.toggle('open')">
     <input type="checkbox" data-tool="${esc(t.name)}" ${on?'checked':''} onclick="event.stopPropagation()">
     <b>${esc(t.name)}</b><span class="ts">${esc(t.toolset)}</span>
@@ -411,15 +385,23 @@ function cfgToolHTML(){
    </div>
    <div class="tr-b"><pre>${esc(JSON.stringify(t.schema,null,2))}</pre></div>
   </div>`}).join('')}
-  <div style="margin-top:12px"><button class="btn pri" onclick="saveToolset()">保存工具面</button></div>`;
+  <div style="display:flex;gap:8px;margin-top:12px">
+   <button class="btn pri" onclick="saveDefTools()">保存类型默认</button>
+   ${DEFTOOLS.explicit?'<button class="btn" onclick="clearDefTools()">清除默认（回全量）</button>':''}
+  </div>`;
 }
-async function saveToolset(){
-  const tools=[...document.querySelectorAll('#ag-tab input[data-tool]')].filter(c=>c.checked).map(c=>c.dataset.tool);
-  if(!tools.length&&!confirm('全部取消将禁用所有工具，确定？'))return;
-  const r=await fetch(`/api/admin/services/${AG.sid}/config`,{method:'PATCH',headers:{'Content-Type':'application/json'},
+async function saveDefTools(){
+  const tools=[...document.querySelectorAll('#tool-tab input[data-tool]')].filter(c=>c.checked).map(c=>c.dataset.tool);
+  if(!tools.length&&!confirm('全部取消将默认禁用所有工具，确定？'))return;
+  const r=await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/tools`,{method:'PUT',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({tools})});
   const d=await r.json();
-  if(d.ok)agentDetail(AG.sid);else alert(d.error||'保存失败');
+  if(d.ok)loadDefTools();else alert(d.error||'保存失败');
+}
+async function clearDefTools(){
+  await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/tools`,{method:'PUT',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({tools:null})});
+  loadDefTools();
 }
 
 /* 新建 agent */
@@ -439,93 +421,61 @@ async function createAgent(){
   if(d.ok){closeDrawer();renderList();}else alert(d.error||'创建失败');
 }
 
-/* ══ 项目详情（基本信息 / 成员管理 / 群沟通 / 交付物） ══ */
+/* ══ 项目运行操作（挂在模版实例化区块：群沟通/交付物/归档） ══ */
 let PRJ={};
-async function projDetail(pid){
-  const [pl,defs,svcs]=await Promise.all([
-   jget('/api/admin/projects'),jget('/api/admin/defs'),jget('/api/admin/services')]);
-  const proj=pl.projects.find(p=>p.project_id===pid);
-  if(!proj)return;
-  PRJ={pid,proj,defs:defs.defs||[],members:svcs.services.filter(s=>s.project_id===pid)};
-  $('rp-title').innerHTML=`<b>${esc(proj.name)}</b><small>${esc(proj.template_id||'')} · ${proj.status==='active'?'运行中':'已归档'} · ${proj.members.length} 成员</small>`;
-  $('rp-ops').innerHTML=`
-   <button class="btn" onclick="projGroup()">群沟通</button>
-   <button class="btn" onclick="projFiles('')">交付物</button>
-   <button class="btn" onclick="toggleProjWd()">看门狗：${proj.watchdog?'开':'关'}</button>`;
-  $('rp-body').innerHTML=`<div class="rp-inner">
-   <h6>基本信息</h6>
-   <div class="cfg-card"><span class="cfg-mono" style="flex:none">项目</span><b>${esc(proj.name)}</b><span class="cfg-mono">${esc(pid)}</span>
-    <span class="cfg-mono" style="flex:none;margin-left:auto">客户</span><span class="cfg-mono">${esc(proj.customer_id||'—')}</span></div>
-   <div class="cfg-card"><span class="cfg-mono" style="flex:none">模版</span><button class="btn" onclick="tplDetail('${esc(proj.template_id||'')}')">${esc(proj.template_id||'—')} ↗ 编辑模版</button>
-    <span class="cfg-note" style="margin-left:auto">待办 ${proj.todos_done}/${proj.todos_total} · 看门狗 <span class="badge ${proj.watchdog?'b-amber':'b-gray'}">${proj.watchdog?'开':'关'}</span></span></div>
-   <h6>成员（${PRJ.members.length}）· 「配置」进该 agent 的深度配置页</h6>
-   ${PRJ.members.map(s=>`<div class="cfg-card">
-     <div style="width:30px;height:30px;border-radius:50%;background:${avc(s.role)};color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:650;flex:none">${esc((s.role||'?').slice(0,2))}</div>
-     <b>${esc(s.role)}</b>
-     <span class="badge ${s.status==='active'?'b-green':'b-gray'}">${s.status==='active'?'运行':'归档'}</span>
-     <span class="cfg-mono">唤醒 ${s.wakes} · 消息 ${s.messages}</span>
-     <button class="btn" style="margin-left:auto" onclick="agentDetail('${s.service_id}')">配置 →</button>
-     <button class="btn danger" onclick="removeMember('${s.service_id}','${esc(s.role)}')">移除</button>
-    </div>`).join('')||'<div class="cfg-note">无成员</div>'}
-   <h6>增加成员</h6>
-   <div class="cfg-card">
-    <input class="cfg-in" id="add-role" placeholder="角色名，如：数据分析师">
-    <select class="cfg-in" id="add-def" style="flex:none;width:150px">${PRJ.defs.map(x=>`<option value="${x.def_id}">${esc(x.display_name)}</option>`).join('')}</select>
-    <button class="btn pri" style="flex:none" onclick="addProjMember()">加入项目</button>
-   </div>
-   <div class="cfg-note" style="margin-top:8px">移除成员=退出本项目（服务保留为独立 agent，可再加入）。</div>
-  </div>`;
-  $('rpage').classList.add('open');
-}
-async function toggleProjWd(){
-  const pl=await jget('/api/admin/projects');
-  const pr=pl.projects.find(p=>p.project_id===PRJ.pid);
-  await fetch(`/api/admin/projects/${PRJ.pid}/watchdog`,{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({enabled:!(pr&&pr.watchdog)})});
-  projDetail(PRJ.pid);renderList();
-}
-async function addProjMember(){
-  const role=$('add-role').value.trim(),def=$('add-def').value;
-  if(!role)return;
-  const r=await fetch(`/api/admin/projects/${PRJ.pid}/members`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({def,role})});
-  const d=await r.json();
-  if(d.ok)projDetail(PRJ.pid);else alert(d.error||'添加失败');
-}
-async function removeMember(sid,role){
-  if(!confirm('移除「'+role+'」？服务将退出本项目（保留为独立 agent）。'))return;
-  const r=await fetch(`/api/admin/projects/${PRJ.pid}/members/${sid}`,{method:'DELETE'});
-  if(r.status===404){alert('该成员不在本项目');return;}
-  const d=await r.json().catch(()=>({ok:false,error:'网络错误'}));
-  if(d.ok){projDetail(PRJ.pid);renderList();}else alert(d.error||'移除失败');
-}
-async function projGroup(){
-  const d=await jget(`/api/admin/projects/${PRJ.pid}/group`);
-  openDrawer('群沟通 · '+PRJ.proj.name,(d.messages||[]).map(m=>`
+async function projGroup(pid,name){
+  PRJ={pid,proj:{name}};
+  const d=await jget(`/api/admin/projects/${pid}/group`);
+  openDrawer('群沟通 · '+name,(d.messages||[]).map(m=>`
    <div class="msg"><div class="m">${esc(m.sender_name)} · ${esc(m.ts)}</div>${esc(m.text)}</div>`).join('')||'<div class="empty">暂无群消息</div>');
 }
-async function projFiles(path){
-  const d=await jget(`/api/admin/projects/${PRJ.pid}/files?path=${encodeURIComponent(path)}`);
+async function projFiles(pid,name,path){
+  PRJ={pid,proj:{name}};
+  const d=await jget(`/api/admin/projects/${pid}/files?path=${encodeURIComponent(path)}`);
   if(d.kind==='dir'){
-   openDrawer('交付物 · '+(path||'shared/'),(path?`<div class="back" onclick="projFiles('${path.split('/').slice(0,-1).join('/')}')">‥ 上级</div>`:'')+
+   openDrawer('交付物 · '+(path||'shared/'),(path?`<div class="back" onclick="projFiles('${pid}','${esc(name)}','${path.split('/').slice(0,-1).join('/')}')">‥ 上级</div>`:'')+
     (d.entries||[]).map(e=>e.type==='dir'
-     ?`<div class="file" onclick="projFiles('${e.rel}')">📂 <b>${esc(e.name)}</b>/</div>`
-     :`<div class="file" onclick="projFiles('${e.rel}')">📄 ${esc(e.name)} <span style="margin-left:auto;color:var(--tx-3)">${(e.size/1000).toFixed(1)}k</span></div>`).join('')||'<div class="empty">空</div>');
+     ?`<div class="file" onclick="projFiles('${pid}','${esc(name)}','${e.rel}')">📂 <b>${esc(e.name)}</b>/</div>`
+     :`<div class="file" onclick="projFiles('${pid}','${esc(name)}','${e.rel}')">📄 ${esc(e.name)} <span style="margin-left:auto;color:var(--tx-3)">${(e.size/1000).toFixed(1)}k</span></div>`).join('')||'<div class="empty">空</div>');
   }else{
-   openDrawer('📄 '+path,`<div class="back" onclick="projFiles('${path.split('/').slice(0,-1).join('/')}')">‥ 上级</div><pre class="doc">${esc(d.content)}</pre>`);
+   openDrawer('📄 '+path,`<div class="back" onclick="projFiles('${pid}','${esc(name)}','${path.split('/').slice(0,-1).join('/')}')">‥ 上级</div><pre class="doc">${esc(d.content)}</pre>`);
   }
+}
+async function projArchive(pid,archived){
+  if(archived!==undefined&&!confirm(archived?'恢复该项目？':'归档该项目？'))return;
+  await fetch(`/api/admin/projects/${pid}/config`,{method:'PATCH',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({status:archived?'active':'archived'})});
+  if(TPL.id)tplDetail(TPL.id);renderList();
 }
 
 /* ══ 模版详情（结构化编辑 · 整页） ══ */
 let TPL={mode:'form'};
 async function tplDetail(tid){
-  const [d,defs]=await Promise.all([jget('/api/admin/templates/'+tid),jget('/api/admin/defs')]);
-  TPL={id:tid,p:d.parsed||{},defs:defs.defs||[],mode:'form',raw:d.raw};
+  const [d,defs,pl]=await Promise.all([jget('/api/admin/templates/'+tid),jget('/api/admin/defs'),jget('/api/admin/projects')]);
+  TPL={id:tid,p:d.parsed||{},defs:defs.defs||[],mode:'form',raw:d.raw,
+       projects:(pl.projects||[]).filter(x=>x.template_id===tid)};
   $('rp-title').innerHTML=`<b>模版 · ${esc((d.parsed&&d.parsed.name)||tid)}</b><small>定义层 · 角色班子与预设任务骨架 · 建项目时生效</small>`;
   $('rp-ops').innerHTML=`<button class="btn" onclick="TPL.mode=TPL.mode==='form'?'raw':'form';renderTpl()">${TPL.mode==='form'?'源码模式':'表单模式'}</button>
    <button class="btn pri" onclick="tplSaveStructured()">保存</button>`;
   $('rp-body').innerHTML='<div class="rp-inner" id="tpl-body"></div>';
   $('rpage').classList.add('open');
   renderTpl();
+  renderTplProjects();
+}
+function renderTplProjects(){
+  const el=$('tpl-projects');if(!el)return;
+  el.innerHTML=`
+   <h6>实例化项目（${TPL.projects.length}）· 运行实例只观察不配置</h6>
+   ${TPL.projects.map(x=>`<div class="cfg-card">
+    <b>${esc(x.name)}</b>
+    <span class="badge ${x.status==='active'?'b-green':'b-gray'}">${x.status==='active'?'运行中':'已归档'}</span>
+    <span class="cfg-mono">${x.members.length} 成员 · 待办 ${x.todos_done}/${x.todos_total}${x.watchdog?' · 看门狗':''}</span>
+    <span style="margin-left:auto;display:flex;gap:6px">
+     <button class="btn" onclick="projGroup('${x.project_id}','${esc(x.name)}')">群沟通</button>
+     <button class="btn" onclick="projFiles('${x.project_id}','${esc(x.name)}','')">交付物</button>
+     <button class="btn ${x.status==='active'?'':'pri'}" onclick="projArchive('${x.project_id}',${x.status!=='active'})">${x.status==='active'?'归档':'恢复'}</button>
+    </span>
+   </div>`).join('')||'<div class="cfg-note">尚无项目使用此模版——客户页发起新咨询即按此模版实例化</div>'}`;
 }
 function renderTpl(){
   const el=$('tpl-body');if(!el)return;
@@ -566,7 +516,8 @@ function renderTpl(){
     <input value="${esc(t.detail||'')}" placeholder="任务描述（可选）" onchange="TPL.p.initial_todos[${i}].detail=this.value" style="font-size:12px;border:1px solid var(--bd-2);border-radius:7px;padding:5px 8px;width:100%;margin-top:6px">
    </div>`).join('')}
    <button class="btn" onclick="tplAddTodo()">＋ 增加预设任务</button>
-   <div class="cfg-note" style="margin-top:12px">建项目时按此骨架生成任务（指派按角色名解析到成员）。指派角色被删除时对应任务的指派自动置空。</div>`;
+   <div class="cfg-note" style="margin-top:12px">建项目时按此骨架生成任务（指派按角色名解析到成员）。指派角色被删除时对应任务的指派自动置空。</div>
+   <div id="tpl-projects"></div>`;
 }
 function tplAddRole(){TPL.p.roles=TPL.p.roles||[];TPL.p.roles.push({def:'',name:''});renderTpl();}
 function tplDelRole(i){
@@ -599,25 +550,21 @@ async function tplSaveStructured(){
   else alert(d.error||'保存失败');
 }
 
-/* ══ Agent 定义（定义层 · 只读） ══ */
-async function defDetail(defId){
-  const svc=await jget('/api/admin/services');
-  const mine=(svc.services||[]).filter(s=>s.agent_def_id===defId);
-  openDrawer('定义 · '+defId,`
-   <div class="kv"><i>同定义服务</i><span class="cfg-mono">${mine.length} 个实例</span></div>
-   ${mine.map(s=>`<div class="kv"><i></i><span>${esc(s.role)} <span class="cfg-mono">${s.service_id.slice(0,14)}…</span></span></div>`).join('')}
-   <div class="kv" style="font-size:12px;color:var(--tx-3);margin-top:10px">定义层资产（默认人设 / 默认 skill）由同定义的所有 agent 共享——修改请在具体 agent 上做服务级覆盖（Agents → 配置），此处只读防止误伤同类。</div>`);
-}
-
 /* ══ 深链：#agent= / #project= / #tpl= ══ */
 function switchNav(v){
   const el=document.querySelector(`.nav-item[data-v="${v}"]`);
   if(el)el.click();
 }
-function applyHash(){
+async function applyHash(){
   const h=location.hash;
-  if(h.startsWith('#agent=')){const sid=decodeURIComponent(h.slice(7));history.replaceState(null,'','#services');switchNav('agents');agentDetail(sid);}
-  else if(h.startsWith('#project=')){const pid=decodeURIComponent(h.slice(9));history.replaceState(null,'','#services');switchNav('projects');projDetail(pid);}
+  if(h.startsWith('#def=')){const defId=decodeURIComponent(h.slice(5));history.replaceState(null,'','#services');switchNav('agents');defDetail(defId);}
+  else if(h.startsWith('#agent=')){
+   // 服务实例深链 → 解析其类型后开类型配置页（配置对象=类型）
+   const sid=decodeURIComponent(h.slice(7));history.replaceState(null,'','#services');switchNav('agents');
+   const sv=await jget('/api/admin/services');
+   const svc=(sv.services||[]).find(x=>x.service_id===sid);
+   if(svc)defDetail(svc.agent_def_id);
+  }
   else if(h.startsWith('#tpl=')){const tid=decodeURIComponent(h.slice(5));history.replaceState(null,'','#services');switchNav('templates');tplDetail(tid);}
 }
 

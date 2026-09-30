@@ -70,12 +70,18 @@ def l4_path(service_id: str) -> Optional[Path]:
 
 def read_l4(service_id: str) -> Optional[str]:
     p = l4_path(service_id)
-    if p is None or not p.exists():
-        return None
-    try:
-        return p.read_text(encoding="utf-8")
-    except OSError:
-        return None
+    if p is not None and p.exists():
+        try:
+            return p.read_text(encoding="utf-8")
+        except OSError:
+            return None
+    dp = _def_persona_file(service_id, "L4_PROMPT.md")
+    if dp is not None and dp.exists():
+        try:
+            return dp.read_text(encoding="utf-8")
+        except OSError:
+            return None
+    return None
 
 
 def write_l4(service_id: str, content: str) -> bool:
@@ -100,12 +106,39 @@ def extra_prompt_path(service_id: str) -> Optional[Path]:
 
 def read_extra_prompt(service_id: str) -> str:
     p = extra_prompt_path(service_id)
-    if p is None or not p.exists():
-        return ""
-    try:
-        return p.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
+    if p is not None and p.exists():
+        try:
+            return p.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+    # 定义层回退（配置作用域=agent 类型：同定义全部服务生效）
+    dp = _def_persona_file(service_id, "EXTRA_PROMPT.md")
+    if dp is not None and dp.exists():
+        try:
+            return dp.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+    return ""
+
+
+def _def_persona_file(service_id: str, name: str) -> Optional[Path]:
+    """服务 → 定义层 persona 目录下的文件；非服务返回 None。"""
+    from infrastructure.persistence import services_registry
+
+    def_id = services_registry.resolve_service_def(service_id) or ""
+    if not def_id:
+        return None
+    from infrastructure.config import get_project_root
+
+    return get_project_root() / "apps" / def_id / "persona" / name
+
+
+def def_persona_dir(def_id: str) -> Optional[Path]:
+    """定义层 persona 目录（agent 类型的配置作用域）。"""
+    from infrastructure.config import get_project_root
+
+    d = get_project_root() / "apps" / def_id / "persona"
+    return d if d.parent.is_dir() else None
 
 
 def write_extra_prompt(service_id: str, content: str) -> bool:
@@ -130,12 +163,18 @@ def _meta_path(service_id: str) -> Optional[Path]:
 
 def read_agent_meta(service_id: str) -> dict:
     p = _meta_path(service_id)
-    if p is None or not p.exists():
-        return {}
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    if p is not None and p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+    dp = _def_persona_file(service_id, "agent.json")
+    if dp is not None and dp.exists():
+        try:
+            return json.loads(dp.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+    return {}
 
 
 def write_agent_meta(service_id: str, updates: dict) -> bool:
@@ -155,3 +194,60 @@ def write_agent_meta(service_id: str, updates: dict) -> bool:
 def service_skills_dir(service_id: str) -> Optional[Path]:
     d = service_overlay_dir(service_id)
     return (d / "skills") if d else None
+
+
+# ── 定义层直写（配置作用域=agent 类型，同定义全部服务生效） ─────────────
+
+
+def write_def_file(def_id: str, name: str, content: str) -> bool:
+    d = def_persona_dir(def_id)
+    if d is None:
+        return False
+    d.mkdir(parents=True, exist_ok=True)
+    if not content.strip():
+        (d / name).unlink(missing_ok=True)
+        return True
+    (d / name).write_text(content, encoding="utf-8")
+    return True
+
+
+def read_def_file(def_id: str, name: str) -> Optional[str]:
+    d = def_persona_dir(def_id)
+    if d is None:
+        return None
+    p = d / name
+    if not p.exists():
+        return None
+    try:
+        return p.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def read_def_agent_meta(def_id: str) -> dict:
+    raw = read_def_file(def_id, "agent.json")
+    if raw is None:
+        return {}
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return {}
+
+
+def write_def_agent_meta(def_id: str, updates: dict) -> bool:
+    meta = read_def_agent_meta(def_id)
+    meta.update({k: v for k, v in updates.items() if v is not None})
+    d = def_persona_dir(def_id)
+    if d is None:
+        return False
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "agent.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    return True
+
+
+def def_skills_dir(def_id: str) -> Optional[Path]:
+    from infrastructure.config import get_project_root
+
+    d = get_project_root() / "apps" / def_id / "skills"
+    return d if d.parent.is_dir() else None

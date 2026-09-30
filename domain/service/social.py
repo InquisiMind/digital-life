@@ -177,7 +177,7 @@ def set_wake_policy(service_id: str, chat_id: str, mention_only: bool) -> bool:
         conn.close()
 
 
-def _recent_chat_context(service_id: str, chat_id: str, limit: int = 8) -> str:
+def _recent_chat_context(service_id: str, chat_id: str, limit: int = 20) -> str:
     """该服务视角下窗口最近对话（旧→新），供唤醒时补上下文。
 
     最后一条即当前消息本身——剔除。空窗口返回空串（模板渲染为空段）。
@@ -188,8 +188,8 @@ def _recent_chat_context(service_id: str, chat_id: str, limit: int = 8) -> str:
         recent = list_messages(chat_id, limit=limit + 1)[:-1]
         if not recent:
             return ""
-        lines = [f"{m.get('sender_name') or '?'}：{(m.get('text') or '')[:120]}" for m in recent]
-        return "\n".join(lines)
+        lines = [f"{m.get('sender_name') or '?'}：{(m.get('text') or '')[:160]}" for m in recent]
+        return "\n".join(lines) + ("\n（更早记录用 sense_conversation 查看完整历史）" if len(recent) >= limit else "")
     except Exception:
         return ""
 

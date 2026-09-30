@@ -1,6 +1,6 @@
 name: AI战略咨询
-watchdog: false
-description: ''
+watchdog: true
+description: S00-S10 全链路六角色：客户发起→双线研究→事实验收→战略判断(H1)→方案设计→独立审查→定稿(H2)
 roles:
 - def: consulting-partner-def
   name: 咨询合伙人
@@ -8,64 +8,160 @@ roles:
   tools:
   - sense_project_peers
   - send_chat_message
-  - project_file_write
+  - express_to_human
+  - project_file_list
   - project_file_read
+  - project_file_write
   - deliver_to_shared
   - project_todo_create
   - project_todo_list
   - project_todo_update
+  - execute_code
+  - write_file
+  - sense_file
+  - skill_view
+  - skills_list
+  - register_skill
+  - search_history
+  - rest
 - def: consulting-researcher-def
   name: 行业研究员
   tools:
   - sense_project_peers
   - send_chat_message
-  - project_file_write
+  - project_file_list
   - project_file_read
+  - project_file_write
   - deliver_to_shared
+  - project_todo_create
   - project_todo_list
   - project_todo_update
+  - execute_code
+  - write_file
+  - sense_file
+  - skill_view
+  - search_history
+  - rest
 - def: consulting-enterprise-def
   name: 企业研究员
   tools:
   - sense_project_peers
   - send_chat_message
-  - project_file_write
+  - project_file_list
   - project_file_read
+  - project_file_write
+  - deliver_to_shared
+  - project_todo_create
+  - project_todo_list
+  - project_todo_update
+  - execute_code
+  - write_file
+  - sense_file
+  - skill_view
+  - search_history
+  - rest
+- def: consulting-auditor-def
+  name: 事实审计员
+  tools:
+  - sense_project_peers
+  - send_chat_message
+  - project_file_list
+  - project_file_read
+  - project_file_write
   - deliver_to_shared
   - project_todo_list
   - project_todo_update
+  - execute_code
+  - write_file
+  - sense_file
+  - skill_view
+  - search_history
+  - rest
+- def: consulting-designer-def
+  name: 方案设计师
+  tools:
+  - sense_project_peers
+  - send_chat_message
+  - project_file_list
+  - project_file_read
+  - project_file_write
+  - deliver_to_shared
+  - project_todo_list
+  - project_todo_update
+  - execute_code
+  - write_file
+  - sense_file
+  - skill_view
+  - search_history
+  - rest
 - def: consulting-qc-def
   name: 质控审查员
   tools:
   - sense_project_peers
   - send_chat_message
-  - project_file_read
   - project_file_list
+  - project_file_read
+  - project_file_write
+  - deliver_to_shared
   - project_todo_list
   - project_todo_update
+  - execute_code
+  - write_file
+  - sense_file
+  - skill_view
+  - search_history
+  - rest
 initial_todos:
-- title: 需求界定与任务拆解
-  detail: 理解客户诉求，澄清目标与边界，拆解为研究与审查任务并指派
+- title: S00 需求界定与材料分流
+  detail: 主体消歧、决策情境、研究截止日、材料分层（materials/ext|int）、最小经营信息检查；产出 00-material-intake.md
+    并向客户复述边界
   assign_role: 咨询合伙人
-- title: 🚚 行业研究交付
-  detail: 行业现状、竞品与可行路径研究，产出研究初稿
+- title: S01 外部中立研究
+  detail: Q1-Q10 行业地图与目标企业公开现状；EXT-F 事实条目+时效表；产出 01-external-neutral.md
   assign_role: 行业研究员
   after:
-  - 需求界定与任务拆解
-- title: 🚚 企业情况研究交付
-  detail: 客户企业现状梳理与 AI 适用性分析，产出研究初稿
+  - S00 需求界定与材料分流
+- title: S02 内部经营研究
+  detail: 基本盘+经营本质七维度+竞争性企业解释；INT-F 事实条目；产出 02-internal-facts.md
   assign_role: 企业研究员
   after:
-  - 需求界定与任务拆解
-- title: 交付质量审查
-  detail: 双线研究结论的一致性与完整性审查，出具合并意见
-  assign_role: 质控审查员
+  - S00 需求界定与材料分流
+- title: S03 事实底稿与验收
+  detail: 合并 EXT-F/INT-F 为 F-xxx 统一账本、时效验收、冲突登记、G-xxx 缺口；产出 03-fact-ledger.md
+  assign_role: 事实审计员
   after:
-  - 🚚 行业研究交付
-  - 🚚 企业情况研究交付
-- title: 🚩 结论定稿与客户汇报
-  detail: 合并双线结论与审查意见，定稿并汇报客户（里程碑）
+  - S01 外部中立研究
+  - S02 内部经营研究
+- title: S04 战略判断与方向推荐
+  detail: 候选记录+比较+推荐；向客户提出方向选项（H1）——客户完成选择后才置 done；产出 04-strategy-candidates.md 与
+    strategy-record.json
   assign_role: 咨询合伙人
   kind: milestone
   after:
-  - 交付质量审查
+  - S03 事实底稿与验收
+- title: S06 经营关系定义
+  detail: 选定方向的价值网络：谁受益/行动/负责/付费与获益路径；产出 06-value-network.md
+  assign_role: 方案设计师
+  after:
+  - S04 战略判断与方向推荐
+- title: S07 工作方式设计
+  detail: 流程、优先级、数字员工岗位与人机边界；产出 07-process-roles.md
+  assign_role: 方案设计师
+  after:
+  - S06 经营关系定义
+- title: S08 成败标准定义
+  detail: 指标、基线、归因与继续/调整/停止条件；产出 08-pilot-validation.md
+  assign_role: 方案设计师
+  after:
+  - S07 工作方式设计
+- title: S09 独立质量审查
+  detail: 证据与设计是否支撑建议：放行/条件放行/定向退回；产出 09-review.md 与 review-record.json
+  assign_role: 质控审查员
+  after:
+  - S08 成败标准定义
+- title: S10 战略叙事与定稿
+  detail: S10a 组织故事→S10b 形成 10-final-report.md（deliver_to_shared 交付）并提请客户评审（H2）
+  assign_role: 质控审查员
+  kind: milestone
+  after:
+  - S09 独立质量审查

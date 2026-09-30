@@ -171,9 +171,10 @@ button{font-family:var(--font)}
 .hf-att{flex:none;width:34px;height:34px;border:none;background:transparent;border-radius:10px;color:var(--tx-3);display:flex;align-items:center;justify-content:center;cursor:pointer}
 .hf-att:hover{background:var(--bg-sunken);color:var(--pri)}
 .hf-att svg{width:17px;height:17px}
-.hf-btn{margin-left:auto;flex:none;border:none;color:#fff;border-radius:10px;padding:8px 18px;font-size:13px;font-weight:600;cursor:pointer;background:linear-gradient(115deg in oklab,#3b6bf5 0%,#476ff5 4%,#5b70f4 9%,#6f70f2 16%,#7d49f0 25%,#8f59ef 34%,#a15bed 42%,#b456ea 47%,#c952e7 50%,#b456ea 53%,#a15bed 58%,#8f59ef 66%,#7d49f0 75%,#6f70f2 84%,#5b70f4 91%,#476ff5 96%,#3b6bf5 100%);background-size:200% 100%;animation:hfFlow 4.5s linear infinite;transition:box-shadow .15s}
-.hf-btn:hover{box-shadow:0 4px 16px rgba(125,123,240,.30)}
-@keyframes hfFlow{from{background-position:200% 0}to{background-position:0% 0}}
+.hf-btn{margin-left:auto;flex:none;position:relative;border:none;color:#fff;border-radius:10px;padding:8px 18px;font-size:13px;font-weight:600;cursor:pointer;background:linear-gradient(115deg,#3b6bf5 0%,#7c3aed 52%,#cd50e5 100%);transition:box-shadow .15s}
+.hf-btn:hover{box-shadow:0 4px 16px rgba(124,58,237,.30)}
+.hf-btn::after{content:'';position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:linear-gradient(100deg,transparent 42%,rgba(255,255,255,.30) 50%,transparent 58%);background-size:200% 100%;animation:sheen 4s linear infinite}
+@keyframes sheen{from{background-position:140% 0}to{background-position:-60% 0}}
 .hf-files{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
 .hf-file{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--tx-2);background:var(--bg-subtle);border:1px solid var(--bd);border-radius:8px;padding:4px 8px;max-width:230px}
 .hf-file b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}

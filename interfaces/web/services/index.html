@@ -115,11 +115,25 @@ button{font-family:var(--font)}
 .hoverbox .hedit{position:absolute;top:8px;right:8px;display:none;z-index:3}
 .hoverbox:hover .hedit{display:inline-flex}
 .hoverbox:hover{border-color:var(--bd-2)}
-.mdbody{font-size:13.5px;line-height:1.8;word-break:break-word}
+.mdbody{font-size:13.5px;line-height:1.8;word-break:break-word;overflow-wrap:anywhere}
 .mdbody p{margin:0 0 .7em}.mdbody p:last-child{margin:0}
-.mdbody h1,.mdbody h2,.mdbody h3{font-size:14.5px;margin:1em 0 .4em;font-weight:650}
-.mdbody ul{margin:.3em 0 .8em;padding-left:1.3em}.mdbody li{margin:.25em 0}
+.mdbody h1,.mdbody h2,.mdbody h3,.mdbody h4{font-size:14.5px;margin:1em 0 .4em;font-weight:650}
+.mdbody ul,.mdbody ol{margin:.3em 0 .8em;padding-left:1.5em;max-width:100%}
+.mdbody li{margin:.25em 0}
 .mdbody b{font-weight:650}.mdbody code{background:var(--bg-sunken);border-radius:5px;padding:1px 6px;font-size:.92em}
+.mdbody blockquote{border-left:3px solid var(--bd-2);padding-left:10px;margin:.5em 0;color:var(--tx-2)}
+.mdbody table{border-collapse:collapse;margin:.5em 0 .9em;font-size:.93em;max-width:100%}
+.mdbody td,.mdbody th{border:1px solid var(--bd);padding:4px 9px}
+.mdbody hr{border:none;border-top:1px solid var(--bd);margin:1em 0}
+/* switch 开关（tool / skill / 事件订阅统一） */
+.sw{position:relative;display:inline-block;width:34px;height:20px;flex:none}
+.sw input{opacity:0;width:0;height:0;position:absolute}
+.sw i{position:absolute;inset:0;background:var(--bd-2);border-radius:999px;transition:.15s;cursor:pointer}
+.sw i:before{content:'';position:absolute;width:16px;height:16px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.15s;box-shadow:var(--sh-1)}
+.sw input:checked+i{background:var(--ok)}
+.sw input:checked+i:before{transform:translateX(14px)}
+.sw input:disabled+i{opacity:.45;cursor:not-allowed}
+.off-row{opacity:.55}
 .ava-big img{width:100%;height:100%;object-fit:cover;border-radius:inherit}
 .ava img{width:100%;height:100%;object-fit:cover;border-radius:inherit}
 .tool-row{border:1px solid var(--bd);border-radius:var(--r-m);margin-bottom:8px;overflow:hidden}
@@ -264,16 +278,17 @@ async function defDetail(defId){
     jget('/api/admin/agent-defs/'+encodeURIComponent(defId)+'/profile'),
     jget('/api/admin/tools'),
     jget('/api/admin/services')]);
-  AG={defId,profile:pf,tools:tl.tools||[],editWhat:null,evEdit:null,
+  AG={defId,profile:pf,tools:tl.tools||[],evEdit:null,skillView:'on',
       instances:(sv.services||[]).filter(x=>x.agent_def_id===defId),tab:'overview'};
   $('rp-title').innerHTML=`<b>${esc(pf.name||defId)}</b><small>${esc(defId)} · ${AG.instances.length} 运行实例 · 配置作用于全部实例</small>`;
   $('rp-ops').innerHTML=`<button class="btn danger" onclick="deleteDef()">删除类型</button>`;
   AG.tab='basic';AG.editing=false;
   $('rp-body').innerHTML=`<div class="cfg-tabs">
     <button data-t="basic" class="on" onclick="setAgentTab('basic')">基本信息</button>
-    <button data-t="skill" onclick="setAgentTab('skill')">Skill</button>
-    <button data-t="tool" onclick="setAgentTab('tool')">Tool · 默认工具面</button>
-    <button data-t="events" onclick="setAgentTab('events')">事件 · 唤醒文案</button>
+    <button data-t="sysSkill" onclick="setAgentTab('sysSkill')">Skill · 系统</button>
+    <button data-t="ownSkill" onclick="setAgentTab('ownSkill')">Skill · 自定义</button>
+    <button data-t="tool" onclick="setAgentTab('tool')">Tool</button>
+    <button data-t="events" onclick="setAgentTab('events')">事件</button>
    </div><div id="ag-tab"></div>`;
   $('rpage').classList.add('open');
   renderAgentTab();
@@ -285,130 +300,101 @@ function renderAgentTab(){
   const el=$('ag-tab');if(!el)return;
   if(AG.tab==='basic'){
    const p=AG.profile;
-   const avImg=p.avatar&&p.avatar.startsWith('api:');
-   const avStyle=p.avatar&&!p.avatar.startsWith('#')&&!avImg?'linear-gradient(135deg,#4d7cff,#b078ec)':(avImg?'#dfe0e8':(p.avatar||avc(p.name)));
-   const avTxt=avImg?'':(p.avatar&&!p.avatar.startsWith('#')?p.avatar:(p.name||'A').slice(0,2));
-   if(!AG.editWhat){
-    el.innerHTML=`
-    <div class="hoverbox" style="display:flex;align-items:center;gap:14px;margin-bottom:8px">
-     <div class="ava-big" style="width:56px;height:56px;border-radius:15px;flex:none;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:650;color:#fff;background:${avStyle};overflow:hidden">${avImg?`<img src="${esc(p.avatar.slice(4))}" alt="">`:avTxt}</div>
-     <div style="min-width:0"><b style="font-size:17px">${esc(p.name)}</b>
-      <div class="cfg-mono" style="margin-top:3px">${esc(AG.defId)} · 作用于同类型 ${AG.instances.length} 个实例</div></div>
-     <button class="btn hedit" onclick="AG.editWhat='identity';renderAgentTab()">编辑</button>
-    </div>
-    <div class="hoverbox">
-     <div class="cfg-mono" style="margin-bottom:8px">人设（persona · 身份层）</div>
-     <div class="mdbody">${mdRender(p.persona||'（空）')}</div>
-     <button class="btn hedit" onclick="AG.editWhat='persona';renderAgentTab()">编辑</button>
-    </div>
-    <div class="hoverbox" style="margin-top:8px">
-     <div class="cfg-mono" style="margin-bottom:8px">生命周期段落（L4 · ${p.l4&&p.l4.source==='overlay'?'类型覆盖':'引擎默认'}）</div>
-     <details ontoggle="if(this.open&&!this.dataset.r){this.dataset.r=1;this.querySelector('.mdbody').innerHTML=mdRender(AG.profile.l4.content);}">
-      <summary class="cfg-mono" style="cursor:pointer">展开查看</summary>
-      <div class="mdbody" style="margin-top:8px"></div></details>
-     <button class="btn hedit" onclick="AG.editWhat='l4';renderAgentTab()">编辑</button>
-    </div>`;
-   }else{
-    const what=AG.editWhat;
-    const titles={identity:'编辑名称与头像',persona:'编辑人设',l4:'编辑生命周期段落（慎改）'};
-    el.innerHTML=`
-    <button class="btn" onclick="AG.editWhat=null;renderAgentTab()">← 返回</button>
-    <h6>${titles[what]}</h6>
-    ${what==='identity'?`
-     <div class="cfg-card"><span class="cfg-mono" style="flex:none">名称</span><input class="cfg-in" id="cfg-name" value="${esc(p.name)}"></div>
-     <div class="cfg-card"><span class="cfg-mono" style="flex:none">头像</span>
-      <input class="cfg-in" id="cfg-avatar" value="${avImg?'':esc(p.avatar)}" placeholder="#色值 / emoji，或右侧上传图片">
-      <button class="btn" style="flex:none" onclick="avaUpload.click()">上传图片</button>
-      <input type="file" id="avaUpload" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none" onchange="uploadAvatar(this)">
-      <span style="width:32px;height:32px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:650;color:#fff;background:${avStyle};overflow:hidden">${avImg?`<img src="${esc(p.avatar.slice(4))}" alt="">`:avTxt}</span></div>`:''}
-    ${what==='persona'?`<textarea class="cfg-area" id="cfg-persona" rows="14">${esc(p.persona)}</textarea>`:''}
-    ${what==='l4'?`<div class="cfg-note" style="margin:0 0 6px">清空保存 = 回引擎默认。</div>
-     <textarea class="cfg-area" id="cfg-l4" rows="12" style="font-size:12px">${esc(p.l4?p.l4.content:'')}</textarea>`:''}
-    <div style="margin-top:12px"><button class="btn pri" id="cfg-save" onclick="saveProfile()">保存（全部实例生效）</button></div>`;
-   }
-  }else if(AG.tab==='skill'){
-   el.innerHTML='<div id="skill-list" class="cfg-note">加载中…</div>';loadSkills();
+   el.innerHTML=identityBlock(p)+personaBlock(p)+l4Block(p);
+  }else if(AG.tab==='sysSkill'){
+   el.innerHTML='<div id="skill-list" class="cfg-note">加载中…</div>';loadSysSkills();
+  }else if(AG.tab==='ownSkill'){
+   el.innerHTML='<div id="skill-list" class="cfg-note">加载中…</div>';loadOwnSkills();
   }else if(AG.tab==='tool'){
    el.innerHTML='<div id="tool-tab" class="cfg-note">加载中…</div>';loadDefTools();
   }else if(AG.tab==='events'){
    el.innerHTML='<div id="ev-tab" class="cfg-note">加载中…</div>';loadDefEvents();
   }
 }
-async function deleteDef(){
-  if(!confirm('删除类型「'+(AG.profile.name||AG.defId)+'」？须先确保无服务实例引用。'))return;
-  const r=await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}`,{method:'DELETE'});
-  const d=await r.json();
-  if(d.ok){closeDetail();LISTSIG='';renderList();}else alert(d.error||'删除失败');
-}
-async function saveProfile(){
-  const btn=$('cfg-save');btn.textContent='保存中…';btn.disabled=true;
-  const what=AG.editWhat||'identity';
-  const body={};
-  if(what==='identity'){body.name=$('cfg-name').value.trim();body.avatar=$('cfg-avatar')?$('cfg-avatar').value.trim():undefined;}
-  if(what==='persona'){body.persona=$('cfg-persona').value;}
-  if(what==='l4'){body.l4=$('cfg-l4')?$('cfg-l4').value:'';}
-  try{
-   const r=await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/profile`,{method:'PUT',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(body)});
-   const d=await r.json();
-   if(!d.ok)throw new Error(d.error||'未知错误');
-   AG.profile=await jget(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/profile`);
-   $('rp-title').querySelector('b').textContent=AG.profile.name||AG.defId;
-   AG.editWhat=null;renderAgentTab();renderList();
-  }catch(e){btn.textContent='保存失败：'+e.message;btn.disabled=false;}
-}
-async function uploadAvatar(inp){
-  const f=inp.files[0];if(!f)return;
-  const fd=new FormData();fd.append('file',f);
-  const r=await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/avatar`,{method:'POST',body:fd});
-  const d=await r.json();
-  if(d.ok){AG.profile=await jget(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/profile`);
-   AG.editWhat=null;renderAgentTab();renderList();}
-  else alert(d.error||'上传失败');
-  inp.value='';
-}
 
-/* Skill：系统清单（只开关）+ 本类型自定义（渲染查看·悬停编辑·zip 上传） */
-async function loadSkills(){
+/* ══ Skill · 系统：清单 + 开关（只看已开启/全部切换） ══ */
+let SYSVIEW={all:false};
+async function loadSysSkills(){
   const d=await jget(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/skills`);
-  AG.skills=d.skills||[];
+  const sys=(d.skills||[]).filter(x=>x.source==='system');
   const el=$('skill-list');if(!el)return;
-  const sys=AG.skills.filter(x=>x.source==='system');
-  const own=AG.skills.filter(x=>x.source!=='system');
-  const sw=(sk)=>`<input type="checkbox" ${sk.registered?'checked':''} onchange="toggleSkill('${esc(sk.name)}',this.checked)" title="启用=注册，实例唤醒即可调用">`;
+  const on=sys.filter(x=>x.registered), off=sys.filter(x=>!x.registered);
+  const rows=SYSVIEW.all?sys:on;
   el.innerHTML=`
-  <div class="cfg-note" style="margin:0 0 8px">开关=启用（注册）。系统 skill 只开关；自定义 skill 展开可查看渲染文档，悬停编辑。</div>
-  <h6>系统 skill 清单（${sys.length}）</h6>
-  ${sys.map(sk=>`<div class="cfg-card">
+  <div class="cfg-note" style="margin:0 0 10px">系统 skill 只能启用/停用，正文不可改。已启用 ${on.length}/${sys.length}。</div>
+  <div style="margin-bottom:10px"><button class="btn" onclick="SYSVIEW.all=!SYSVIEW.all;loadSysSkills()">${SYSVIEW.all?'只看已启用':'查看全部（'+sys.length+'）'}</button></div>
+  ${rows.map(sk=>`<div class="cfg-card ${sk.registered?'':'off-row'}">
    <b style="font-size:12.5px">${esc(sk.name)}</b>
    <span class="cfg-mono" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(sk.description)}</span>
-   ${sw(sk)}
-  </div>`).join('')||'<div class="cfg-note">无</div>'}
-  <h6>本类型自定义 skill（${own.length}）· 点击行名展开文档</h6>
-  <div class="cfg-card">
-   <input class="cfg-in" id="new-skill" placeholder="新建 skill 名（字母数字与 _ -）">
-   <button class="btn" style="flex:none" onclick="zipUpload.click()">上传 .zip</button>
+   <label class="sw"><input type="checkbox" ${sk.registered?'checked':''} onchange="toggleSkill('${esc(sk.name)}',this.checked);loadSysSkillsDeb()"><i></i></label>
+  </div>`).join('')||'<div class="cfg-note">无</div>'}`;
+}
+let _sysT=null;
+function loadSysSkillsDeb(){clearTimeout(_sysT);_sysT=setTimeout(loadSysSkills,600);}
+
+/* ══ Skill · 自定义：拖拽/点击上传 zip + 在线新建（frontmatter 定名）+ 查看/编辑 ══ */
+async function loadOwnSkills(){
+  const d=await jget(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/skills`);
+  const own=(d.skills||[]).filter(x=>x.source!=='system');
+  const el=$('skill-list');if(!el)return;
+  el.innerHTML=`
+  <div id="drop-zone" style="border:2px dashed var(--bd-2);border-radius:var(--r-l);padding:26px;text-align:center;cursor:pointer;transition:all .15s;margin-bottom:12px"
+   onclick="zipUpload.click()">
+   <div style="font-size:26px;margin-bottom:6px">📦</div>
+   <div style="font-size:13px;color:var(--tx-2)">拖拽 <b>.zip</b> 到此处上传（内含 SKILL.md，名字自动从文档解析）</div>
+   <div class="cfg-mono" style="margin-top:4px">或点击选择文件 · zip ≤2MB</div>
    <input type="file" id="zipUpload" accept=".zip" style="display:none" onchange="uploadSkillZip(this)">
-   <button class="btn pri" style="flex:none" onclick="newSkill()">新建</button>
   </div>
-  ${own.map(sk=>`<div class="skill-row" data-skill="${esc(sk.name)}">
+  <div style="display:flex;gap:8px;margin-bottom:10px">
+   <button class="btn" onclick="newSkillMd()">✎ 在线新建（写 Markdown）</button>
+  </div>
+  ${own.map(sk=>`<div class="skill-row ${sk.registered?'':'off-row'}" data-skill="${esc(sk.name)}">
    <div class="sr-h" onclick="this.parentElement.classList.toggle('open')">
     <b>${esc(sk.name)}</b><span class="d">${esc(sk.description)}</span>
-    ${sw(sk)}
-   </div><div class="sr-b"></div></div>`).join('')||'<div class="cfg-note">还没有自定义 skill——新建、或上传 zip（内含 SKILL.md）</div>'}`;
+    <label class="sw"><input type="checkbox" ${sk.registered?'checked':''} onchange="event.stopPropagation();toggleSkill('${esc(sk.name)}',this.checked)"><i></i></label>
+   </div><div class="sr-b"></div></div>`).join('')||'<div class="cfg-note">还没有自定义 skill</div>'}`;
+  const dz=$('drop-zone');
+  dz.addEventListener('dragover',e=>{e.preventDefault();dz.style.borderColor='var(--pri)';dz.style.background='var(--pri-weak)';});
+  dz.addEventListener('dragleave',()=>{dz.style.borderColor='';dz.style.background='';});
+  dz.addEventListener('drop',e=>{
+   e.preventDefault();dz.style.borderColor='';dz.style.background='';
+   const f=[...e.dataTransfer.files].find(x=>x.name.endsWith('.zip'));
+   if(f)uploadSkillZip({files:[f],value:''});
+  });
 }
 async function toggleSkill(name,on){
   await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/skills/${encodeURIComponent(name)}/toggle`,{
    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on})});
 }
 async function uploadSkillZip(inp){
-  const f=inp.files[0];if(!f)return;
+  const f=inp.files&&inp.files[0];if(!f)return;
   const fd=new FormData();fd.append('file',f);
   const r=await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/skills/upload`,{method:'POST',body:fd});
   const d=await r.json();
-  if(d.ok){alert('已上传并启用：'+d.skill+'（'+d.files+' 个文件）');loadSkills();}
+  if(d.ok){alert('已上传并启用：'+d.skill+'（'+d.files+' 个文件）');loadOwnSkills();}
   else alert(d.error||'上传失败');
-  inp.value='';
+}
+function newSkillMd(){
+  // 在线新建：写 md，frontmatter 的 name 决定 skill 名
+  const el=$('skill-list');
+  el.insertAdjacentHTML('afterbegin',`<div class="hoverbox" id="sk-new" style="margin-bottom:12px">
+   <textarea class="cfg-area" id="sk-md" rows="14">---\nname: my-skill\ndescription: 一句话描述该技能的用途\n---\n\n# 标题\n\n在这里写方法论正文（Markdown）。frontmatter 的 name 即 skill 名（字母数字-_）。</textarea>
+   <div style="display:flex;gap:8px;margin-top:8px">
+    <button class="btn pri" onclick="createSkillMd()">保存</button>
+    <button class="btn" onclick="document.getElementById('sk-new').remove()">取消</button>
+   </div></div>`);
+  document.getElementById('sk-md').focus();
+}
+async function createSkillMd(){
+  const ta=document.getElementById('sk-md');
+  const content=ta?ta.value.trim():'';
+  const m=content.match(/^---[\s\S]*?name:\s*([A-Za-z0-9][A-Za-z0-9_-]*)/);
+  if(!m){alert('frontmatter 需含 name: skill名（字母数字-_）');return;}
+  if(!content){alert('内容不能为空');return;}
+  const r=await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/skills/${encodeURIComponent(m[1])}`,{
+   method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({content})});
+  const d=await r.json();
+  if(d.ok)loadOwnSkills();else alert(d.error||'保存失败');
 }
 async function toggleSkillRow(head,name){
   const row=head.parentElement,body=row.querySelector('.sr-b');
@@ -429,21 +415,30 @@ async function editSkillMd(name){
   const box=document.querySelector(`.skill-row[data-skill="${name}"] .sk-edit`);
   if(!box)return;
   const d=await jget(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/skills/${encodeURIComponent(name)}`);
+  const view=box.parentElement.querySelector('.skill-md');
+  if(view)view.style.display='none'; // 编辑时隐藏渲染视图，不显示两遍
   box.innerHTML=`<textarea class="cfg-area" id="sk-md" rows="14">${esc(d.content)}</textarea>
    <div style="display:flex;gap:8px;margin-top:6px">
     <button class="btn pri" onclick="saveSkill('${esc(name)}')">保存</button>
-    <button class="btn" onclick="document.querySelector('.skill-row[data-skill=\\'${esc(name)}\\'] .sk-edit').innerHTML=''">取消</button>
+    <button class="btn" onclick="cancelSkillEdit('${esc(name)}')">取消</button>
     <button class="btn" onclick="dlSkill('${esc(name)}')">下载 .md</button>
     <button class="btn danger" onclick="delSkill('${esc(name)}')">删除</button>
    </div>`;
   box.querySelector('textarea').focus();
+}
+function cancelSkillEdit(name){
+  const row=document.querySelector(`.skill-row[data-skill="${name}"]`);
+  const view=row&&row.querySelector('.skill-md');
+  if(view)view.style.display='';
+  const box=row&&row.querySelector('.sk-edit');
+  if(box)box.innerHTML='';
 }
 async function saveSkill(name){
   const ta=document.getElementById('sk-md');if(!ta||!ta.value.trim()){alert('内容不能为空');return;}
   const r=await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/skills/${encodeURIComponent(name)}`,{
    method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:ta.value})});
   const d=await r.json();
-  if(d.ok)loadSkills();else alert(d.error||'保存失败');
+  if(d.ok)loadOwnSkills();else alert(d.error||'保存失败');
 }
 async function dlSkill(name){
   try{const d=await jget(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/skills/${encodeURIComponent(name)}`);
@@ -454,20 +449,112 @@ async function delSkill(name){
   if(!confirm('删除「'+name+'」？'))return;
   const r=await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/skills/${encodeURIComponent(name)}`,{method:'DELETE'});
   const d=await r.json();
-  if(d.ok)loadSkills();else alert(d.error||'删除失败');
+  if(d.ok)loadOwnSkills();else alert(d.error||'删除失败');
 }
-function newSkill(){
-  const name=($('new-skill').value||'').trim();
-  if(!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)){alert('skill 名仅限字母数字与 _ -');return;}
-  if(AG.skills.some(sk=>sk.name===name)){alert('同名 skill 已存在，展开编辑即可');return;}
-  AG.skills.unshift({name,description:'',source:'def',registered:true});
-  $('skill-list').querySelector('.cfg-card').insertAdjacentHTML('afterend',`<div class="skill-row open" data-skill="${esc(name)}">
-   <div class="sr-h" onclick="this.parentElement.classList.toggle('open')"><b>${esc(name)}</b><span class="d"></span>
-    <input type="checkbox" checked onchange="toggleSkill('${esc(name)}',this.checked)"></div>
-   <div class="sr-b" data-loaded="1"><div style="padding:10px 12px;border-top:1px solid var(--bd)">
-    <textarea class="cfg-area" id="sk-md" rows="14">---\nname: ${esc(name)}\ndescription: 一句话描述该技能的用途\n---\n\n# ${esc(name)}\n\n在这里写方法论正文（Markdown）。</textarea>
-    <div style="display:flex;gap:8px;margin-top:8px"><button class="btn pri" onclick="saveSkill('${esc(name)}')">保存</button></div>
-   </div></div></div>`);
+
+async function saveProfileBlock(what){
+  // 就地保存：按块提交，成功后由调用方重渲染该块
+  const body={};
+  if(what==='identity'){body.name=$('cfg-name').value.trim();body.avatar=$('cfg-avatar').value.trim();}
+  if(what==='persona'){body.persona=$('cfg-persona').value;}
+  if(what==='l4'){body.l4=$('cfg-l4').value;}
+  const r=await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/profile`,{method:'PUT',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify(body)});
+  const d=await r.json();
+  if(!d.ok){alert(d.error||'保存失败');return false;}
+  AG.profile=await jget(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/profile`);
+  $('rp-title').querySelector('b').textContent=AG.profile.name||AG.defId;
+  renderList();
+  return true;
+}
+async function uploadAvatar(inp){
+  const f=inp.files[0];if(!f)return;
+  const fd=new FormData();fd.append('file',f);
+  const r=await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/avatar`,{method:'POST',body:fd});
+  const d=await r.json();
+  if(d.ok){AG.profile=await jget(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/profile`);renderAgentTab();renderList();}
+  else alert(d.error||'上传失败');
+  inp.value='';
+}
+async function deleteDef(){
+  if(!confirm('删除类型「'+(AG.profile.name||AG.defId)+'」？须先确保无服务实例引用。'))return;
+  const r=await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}`,{method:'DELETE'});
+  const d=await r.json();
+  if(d.ok){closeDetail();LISTSIG='';renderList();}else alert(d.error||'删除失败');
+}
+
+/* ══ 基本信息：渲染视图 + 就地编辑（块内切换，不整页换） ══ */
+function avHtml(p){
+  const avImg=p.avatar&&p.avatar.startsWith('api:');
+  const avStyle=p.avatar&&!p.avatar.startsWith('#')&&!avImg?'linear-gradient(135deg,#4d7cff,#b078ec)':(avImg?'#dfe0e8':(p.avatar||avc(p.name)));
+  const inner=avImg?`<img src="${esc(p.avatar.slice(4))}" alt="">`:(p.avatar&&!p.avatar.startsWith('#')?esc(p.avatar):esc((p.name||'A').slice(0,2)));
+  return {style:avStyle,inner};
+}
+function identityBlock(p){
+  const av=avHtml(p);
+  return `
+  <div class="hoverbox" id="blk-identity" style="display:flex;align-items:center;gap:14px;margin-bottom:8px">
+   <div class="ava-big" style="width:56px;height:56px;border-radius:15px;flex:none;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:650;color:#fff;background:${av.style};overflow:hidden">${av.inner}</div>
+   <div style="min-width:0"><b style="font-size:17px">${esc(p.name)}</b>
+    <div class="cfg-mono" style="margin-top:3px">${esc(AG.defId)} · 作用于同类型 ${AG.instances.length} 个实例</div></div>
+   <button class="btn hedit" onclick="editBlock('identity')">编辑</button>
+  </div>`;
+}
+function personaBlock(p){
+  return `
+  <div class="hoverbox" id="blk-persona">
+   <div class="cfg-mono" style="margin-bottom:8px">人设（persona · 身份层）</div>
+   <div class="mdbody">${mdRender(p.persona||'（空）')}</div>
+   <button class="btn hedit" onclick="editBlock('persona')">编辑</button>
+  </div>`;
+}
+function l4Block(p){
+  return `
+  <div class="hoverbox" id="blk-l4" style="margin-top:8px">
+   <div class="cfg-mono" style="margin-bottom:8px">生命周期段落（L4 · ${p.l4&&p.l4.source==='overlay'?'类型覆盖':'引擎默认'}）</div>
+   <details ontoggle="if(this.open&&!this.dataset.r){this.dataset.r=1;this.querySelector('.mdbody').innerHTML=mdRender(AG.profile.l4.content);}">
+    <summary class="cfg-mono" style="cursor:pointer">展开查看</summary>
+    <div class="mdbody" style="margin-top:8px"></div></details>
+   <button class="btn hedit" onclick="editBlock('l4')">编辑</button>
+  </div>`;
+}
+function editBlock(what){
+  const box=$('blk-'+what);if(!box)return;
+  const p=AG.profile;
+  const keep=box.dataset.keep||'';
+  if(what==='identity'){
+   const av=avHtml(p);
+   box.innerHTML=`
+   <div style="width:56px;height:56px;border-radius:15px;flex:none;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:650;color:#fff;background:${av.style};overflow:hidden">${av.inner}</div>
+   <input class="cfg-in" id="cfg-name" value="${esc(p.name)}" placeholder="名称" style="max-width:200px">
+   <input class="cfg-in" id="cfg-avatar" value="${p.avatar&&p.avatar.startsWith('api:')?'':esc(p.avatar)}" placeholder="#色值 / emoji，或上传图片">
+   <button class="btn" style="flex:none" onclick="avaUpload2.click()">上传图片</button>
+   <input type="file" id="avaUpload2" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none" onchange="uploadAvatar(this)">
+   <span style="flex:none;display:flex;gap:6px">
+    <button class="btn pri" onclick="saveBlock('identity')">保存</button>
+    <button class="btn" onclick="cancelBlock('identity')">取消</button></span>`;
+  }else if(what==='persona'){
+   box.innerHTML=`
+   <div class="cfg-mono" style="margin-bottom:6px">人设（persona · 身份层）</div>
+   <textarea class="cfg-area" id="cfg-persona" rows="14">${esc(p.persona)}</textarea>
+   <div style="display:flex;gap:8px;margin-top:8px">
+    <button class="btn pri" onclick="saveBlock('persona')">保存</button>
+    <button class="btn" onclick="cancelBlock('persona')">取消</button></div>`;
+  }else{
+   box.innerHTML=`
+   <div class="cfg-mono" style="margin-bottom:6px">生命周期段落（L4 · 慎改，清空 = 回默认）</div>
+   <textarea class="cfg-area" id="cfg-l4" rows="12" style="font-size:12px">${esc(p.l4?p.l4.content:'')}</textarea>
+   <div style="display:flex;gap:8px;margin-top:8px">
+    <button class="btn pri" onclick="saveBlock('l4')">保存</button>
+    <button class="btn" onclick="cancelBlock('l4')">取消</button></div>`;
+  }
+  box.dataset.keep=keep;
+}
+async function saveBlock(what){
+  if(await saveProfileBlock(what))renderAgentTab(); // 成功整体轻渲染（回查看态）
+}
+function cancelBlock(){
+  renderAgentTab();
 }
 
 async function loadDefEvents(){
@@ -476,60 +563,67 @@ async function loadDefEvents(){
    jget(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/subscriptions`)]);
   AG.events=d.events||[];AG.subs=new Set(sub.default||['message']);
   const el=$('ev-tab');if(!el)return;
-  const SUBABLE=['message','group_message','timer','project_stall','task_reminder','routine','initiative','vital_threshold'];
+  // 只列服务链路确认支持的事件（引擎注册 ≠ 服务会产生）
+  const SUBABLE=[
+   ['message','私聊消息（客户窗口 / 同伴私聊）'],
+   ['group_message','项目群消息'],
+   ['timer','闹钟 / 定时提醒'],
+   ['project_stall','项目停滞催办（看门狗）'],
+   ['vital_threshold','精力跨档变化'],
+  ];
+  const desc=t=>{const e=SUBABLE.find(x=>x[0]===t);return e?e[1]:(AG.events.find(x=>x.type===t)||{}).description||'';};
+  const subbed=AG.events.filter(ev=>AG.subs.has(ev.type));
   el.innerHTML=`
-  <div class="cfg-note" style="margin:0 0 10px">订阅开关=该类型实例接收哪些事件唤醒（保存即同步全部存量实例与新实例）；文案=唤醒时注入的提示（{xxx} 为运行时变量）。展开条目悬停编辑文案。</div>
+  <div class="cfg-note" style="margin:0 0 10px">订阅=该类型实例接收哪些事件唤醒（保存即同步全部存量与新实例）。下方文案区只列已订阅的事件。</div>
   <div class="hoverbox" style="margin-bottom:10px">
-   <div class="cfg-mono" style="margin-bottom:8px">事件订阅（勾选=接收）</div>
-   <div style="display:flex;flex-wrap:wrap;gap:6px 16px">
-   ${SUBABLE.map(k=>`<label style="font-size:12.5px;color:var(--tx-2);display:inline-flex;gap:5px;align-items:center">
-     <input type="checkbox" data-sub="${k}" ${AG.subs.has(k)?'checked':''}>${k}</label>`).join('')}
+   <div class="cfg-mono" style="margin-bottom:8px">事件订阅</div>
+   <div style="display:flex;flex-direction:column;gap:8px">
+   ${SUBABLE.map(([k,cn])=>`<div style="display:flex;align-items:center;gap:10px">
+     <label class="sw"><input type="checkbox" data-sub="${k}" ${AG.subs.has(k)?'checked':''}><i></i></label>
+     <b style="font-size:12.5px;font-family:ui-monospace,monospace">${k}</b>
+     <span class="cfg-mono">${esc(cn)}</span>
+    </div>`).join('')}
    </div>
    <button class="btn hedit" onclick="saveDefSubs()">保存订阅</button>
   </div>
-  <div class="cfg-mono" style="margin:4px 0 8px">唤醒文案（留空保存 = 恢复默认）</div>
-  ${AG.events.map((ev,i)=>{
+  <div class="cfg-mono" style="margin:4px 0 8px">唤醒文案（${subbed.length} · 悬停编辑 · 留空保存 = 恢复默认）</div>
+  ${subbed.map((ev,i)=>{
    const cur=ev.override||ev.default_prompt;
    return `<div class="skill-row" data-ev="${esc(ev.type)}">
     <div class="sr-h" onclick="this.parentElement.classList.toggle('open')">
-     <b>${esc(ev.type)}</b>
+     <b style="font-family:ui-monospace,monospace">${esc(ev.type)}</b>
      ${ev.override?'<span class="mk-src src-overlay">已覆盖</span>':''}
-     <span class="d">${esc(ev.description)}</span>
+     <span class="d">${esc(desc(ev.type))}</span>
     </div>
     <div class="sr-b"><div style="padding:10px 12px;border-top:1px solid var(--bd)">
-     <div class="hoverbox" style="border:none;padding:2px">
+     <div class="hoverbox" style="border:none;padding:2px" id="evbox-${esc(ev.type)}">
       <div class="mdbody" style="font-size:12.5px">${mdRender(cur)}</div>
-      <button class="btn hedit" onclick="AG.evEdit=${i};renderEvEditor()">编辑文案</button>
+      <button class="btn hedit" onclick="editEvPrompt('${esc(ev.type)}')">编辑文案</button>
      </div>
-     <div id="ev-edit-${i}"></div>
-    </div></div></div>`;}).join('')}`;
+    </div></div></div>`;}).join('')||'<div class="cfg-note">未订阅任何事件——勾选上方开关后保存</div>'}`;
 }
-function renderEvEditor(){
-  const i=AG.evEdit;if(i==null||i<0)return;
-  const ev=AG.events[i];const cur=ev.override||ev.default_prompt;
-  const el=$('ev-edit-'+i);if(!el)return;
-  el.innerHTML=`<textarea class="cfg-area" id="ev-md" rows="6">${esc(cur)}</textarea>
+async function editEvPrompt(type){
+  const box=$('evbox-'+CSS.escape(type));
+  if(!box)return;
+  const ev=AG.events.find(x=>x.type===type);
+  const cur=ev.override||ev.default_prompt;
+  box.innerHTML=`
+   <textarea class="cfg-area" id="ev-md" rows="7">${esc(cur)}</textarea>
+   <div class="cfg-mono" style="margin-top:4px">{xxx} 为运行时变量（如 {chat_id} / {text}），保留即可。</div>
    <div style="display:flex;gap:8px;margin-top:6px">
-    <button class="btn pri" onclick="saveOneEvent(${i})">保存</button>
-    <button class="btn" onclick="AG.evEdit=null;loadDefEvents()">取消</button>
-    ${ev.override?`<button class="btn" onclick="resetOneEvent(${i})">恢复默认</button>`:''}
+    <button class="btn pri" onclick="saveEvPrompt('${esc(type)}',false)">保存</button>
+    <button class="btn" onclick="loadDefEvents()">取消</button>
+    ${ev.override?`<button class="btn" onclick="saveEvPrompt('${esc(type)}',true)">恢复默认</button>`:''}
    </div>`;
-  el.querySelector('textarea').focus();
+  box.querySelector('textarea').focus();
 }
-async function saveOneEvent(i){
-  const t=document.getElementById('ev-md').value.trim();
+async function saveEvPrompt(type,reset){
+  const t=reset?'':(document.getElementById('ev-md').value.trim());
   const r=await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/events`,{
    method:'PUT',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({prompts_override:{[AG.events[i].type]:t||null}})});
+   body:JSON.stringify({prompts_override:{[type]:t||null}})});
   const d=await r.json();
-  if(d.ok){AG.evEdit=null;loadDefEvents();}else alert(d.error||'失败');
-}
-async function resetOneEvent(i){
-  const r=await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/events`,{
-   method:'PUT',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({prompts_override:{[AG.events[i].type]:null}})});
-  const d=await r.json();
-  if(d.ok){AG.evEdit=null;loadDefEvents();}
+  if(d.ok)loadDefEvents();else alert(d.error||'失败');
 }
 async function saveDefSubs(){
   const kinds=[...document.querySelectorAll('#ev-tab input[data-sub]:checked')].map(c=>c.dataset.sub);
@@ -537,7 +631,7 @@ async function saveDefSubs(){
   const r=await fetch(`/api/admin/agent-defs/${encodeURIComponent(AG.defId)}/subscriptions`,{
    method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({kinds})});
   const d=await r.json();
-  if(d.ok)alert('已保存（同步 '+d.instances_updated+' 个实例）');else alert(d.error||'失败');
+  if(d.ok){alert('已保存（同步 '+d.instances_updated+' 个实例）');loadDefEvents();}else alert(d.error||'失败');
 }
 
 /* Tool：类型默认工具面——默认显示已启用，可切换全部（含 registry 全量与服务运行时面） */
@@ -560,9 +654,9 @@ async function loadDefTools(){
   el.innerHTML=`
   <div class="cfg-note" style="margin:0 0 10px">类型默认工具面：当前${explicit?'为显式清单':'未配置 = 默认全量'}。项目模版给角色显式配置的工具面以模版为准。点行展开 schema；自定义工具暂不支持。</div>
   <div style="margin-bottom:10px"><button class="btn" onclick="TOOLVIEW.all=!TOOLVIEW.all;loadDefTools()">${TOOLVIEW.all?'只看已启用':'查看全部（'+rows.length+'）'}</button></div>
-  ${shown.map(t=>{const on=enabled.has(t.name);const fixed=t.name==='rest';return `<div class="tool-row">
+  ${shown.map(t=>{const on=enabled.has(t.name);const fixed=t.name==='rest';return `<div class="tool-row ${on?'':'off-row'}">
    <div class="tr-h" onclick="this.parentElement.classList.toggle('open')">
-    <input type="checkbox" data-tool="${esc(t.name)}" ${on?'checked':''} ${fixed?'disabled title="系统必需：agent 主动休息的机制工具"':'onclick="event.stopPropagation()"'}>
+    <label class="sw"><input type="checkbox" data-tool="${esc(t.name)}" ${on?'checked':''} ${fixed?'disabled title="系统必需：agent 主动休息的机制工具"':'onclick="event.stopPropagation()"'}><i></i></label>
     <b>${esc(t.name)}</b>${fixed?'<span class="ts" style="background:#fdf3e2;color:#c27900">系统必需</span>':`<span class="ts">${esc(t.toolset)}</span>`}
     <span class="d" style="flex:1;font-size:12px;color:var(--tx-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.description)}</span>
    </div>
@@ -727,19 +821,34 @@ function renderTplFlow(){
     pos[ti]=FLOW.pos[ti]||{x:GX+Number(l)*(W+GX),y:GY+row*(H+GY)+(maxCol-arr.length)*(H+GY)/2};}));
   let svg=`<svg id="flow-svg" viewBox="0 0 ${svgW} ${svgH}" style="width:100%;max-width:960px;height:auto;background:var(--bg-subtle);border:1px solid var(--bd);border-radius:10px;touch-action:none">`;
   svg+=`<defs><marker id="ar" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#9095a6"/></marker></defs>`;
+  svg+=`<style>#flow-svg line{cursor:pointer}#flow-svg line:hover{stroke:#c0353b;stroke-width:2.2}</style>`;
   ts.forEach((t,i)=>{(t.after||[]).forEach(d=>{const di=idx[d];if(di===undefined||di===i||!pos[di]||!pos[i])return;
     const a=pos[di],b=pos[i];
-    svg+=`<line x1="${a.x+W}" y1="${a.y+H/2}" x2="${b.x-4}" y2="${b.y+H/2}" stroke="#9095a6" stroke-width="1.4" marker-end="url(#ar)"/>`;});});
+    svg+=`<line x1="${a.x+W}" y1="${a.y+H/2}" x2="${b.x-4}" y2="${b.y+H/2}" stroke="#9095a6" stroke-width="1.4" marker-end="url(#ar)" data-from="${di}" data-to="${i}" onclick="flowCutLink(event,${di},${i})"/>`;});});
   ts.forEach((t,i)=>{const q=pos[i];FLOW.pos[i]=q;
     const ms=t.kind==='milestone', sel=FLOW.sel===i;
-    svg+=`<g data-i="${i}" style="cursor:grab">
+    svg+=`<g data-i="${i}" style="cursor:grab" ondblclick="flowRename(${i})">
      <rect x="${q.x}" y="${q.y}" width="${W}" height="${H}" rx="9" fill="${sel?'#eef3ff':ms?'#f6f0ff':'#fff'}" stroke="${sel?'#2f6bff':ms?'#b79cf2':'#dfe0e8'}" stroke-width="${sel?2:(ms?1.6:1)}"/>
      <text x="${q.x+12}" y="${q.y+H/2+1}" dominant-baseline="middle" font-size="12" fill="#1b1c22" font-weight="${ms?650:500}">${ms?'🚩 ':''}${esc((t.title||'未命名').slice(0,15))}</text>
      ${t.assign_role?`<text x="${q.x+W-10}" y="${q.y+H-9}" text-anchor="end" font-size="9.5" fill="#9095a6">${esc(t.assign_role)}</text>`:''}
     </g>`;});
   svg+='</svg>';
-  el.innerHTML='<div class="cfg-mono" style="margin-bottom:4px">编排画布 · 拖动节点自由布局；点两个节点连依赖（后点的以前置并入）'+(FLOW.sel>=0?'——已选中，再点一个目标节点':'')+'</div>'+svg;
+  el.innerHTML='<div class="cfg-mono" style="margin-bottom:4px">编排画布 · 拖动布局；点两个节点连依赖（重复点断开）；点击连线断开；双击节点改名'+(FLOW.sel>=0?'——已选中，再点一个目标节点':'')+'</div>'+svg;
   bindFlowEvents(svgW,svgH,W,H);
+}
+function flowCutLink(e,from,to){
+  e.stopPropagation();
+  const src=(TPL.p.initial_todos[from].title||'').trim();
+  const tgt=TPL.p.initial_todos[to];
+  if(!confirm(`断开依赖：「${tgt.title}」不再依赖「${src}」？`))return;
+  tgt.after=Array.isArray(tgt.after)?tgt.after.filter(x=>x!==src):[];
+  if(!tgt.after.length)tgt.after=undefined;
+  FLOW.sel=-1;renderTpl();
+}
+function flowRename(i){
+  const t=TPL.p.initial_todos[i];
+  const v=prompt('任务标题：',t.title||'');
+  if(v!==null&&v.trim())tplTitleChanged(i,v.trim());
 }
 function bindFlowEvents(vw,vh,W,H){
   const svg=document.getElementById('flow-svg');if(!svg)return;

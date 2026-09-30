@@ -157,6 +157,7 @@ button{font-family:var(--font)}
 .msg-u .who{font-size:11px;color:var(--tx-3)}
 .msg-u .bub{background:var(--pri-weak);padding:11px 16px;border-radius:16px 16px 4px 16px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
 .msg-a{display:flex;gap:10px;max-width:92%}
+.msg-a .ava img,.gm .a img,.dw-head .a img{width:100%;height:100%;object-fit:cover;border-radius:inherit}
 .msg-a .ava{flex:none;width:34px;height:34px;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:650;margin-top:1px;cursor:pointer}
 .msg-a .c{min-width:0}
 .msg-a .hd{display:flex;align-items:baseline;gap:7px;margin:2px 0 4px 2px}
@@ -483,9 +484,13 @@ const icoN={
 const svg=(n,w=15)=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:${w}px;height:${w}px">${icoN[n]}</svg>`;
 const avc=n=>{let s=0;for(const c of(n||'x'))s+=c.charCodeAt(0);return AVA[s%AVA.length]};
 function avaOf(role){const a=memberAvatar[role]||'';
+ if(a.startsWith('api:'))return{bg:'#dfe0e8',img:esc(a.slice(4))};
  if(a&&!a.startsWith('#'))return{bg:'linear-gradient(135deg,#4d7cff,#b078ec)',txt:esc(a)};
  if(a)return{bg:a,txt:esc((role||'?').slice(0,2))};
  return{bg:avc(role),txt:esc((role||'?').slice(0,2))};}
+function avaHTML(role,cls){const v=avaOf(role);
+ return v.img?`<div class="${cls}" style="background:${v.bg}"><img src="${v.img}" alt=""></div>`
+  :`<div class="${cls}" style="background:${v.bg}">${v.txt}</div>`;}
 const MD=(window.marked?window.marked.parse:null);
 function md(t){
  // 预处理：中文序号顿号（1、2、）不是合法 md 列表 → 归一为 "1."；含全角空格行首清理
@@ -618,7 +623,7 @@ function bubble(m){
  if(m.from==='customer'){
   chatEl.insertAdjacentHTML('beforeend',`<div class="msg-u"><div class="who">${esc(MY_NAME)}</div><div class="bub">${esc(m.text)}</div></div>`);return;}
  chatEl.insertAdjacentHTML('beforeend',`<div class="msg-a">
-  <div class="ava" style="background:${avaOf(m.sender_name).bg}" onclick="openMember('${esc(m.sender_name||'咨询合伙人')}')">${avaOf(m.sender_name).txt}</div>
+  ${avaHTML(m.sender_name,'ava').replace('<div class="ava"','<div class="ava" onclick="openMember(\''+esc(m.sender_name||'咨询合伙人')+'\')"')}
   <div class="c"><div class="hd"><b>${esc(m.sender_name||'咨询合伙人')}</b><span>元理咨询</span></div>
   <div class="bub" style="cursor:pointer" title="查看该成员的执行过程" onclick="msgToTrace('${esc(m.sender_name||'咨询合伙人')}', this)" data-mtext="${esc((m.text||'').slice(0,60))}"><div class="body">${docify(trust(md(m.text)))}</div></div></div></div>`);}
 function typing(){chatEl.insertAdjacentHTML('beforeend',`<div class="msg-a" id="typing">
@@ -687,7 +692,7 @@ async function pollComm(force){
      d.messages.map(m=>{
       // 观察者是客户：团队成员（含 PM）全部左侧，self/peer 是 PM 库的收发方向，不适用这里
       return `<div class="gm" onclick="msgToTrace('${esc(m.sender_name)}', this)" data-mtext="${esc(m.text.slice(0,60))}">
-       <div class="a" style="background:${avaOf(m.sender_name).bg}">${avaOf(m.sender_name).txt}</div>
+       ${avaHTML(m.sender_name,'a')}
        <div class="c"><div class="h"><b>${esc(m.sender_name)}</b><span>${esc(m.ts)}</span></div>
        <div class="b">${docify(trust(md(m.text)))}</div></div></div>`;}).join('');
     el.parentElement.scrollTop=1e9;
@@ -761,7 +766,7 @@ async function openMember(role){
  const d=await jget(`/api/customer/sessions/${cid}/members/${sid}`);
  if(!d.ok)return;
  const mine=todosCache.filter(t=>t.assignee===role);
- $('dw-head').innerHTML=`<div class="a" style="background:${avaOf(role).bg}">${avaOf(role).txt}</div>
+ $('dw-head').innerHTML=`${avaHTML(role,'a')}
   <div><b>${esc(role)}</b><small>项目成员 · 执行过程</small></div>
   <button class="x" style="margin-left:auto;font-size:12px;padding:5px 10px;border:1px solid var(--bd-2);border-radius:8px;background:var(--bg);color:var(--tx-2);cursor:pointer" onclick="window.open('/services#agent='+encodeURIComponent('${sid}'),'_blank')">配置 ↗</button>
   <button class="x" onclick="closeDrawer()">✕</button>`;

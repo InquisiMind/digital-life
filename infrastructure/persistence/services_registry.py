@@ -494,6 +494,24 @@ def list_services_by_project(project_id: str, status: str | None = None) -> list
     return [_row_to_dict(r) for r in rows]
 
 
+
+def _type_default_subscriptions(agent_def_id: str) -> list[str]:
+    """服务创建时的默认订阅：定义层 app.yaml subscriptions_default，无则 ['message']。"""
+    try:
+        import yaml as _yaml
+
+        from infrastructure.config import get_project_root
+
+        cfg = get_project_root() / "apps" / agent_def_id / "config" / "app.yaml"
+        data = _yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+        d = data.get("subscriptions_default")
+        if isinstance(d, list) and d:
+            return [str(x) for x in d]
+    except Exception:  # noqa: BLE001 — 读不到按默认
+        pass
+    return ["message"]
+
+
 def create_service(
     agent_def_id: str,
     service_id: str | None = None,
@@ -522,7 +540,7 @@ def create_service(
                 display_name,
                 SERVICE_STATUS_ACTIVE,
                 json.dumps(capabilities or {}, ensure_ascii=False),
-                json.dumps(subscriptions if subscriptions is not None else ["message"],
+                json.dumps(subscriptions if subscriptions is not None else _type_default_subscriptions(agent_def_id),
                            ensure_ascii=False),
                 json.dumps(tools, ensure_ascii=False) if tools is not None else None,
                 now,

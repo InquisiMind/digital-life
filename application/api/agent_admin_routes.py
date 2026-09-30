@@ -354,7 +354,10 @@ async def handle_def_tools_put(request: web.Request) -> web.Response:
         if tools is None:
             cfg.pop("tools", None)
         elif isinstance(tools, list):
-            cfg["tools"] = [str(x)[:60] for x in tools][:40]
+            tools = [str(x)[:60] for x in tools][:40]
+            if tools and "rest" not in tools:
+                tools.append("rest")  # 防呆：没有 rest 工具 agent 无法主动休息
+            cfg["tools"] = tools
         else:
             return _json({"ok": False, "error": "tools 需数组或 null"}, 400)
         _save_def_cfg(def_id, cfg)
@@ -362,6 +365,113 @@ async def handle_def_tools_put(request: web.Request) -> web.Response:
                     len(cfg.get("tools") or []) if cfg.get("tools") is not None else "clear")
         return _json({"ok": True, "tools": cfg.get("tools")})
     return _json({"ok": False, "error": "缺少 tools 字段"}, 400)
+
+
+async def handle_def_delete(request: web.Request) -> web.Response:
+    """DELETE /api/admin/agent-defs/{def_id} — 删除 agent 类型。
+
+    安全闸：仍有服务实例（含归档）引用时拒绝——先处理实例再删类型。
+    """
+    def_id = request.match_info["def_id"]
+    if not _def_exists(def_id):
+        return _json({"ok": False, "error": "定义不存在"}, 404)
+    from infrastructure.persistence import services_registry
+
+    mine = [x for x in services_registry.list_services() if x["agent_def_id"] == def_id]
+    if mine:
+        return _json({"ok": False, "error": f"仍有 {len(mine)} 个服务实例引用本类型，先归档/处理实例"}, 400)
+    import shutil
+
+    shutil.rmtree(_def_dir(def_id))
+    logger.info("AGENT_DEF_DELETED def=%s", def_id)
+    return _json({"ok": True})
+
+
+# ── 头像图片上传与文件服务（url: 前缀引用） ──────────────────────────────
+
+
+async def handle_def_avatar_post(request: web.Request) -> web.Response:
+    """POST /api/admin/agent-defs/{def}/avatar — 上传头像图片（png/jpg/webp/gif，≤2MB）。"""
+    def_id = request.match_info["def_id"]
+    if not _def_exists(def_id):
+        return _json({"ok": False, "error": "定义不存在"}, 404)
+    try:
+        reader = await request.multipart()
+    except Exception:  # noqa: BLE001
+        return _json({"ok": False, "error": "需 multipart/form-data"}, 400)
+    field = await reader.next()
+    if field is None:
+        return _json({"ok": False, "error": "缺少文件字段"}, 400)
+    data = await field.read(decode=False)
+    if len(data) > 2 * 1024 * 1024:
+        return _json({"ok": False, "error": "图片超过 2MB"}, 400)
+    fname = (field.filename or "").lower()
+    ext = Path(fname).suffix if Path(fname).suffix in (".png", ".jpg", ".jpeg", ".webp", ".gif") else ""
+    if not ext:
+        return _json({"ok": False, "error": "仅支持 png/jpg/webp/gif"}, 400)
+    from domain.service.overlay import write_def_agent_meta
+
+    d = _def_dir(def_id) / "persona"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "avatar.bin").write_bytes(data)
+    write_def_agent_meta(def_id, {"avatar": f"api:/api/admin/agent-defs/{def_id}/avatar"})
+    logger.info("AGENT_DEF_AVATAR def=%s ext=%s size=%d", def_id, ext, len(data))
+    return _json({"ok": True, "url": f"/api/admin/agent-defs/{def_id}/avatar"})
+
+
+async def handle_def_avatar_get(request: web.Request) -> web.Response:
+    def_id = request.match_info["def_id"]
+    f = _def_dir(def_id) / "persona" / "avatar.bin"
+    if not _SAFE_NAME.match(def_id) or not f.exists():
+        return _json({"ok": False, "error": "无头像"}, 404)
+    resp = web.FileResponse(f)
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+# ── 类型订阅默认（app.yaml subscriptions_default；开关=默认+存量实例批量） ──
+
+
+async def handle_def_subscriptions_get(request: web.Request) -> web.Response:
+    def_id = request.match_info["def_id"]
+    if not _def_exists(def_id):
+        return _json({"ok": False, "error": "定义不存在"}, 404)
+    cfg = _load_def_cfg(def_id)
+    return _json({"ok": True,
+                  "default": cfg.get("subscriptions_default") if isinstance(cfg.get("subscriptions_default"), list) else ["message"]})
+
+
+async def handle_def_subscriptions_put(request: web.Request) -> web.Response:
+    """PUT {kinds:[...]} — 类型订阅默认 + 同步全部存量实例的 subscriptions。"""
+    def_id = request.match_info["def_id"]
+    if not _def_exists(def_id):
+        return _json({"ok": False, "error": "定义不存在"}, 404)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    kinds = body.get("kinds")
+    if not isinstance(kinds, list) or not kinds:
+        return _json({"ok": False, "error": "kinds 需非空数组"}, 400)
+    from domain.lifecycle.event_registry import get_event_type
+
+    for k in kinds:
+        if get_event_type(str(k)) is None:
+            return _json({"ok": False, "error": f"未知事件类型: {k}"}, 400)
+    cfg = _load_def_cfg(def_id)
+    cfg["subscriptions_default"] = [str(x) for x in kinds]
+    _save_def_cfg(def_id, cfg)
+    # 存量实例同步（订阅是服务运行语义，类型开关即统一调整）
+    from infrastructure.persistence import services_registry
+
+    n = 0
+    for x in services_registry.list_services():
+        if x["agent_def_id"] == def_id:
+            services_registry.update_service_fields(
+                x["service_id"], subscriptions=[str(v) for v in kinds])
+            n += 1
+    logger.info("AGENT_DEF_SUBSCRIPTIONS def=%s kinds=%s instances=%d", def_id, kinds, n)
+    return _json({"ok": True, "instances_updated": n})
 
 
 # ── 事件订阅与唤醒文案（registry prompt_template + 定义层 prompts_override） ──
@@ -673,6 +783,11 @@ def register_into(router: web.Application) -> None:
     router.router.add_post("/agent-defs/{def_id}/skills/upload", handle_def_skill_upload)
     router.router.add_get("/agent-defs/{def_id}/tools", handle_def_tools_get)
     router.router.add_put("/agent-defs/{def_id}/tools", handle_def_tools_put)
+    router.router.add_delete("/agent-defs/{def_id}", handle_def_delete)
+    router.router.add_post("/agent-defs/{def_id}/avatar", handle_def_avatar_post)
+    router.router.add_get("/agent-defs/{def_id}/avatar", handle_def_avatar_get)
+    router.router.add_get("/agent-defs/{def_id}/subscriptions", handle_def_subscriptions_get)
+    router.router.add_put("/agent-defs/{def_id}/subscriptions", handle_def_subscriptions_put)
     router.router.add_get("/agent-defs/{def_id}/events", handle_def_events_get)
     router.router.add_put("/agent-defs/{def_id}/events", handle_def_events_put)
     router.router.add_get("/tools", handle_tools_list)

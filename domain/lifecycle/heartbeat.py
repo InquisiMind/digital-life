@@ -632,6 +632,32 @@ def build_wake_prompt(
 
     action_parts.append(f"\n### \u5524\u9192\u539f\u56e0\n\n{base}")
 
+    # ── 消息类事件：注入该窗口最近的对话上下文 ────────────────────
+    # 服务群消息有提及过滤（未命中不唤醒），被唤醒者可能沉默已久——
+    # 醒来要看得到窗口里之前发生了什么（实例型飞书消息同样受益）。
+    try:
+        _ctx_lines: list[str] = []
+        _ctx_chats: set = set()
+        for ev in pending_events:
+            if ev.get("kind") not in ("message", "group_message"):
+                continue
+            _chat = (ev.get("payload") or {}).get("chat_id") or ""
+            if not _chat or _chat in _ctx_chats:
+                continue
+            _ctx_chats.add(_chat)
+            from domain.messages import list_messages
+
+            _recent = [m for m in list_messages(_chat, limit=9)][:-1]  # 最后一条=当前事件本身
+            if len(_recent) >= 1:
+                _ctx_lines.append(f"**{_chat} 最近对话（旧→新，你沉默期间群里/窗口里发生的）：**")
+                for m in _recent:
+                    _who = m.get("sender_name") or "?"
+                    _ctx_lines.append(f"- {_who}：{(m.get('text') or '')[:120]}")
+        if _ctx_lines:
+            action_parts.append("\n### 窗口最近上下文（供参考，不必逐条回复）\n\n" + "\n".join(_ctx_lines))
+    except Exception:
+        pass
+
     # ── Build ref_parts: reference materials ──────────────────
 
     def _ref(title: str, body: str) -> str:

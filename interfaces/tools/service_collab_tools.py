@@ -205,6 +205,23 @@ def _handle_project_todo_create(args: Dict[str, Any], **_) -> str:
         assignee_id=assignee,
         created_by=sid,
     )
+    # 任务交接：指派给其他成员时通知对方（未指派/指派自己不通知）
+    if assignee and assignee != sid:
+        try:
+            from domain.service import emit_to_service
+            from domain.service.registry import get_service as _get_svc
+
+            peer = _get_svc(assignee) or {}
+            emit_to_service(assignee, "todo_assigned", {
+                "todo_id": todo.get("todo_id", ""),
+                "title": title,
+                "detail": (args.get("detail") or "").strip()[:300],
+                "assign_role": peer.get("display_name") or "",
+                "from_role": project.get("pm_id") == sid and "项目经理" or (services_registry.lookup_service(sid) or {}).get("display_name", ""),
+                "project_name": project.get("name", ""),
+            })
+        except Exception as _exc:  # noqa: BLE001 — 通知失败不拦创建
+            pass
     return json.dumps(todo, ensure_ascii=False)
 
 

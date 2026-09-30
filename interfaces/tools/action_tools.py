@@ -3174,6 +3174,46 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
             return registry.tool_error("hours must be a number")
 
     # ─── 路径 C：都没传 → 不报错, 直接返回 preview 提示卡 ───
+    # 服务型特例：项目待办全部完成时允许 rest() 无参静眠——
+    # 任务已闭环，恢复闹钟只会空转；新事件（客户消息/新任务指派）到来
+    # 自然唤醒（master 扫描 + 事件队列兜底，与实例型"无闹钟睡死"不同）。
+    if not until and not reuse_id and not hours:
+        try:
+            from infrastructure.config import get_app_instance_id
+            from infrastructure.persistence.services_registry import (
+                list_project_todos,
+                lookup_service,
+                resolve_service_def,
+            )
+
+            _rid = get_app_instance_id() or ""
+            if resolve_service_def(_rid):
+                _svc = lookup_service(_rid) or {}
+                _pid = _svc.get("project_id") or ""
+                if _pid:
+                    _todos = list_project_todos(_pid)
+                    if _todos and all(t.get("status") == "done" for t in _todos):
+                        from domain.lifecycle.runtime_context import get_current_affair
+
+                        _affair = get_current_affair()
+                        if _affair:
+                            try:
+                                from domain.lifecycle.affairs.runtime import update_affair as _ua
+                                from domain.lifecycle.state_machine import AffairStatus as _AS
+
+                                _ua(_affair.get("affair_id") or _affair.get("id"),
+                                    status=_AS.BLOCKED,
+                                    note="项目待办全部完成——静眠等待新事件（无闹钟）")
+                            except Exception:
+                                pass
+                        return _j({
+                            "resting": True,
+                            "silent": True,
+                            "note": "项目全部任务已完成，进入静眠（未设闹钟）。有新消息或新任务指派时会被唤醒。",
+                        })
+        except Exception:
+            pass  # 判定失败走原有预览流程
+
     # 设计: 第一次 rest() 无参 = 看"睡前提示卡", 模型拿到后处理再调 rest(reuse/until) 真睡。
     # 之前这里返 tool_error, 模型被迫多走一轮试错 → 压缩为 2 轮 preview→sleep。
     if target_dt is None:

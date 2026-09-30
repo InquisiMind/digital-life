@@ -801,3 +801,21 @@ event_types:
       作为项目经理，请检查：待办是否卡在没人认领？该派活的派活（send_chat_message 在群里@队友），该调整的调整（project_todo_update），确实无事可做就收尾关闭。
 
       '
+
+  todo_assigned:
+    display_name: 任务被指派
+    trigger_type: condition
+    trigger_description: 项目内有人（通常是 PM）给该成员创建了待办任务并指派给它
+    priority: 4
+    payload_schema:
+      todo_id: string
+      title: string
+      detail: string?
+      assign_role: string
+      from_role: string
+      project_name: string
+    description: 任务交接的核心通道——指派即通知，被指派者醒来看任务并开工
+    debounce_window_s: 30
+    merge_policy: latest
+    consumption_policy: on_trigger
+    wake_prompt: "📌 有新任务指派给你。「{from_role}」在项目「{project_name}」给你建了任务：\n\n任务：{title}\n说明：{detail}\n\n先确认理解（不懂就在项目群里问），然后开工；完成后把待办置 done。"

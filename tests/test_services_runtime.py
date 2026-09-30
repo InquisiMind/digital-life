@@ -577,8 +577,8 @@ def test_chat_message_routing(service_env, project_template):
     )
     assert eid > 0
 
-    # PM 在群里派活 → 研究员收 group_message 事件 + messages 落库
-    r = send_chat_message(a["service_id"], group_chat_id(pid), "请研究行业")
+    # PM 在群里派活（提及"乙"）→ 研究员收 group_message 事件 + messages 落库
+    r = send_chat_message(a["service_id"], group_chat_id(pid), "乙，请研究行业")
     assert r["ok"] and r["kind"] == "group" and b["service_id"] in r["recipients"]
     db_b = service_env / "apps" / "echo-def" / "services" / b["service_id"] / "data" / "state.db"
     conn = sqlite3.connect(str(db_b))
@@ -587,6 +587,17 @@ def test_chat_message_routing(service_env, project_template):
     ).fetchone()
     assert ev and "请研究行业" in ev[1]
     conn.close()
+
+    # 未提及对方角色名的群消息：消息落库（全员可见）但不产生唤醒事件
+    r_silent = send_chat_message(a["service_id"], group_chat_id(pid), "记个备忘：预算还没定")
+    assert r_silent["ok"]
+    db_b2 = sqlite3.connect(str(db_b))
+    ev2 = db_b2.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='group_message'"
+        " AND payload LIKE '%预算还没定%'"
+    ).fetchone()[0]
+    db_b2.close()
+    assert ev2 == 0  # 未被提及 → 静默（下次醒来从窗口上下文补看）
 
     # 研究员私聊 PM（chat_id=对方 service_id）
     r2 = send_chat_message(b["service_id"], a["service_id"], "底稿好了")

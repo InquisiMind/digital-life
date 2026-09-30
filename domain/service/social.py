@@ -150,7 +150,14 @@ def send_chat_message(sender_service_id: str, chat_id: str, text: str,
                     source=GROUP_PLATFORM,
                     sender_kind="bot",
                 )
-            if inserted:
+            # 唤醒过滤：消息落库全员可见，但只唤醒被提及的成员
+            # （文本含其角色名，或"全体/所有人/大家"）——其余成员下次醒来
+            # 从群历史上下文补看，避免每条群话全员唤醒
+            peer_role = (m.get("display_name") or "").strip()
+            mentioned = (
+                peer_role and peer_role in text
+            ) or any(kw in text for kw in ("全体", "所有人", "大家"))
+            if inserted and mentioned:
                 emit_to_service(
                     peer,
                     "group_message",
@@ -161,10 +168,12 @@ def send_chat_message(sender_service_id: str, chat_id: str, text: str,
                         "sender_id": sender_service_id,
                         "sender_name": sender_role,
                         "sender_position": sender_role,
-                        "mentions_bot": False,
+                        "mentions_bot": True,
                     },
                 )
                 recipients.append(peer)
+            elif inserted:
+                recipients.append(f"{peer}(saved,silent)")
             else:
                 recipients.append(f"{peer}(dup)")
         with _service_context(sender_service_id):

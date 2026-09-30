@@ -568,7 +568,8 @@ async function loadDefEvents(){
   // 只列服务链路确认支持的事件（引擎注册 ≠ 服务会产生）
   const SUBABLE=[
    ['message','私聊消息（客户窗口 / 同伴私聊）'],
-   ['group_message','项目群消息'],
+   ['group_message','项目群消息（被提及时唤醒）'],
+   ['todo_assigned','有任务指派给你（交接通道）'],
    ['timer','闹钟 / 定时提醒'],
    ['project_stall','项目停滞催办（看门狗）'],
    ['vital_threshold','精力跨档变化'],

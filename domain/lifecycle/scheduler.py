@@ -1344,13 +1344,21 @@ def _wake_digital_life_inner_safe(
         #   项目存在 ⟺ 待办里有它的任务; 没待办 = 项目"结项" → 职责/目标也从 prompt 消失
         # 完整项目档案(论断/KPI/节奏)按需调 sense_project_detail。
 
+        # 服务级附加指令（overlay EXTRA_PROMPT.md）——存在则追加到 system prompt 尾部
+        _extra_prompt = ""
+        try:
+            from domain.service.overlay import read_extra_prompt
+            _extra_prompt = read_extra_prompt(instance_id or "")
+        except Exception:
+            pass
+
         # 工作空间介绍 — 不再拼入 _full_system, 改为 slow_ctx 的 sys_tool 注入(见下方)
         _workspace_intro = _render_workspace_intro(instance_id or "")
 
-        # _full_system = L4 + persona + skill_index (项目职责 / 目标 / 岗位信息由 todos 面板承担)
+        # _full_system = L4 + persona + skill_index (+ 服务级附加指令)
         _full_system = "\n\n".join(
             p for p in [_l4_lifecycle, _persona,
-                        _skill_index] if p
+                        _skill_index, _extra_prompt] if p
         )
 
         # L4 需要精简工具集，避免模型被48个工具淹没而只发文字

@@ -41,13 +41,15 @@ def _find_skill(name: str) -> Path | None:
     """
     from interfaces.skills import (
         get_instance_skills_dir,
+        get_overlay_skills_dir,
         get_system_skills_dir,
         skill_matches_platform,
     )
     from infrastructure.config import get_app_instance_id
 
     uuid = get_app_instance_id()
-    for base in [get_instance_skills_dir(uuid), get_system_skills_dir()]:
+    bases = [b for b in [get_overlay_skills_dir(uuid), get_instance_skills_dir(uuid), get_system_skills_dir()] if b]
+    for base in bases:
         skill_file = base / name / "SKILL.md"
         if skill_file.exists():
             fm = _load_frontmatter(skill_file)
@@ -70,6 +72,7 @@ def _handle_skills_list(args: dict[str, Any], **kwargs) -> str:
 
     from interfaces.skills import (
         get_instance_skills_dir,
+        get_overlay_skills_dir,
         get_system_skills_dir,
         iter_skill_files,
         skill_matches_platform,
@@ -80,21 +83,27 @@ def _handle_skills_list(args: dict[str, Any], **kwargs) -> str:
     uuid = get_app_instance_id()
     system_dir = get_system_skills_dir()
     instance_dir = get_instance_skills_dir(uuid)
+    overlay_dir = get_overlay_skills_dir(uuid)
     registered = set(get_instance_registered_skills(uuid))
 
-    # 收集：系统 skill（全部）+ 实例 skill（全部）
-    # 如果实例 skill 与系统 skill 同名，实例覆盖
+    # 收集：系统 skill（全部）+ 实例/定义层 skill + 服务覆盖 skill
+    # 同名时靠列表顺序后写覆盖（overlay 最后写 = 最高优先）
     seen: dict[str, dict] = {}
 
-    for skills_dir in [system_dir, instance_dir]:
-        if not skills_dir.is_dir():
+    for skills_dir in [system_dir, instance_dir, overlay_dir]:
+        if not skills_dir or not skills_dir.is_dir():
             continue
         for skill_file in iter_skill_files(skills_dir):
             name = skill_file.parent.name
             fm = _load_frontmatter(skill_file)
             if not skill_matches_platform(fm):
                 continue
-            source = "instance" if skills_dir == instance_dir else "system"
+            if skills_dir == overlay_dir:
+                source = "overlay"
+            elif skills_dir == instance_dir:
+                source = "instance"
+            else:
+                source = "system"
             seen[name] = {
                 "name": fm.get("name", name),
                 "description": fm.get("description", ""),

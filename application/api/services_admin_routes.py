@@ -422,6 +422,10 @@ async def _serve_page(_request: web.Request) -> web.Response:
 
 
 def add_services_admin_routes(app: web.Application) -> None:
+    # agent 深度配置路由并进同一 _ROUTER——须在 add_subapp（freeze）之前
+    from application.api.agent_admin_routes import register_into
+
+    register_into(_ROUTER)
     app.add_subapp("/api/admin/", _ROUTER)
     app.router.add_get("/services", _serve_page)
     logger.info("Services admin routes registered: /services + /api/admin/*")

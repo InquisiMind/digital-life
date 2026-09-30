@@ -126,7 +126,11 @@ def iter_skill_files(skills_dir: Path, filename: str = "SKILL.md"):
 
 
 def get_instance_registered_skills(instance_id: str | None = None) -> list[str]:
-    """读取 app.yaml 的 skills 字段，返回实例注册的 skill 名称列表。"""
+    """读取注册 skill 名称列表：定义层 app.yaml skills 字段 + 服务 overlay 注册。
+
+    服务级注册写在服务私有 agent.json 的 skills 数组（同名去重、
+    overlay 追加）——定义层 app.yaml 不动，保持同 def 共享语义。
+    """
     from infrastructure.config import (
         get_instance_app_config_path,
         get_app_instance_id,
@@ -136,25 +140,59 @@ def get_instance_registered_skills(instance_id: str | None = None) -> list[str]:
     uuid = get_app_instance_id(instance_id)
     app_yaml = get_instance_app_config_path(uuid)
 
+    names: list[str] = []
     if app_yaml.exists():
         try:
             cfg = yaml.safe_load(app_yaml.read_text(encoding="utf-8")) or {}
             skills = cfg.get("skills")
             if isinstance(skills, list):
-                return [str(s).strip() for s in skills if str(s).strip()]
+                names = [str(s).strip() for s in skills if str(s).strip()]
         except Exception as e:
             logger.warning("Failed to load skills from %s: %s", app_yaml, e)
 
-    return []
+    # 服务 overlay 注册（仅服务实例存在；异常时忽略，不影响原列表）
+    try:
+        from domain.service.overlay import read_agent_meta
+
+        extra = read_agent_meta(uuid).get("skills")
+        if isinstance(extra, list):
+            seen = set(names)
+            for s in extra:
+                s = str(s).strip()
+                if s and s not in seen:
+                    names.append(s)
+                    seen.add(s)
+    except Exception:  # noqa: BLE001
+        pass
+
+    return names
 
 
 # ── Skill 索引渲染（供 system prompt） ────────────────────────────────────
 
 
+def get_overlay_skills_dir(instance_id: str | None = None) -> Path | None:
+    """服务级 skill 覆盖目录（apps/{def}/services/{sid}/skills/）。
+
+    仅服务实例存在；实例型/未建覆盖目录返回 None——各发现点把它
+    插到查找链最前（同名覆盖定义层），不存在则行为不变。
+    """
+    from infrastructure.config import get_app_instance_id
+
+    uuid = get_app_instance_id(instance_id)
+    try:
+        from domain.service.overlay import service_skills_dir
+
+        d = service_skills_dir(uuid)
+        return d if (d is not None and d.is_dir()) else None
+    except Exception:  # noqa: BLE001 — overlay 层异常按无覆盖处理
+        return None
+
+
 def load_skill_metadata(skill_name: str, instance_id: str | None = None) -> dict[str, Any] | None:
     """加载指定 skill 的 frontmatter。
 
-    查找顺序：实例 skills/ → 系统 skills/。
+    查找顺序：服务覆盖 skills/ → 实例(定义层) skills/ → 系统 skills/。
     找不到或 platform 不兼容返回 None。
     """
     from infrastructure.config import get_app_instance_id
@@ -163,8 +201,9 @@ def load_skill_metadata(skill_name: str, instance_id: str | None = None) -> dict
     instance_dir = get_instance_skills_dir(uuid)
     system_dir = get_system_skills_dir()
 
-    # 实例优先
-    for base in [instance_dir, system_dir]:
+    # 覆盖层优先，其次实例，最后系统
+    bases = [b for b in [get_overlay_skills_dir(uuid), instance_dir, system_dir] if b]
+    for base in bases:
         skill_dir = base / skill_name
         skill_file = skill_dir / "SKILL.md"
         if skill_file.exists():

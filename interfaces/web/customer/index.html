@@ -94,6 +94,40 @@ button{font-family:var(--font)}
 .cfg-sec{font-weight:650;font-size:12.5px;margin:12px 0 6px;color:var(--tx)}
 .cfg-note{font-size:11.5px;color:var(--tx-3);line-height:1.6}
 .cfg-back{cursor:pointer;color:var(--pri);font-size:12px;margin-bottom:10px;display:inline-block}
+/* ── agent 配置页 tabs ── */
+.cfg-tabs{display:flex;gap:2px;padding:3px;background:var(--bg-sunken);border-radius:11px;width:fit-content;margin-bottom:16px}
+.cfg-tabs button{border:none;background:transparent;padding:7px 16px;border-radius:9px;font-size:12.5px;font-weight:550;color:var(--tx-2);cursor:pointer}
+.cfg-tabs button.on{background:var(--bg);color:var(--pri-deep);box-shadow:var(--sh-1);font-weight:650}
+.cfg-area{width:100%;border:1px solid var(--bd-2);border-radius:var(--r-s);padding:9px 12px;font-family:var(--font);font-size:13px;line-height:1.7;background:var(--bg);color:var(--tx);resize:vertical}
+.cfg-area:focus{outline:none;border-color:var(--pri)}
+.mk-src{font-size:10.5px;padding:1px 7px;border-radius:5px;font-weight:600}
+.src-overlay{background:#f1edff;color:#7a5cff}
+.src-def{background:var(--pri-weak);color:var(--pri-deep)}
+.src-system{background:var(--bg-sunken);color:var(--tx-3)}
+.skill-row{border:1px solid var(--bd);border-radius:var(--r-m);margin-bottom:8px;overflow:hidden}
+.skill-row .sr-h{display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:pointer}
+.skill-row .sr-h:hover{background:var(--bg-subtle)}
+.skill-row .sr-h b{font-size:13px}
+.skill-row .sr-h .d{font-size:12px;color:var(--tx-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.tool-row{border:1px solid var(--bd);border-radius:var(--r-m);margin-bottom:8px;overflow:hidden}
+.tool-row .tr-h{display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:pointer}
+.tool-row .tr-h:hover{background:var(--bg-subtle)}
+.tool-row .tr-h b{font-size:13px;font-family:ui-monospace,monospace}
+.tool-row .tr-h .ts{font-size:10.5px;padding:1px 7px;border-radius:5px;background:var(--bg-sunken);color:var(--tx-2)}
+.tool-row .tr-b{display:none;border-top:1px solid var(--bd);padding:10px 12px;background:var(--bg-subtle)}
+.tool-row.open .tr-b{display:block}
+.tool-row pre{font-size:11.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:280px;overflow:auto;margin:0}
+/* ── 任务看板 ── */
+.tb-head{font-size:13px;font-weight:650;color:var(--tx-2);margin-bottom:10px}
+.tb{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start}
+.tb-col{flex:1;min-width:230px;max-width:340px;border:1px solid var(--bd);border-radius:var(--r-m);background:var(--bg-subtle);padding:8px}
+.tb-cap{display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:650;padding:4px 6px 8px}
+.tb-cap span{margin-left:auto;font-size:11px;color:var(--tx-3);font-weight:500}
+.tb-card{display:flex;gap:8px;align-items:flex-start;background:var(--bg);border:1px solid var(--bd);border-radius:var(--r-s);padding:8px 10px;margin-bottom:6px}
+.tb-card .bx{flex:none;width:14px;height:14px;border-radius:5px;border:1.5px solid var(--bd-2);margin-top:2px}
+.tb-card.done .bx{background:var(--ok);border-color:var(--ok)}
+.tb-card b{font-size:12.5px;font-weight:550;line-height:1.5}
+.tb-card.done b{color:var(--tx-3);text-decoration:line-through}
 
 /* ══ 会话头 ══ */
 .ch-head{flex:none;height:58px;display:flex;align-items:center;gap:14px;padding:0 20px;border-bottom:1px solid var(--bd)}
@@ -446,6 +480,10 @@ const icoN={
 };
 const svg=(n,w=15)=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:${w}px;height:${w}px">${icoN[n]}</svg>`;
 const avc=n=>{let s=0;for(const c of(n||'x'))s+=c.charCodeAt(0);return AVA[s%AVA.length]};
+function avaOf(role){const a=memberAvatar[role]||'';
+ if(a&&!a.startsWith('#'))return{bg:'linear-gradient(135deg,#4d7cff,#b078ec)',txt:esc(a)};
+ if(a)return{bg:a,txt:esc((role||'?').slice(0,2))};
+ return{bg:avc(role),txt:esc((role||'?').slice(0,2))};}
 const MD=(window.marked?window.marked.parse:null);
 function md(t){
  // 预处理：中文序号顿号（1、2、）不是合法 md 列表 → 归一为 "1."；含全角空格行首清理
@@ -578,7 +616,7 @@ function bubble(m){
  if(m.from==='customer'){
   chatEl.insertAdjacentHTML('beforeend',`<div class="msg-u"><div class="who">${esc(MY_NAME)}</div><div class="bub">${esc(m.text)}</div></div>`);return;}
  chatEl.insertAdjacentHTML('beforeend',`<div class="msg-a">
-  <div class="ava" style="background:${avc(m.sender_name)}" onclick="openMember('${esc(m.sender_name||'咨询合伙人')}')">${esc((m.sender_name||'咨询').slice(0,2))}</div>
+  <div class="ava" style="background:${avaOf(m.sender_name).bg}" onclick="openMember('${esc(m.sender_name||'咨询合伙人')}')">${avaOf(m.sender_name).txt}</div>
   <div class="c"><div class="hd"><b>${esc(m.sender_name||'咨询合伙人')}</b><span>元理咨询</span></div>
   <div class="bub" style="cursor:pointer" title="查看该成员的执行过程" onclick="msgToTrace('${esc(m.sender_name||'咨询合伙人')}', this)" data-mtext="${esc((m.text||'').slice(0,60))}"><div class="body">${docify(trust(md(m.text)))}</div></div></div></div>`);}
 function typing(){chatEl.insertAdjacentHTML('beforeend',`<div class="msg-a" id="typing">
@@ -613,10 +651,16 @@ function renderHeroFiles(){
  el.innerHTML=heroFiles.map((f,i)=>`<span class="hf-file">${svg('file',13)}<b>${esc(f.name)}</b><button title="移除" onclick="rmHeroFile(${i})">✕</button></span>`).join('');}
 function rmHeroFile(i){heroFiles.splice(i,1);renderHeroFiles();}
 function useEx(i){$('hf-text').value=EXAMPLES[i][1];$('hf-text').focus();}
-let memberSid={},teamCache=[],todosCache=[];
+let memberSid={},memberAvatar={},teamCache=[],todosCache=[];
 async function poll(){
  if(!cid)return;try{
   const d=await jget(`/api/customer/sessions/${cid}/messages`);
+  // 先填 team 映射（头像/成员 sid），再渲染消息——渲染依赖 memberAvatar
+  if(d.team){
+   $('tab-comm').style.display='inline-flex';$('tab-tasks').style.display='inline-flex';$('tab-files').style.display='inline-flex';
+   $('stage').style.display='inline-flex';$('stage').textContent=d.stage;
+   teamCache=d.team;todosCache=d.todos||[];
+   (d.team||[]).forEach(t=>{memberSid[t.role]=t.sid;memberAvatar[t.role]=t.avatar||'';})}
   const s=JSON.stringify(d.messages);
   if(s!==sig.chat){sig.chat=s;chatEl.innerHTML='';
    if(!d.messages.length){welcome();}
@@ -624,11 +668,6 @@ async function poll(){
    const last=d.messages[d.messages.length-1];
    if(last&&last.from==='customer'&&d.stage!=='已完成')typing();
    chatEl.parentElement.scrollTop=1e9;}
-  if(d.team){
-   $('tab-comm').style.display='inline-flex';$('tab-tasks').style.display='inline-flex';$('tab-files').style.display='inline-flex';
-   $('stage').style.display='inline-flex';$('stage').textContent=d.stage;
-   teamCache=d.team;todosCache=d.todos||[];
-   (d.team||[]).forEach(t=>memberSid[t.role]=t.sid);}
  }catch(e){}}
 
 /* ── 团队沟通：项目群回放（点头像看成员明细） ── */
@@ -646,7 +685,7 @@ async function pollComm(force){
      d.messages.map(m=>{
       // 观察者是客户：团队成员（含 PM）全部左侧，self/peer 是 PM 库的收发方向，不适用这里
       return `<div class="gm" onclick="msgToTrace('${esc(m.sender_name)}', this)" data-mtext="${esc(m.text.slice(0,60))}">
-       <div class="a" style="background:${avc(m.sender_name)}">${esc((m.sender_name||'?').slice(0,2))}</div>
+       <div class="a" style="background:${avaOf(m.sender_name).bg}">${avaOf(m.sender_name).txt}</div>
        <div class="c"><div class="h"><b>${esc(m.sender_name)}</b><span>${esc(m.ts)}</span></div>
        <div class="b">${docify(trust(md(m.text)))}</div></div></div>`;}).join('');
     el.parentElement.scrollTop=1e9;
@@ -660,21 +699,32 @@ async function pollComm(force){
  }catch(e){}}
 
 /* ── 任务协作：阶段步骤 + 转译动态 ── */
+function renderTasks(){
+ // 任务看板：按负责人分组
+ const by={};
+ todosCache.forEach(t=>{const a=t.assignee||'未分派';(by[a]=by[a]||[]).push(t);});
+ const total=todosCache.length,done=todosCache.filter(t=>t.status==='done').length;
+ $('steps').innerHTML=`<div class="tb-head">任务看板 · ${done}/${total} 已完成</div><div class="tb">`+
+  Object.entries(by).map(([a,ts])=>`<div class="tb-col"><div class="tb-cap">${esc(a)}<span>${ts.filter(t=>t.status==='done').length}/${ts.length}</span></div>
+   ${ts.map(t=>`<div class="tb-card ${t.status}"><span class="bx"></span><div><b>${esc(t.title)}</b><div class="cfg-mono" style="margin-top:2px">${t.status==='done'?'已完成':'进行中'} · 建 ${esc((t.created_at||'').slice(5,10))}</div></div></div>`).join('')}
+  </div>`).join('')+`</div>`||'<div class="cfg-note">尚无任务</div>';
+ // 任务时间线：创建 / 完成（真实 todo 生命周期）
+ const evs=[];
+ todosCache.forEach(t=>{
+  evs.push({at:t.created_at||'',k:'create',who:t.assignee||'—',title:t.title});
+  if(t.status==='done')evs.push({at:t.updated_at||t.created_at||'',k:'done',who:t.assignee||'—',title:t.title});
+ });
+ evs.sort((a,b)=>(b.at||'').localeCompare(a.at||''));
+ $('tl').innerHTML=`<div class="tl-head"><span class="h">任务动态 · 创建与完成</span></div>`+
+  evs.map(e=>`<div class="ev k-${e.k==='done'?'done':'assign'}">
+   <div class="n">${svg(e.k==='done'?'done':'assign',13)}</div>
+   <div class="c"><div class="l1"><b style="cursor:pointer" onclick="openMember('${esc(e.who)}')">${esc(e.who)}</b><span class="act-t">${e.k==='done'?'完成任务':'创建任务'} · ${esc(e.title)}</span><span class="t">${esc((e.at||'').slice(5,16))}</span></div></div></div>`).join('')
+  ||'<div class="cfg-note">尚无任务动态</div>';
+}
 async function pollTeam(force){
- if(!cid)return;try{
-  const d=await jget(`/api/customer/sessions/${cid}/activity`);
-  const g=JSON.stringify([d.activities,d.steps,d.current_stage]);
-  if(force||g!==sig.act){sig.act=g;
-   $('steps').innerHTML=d.steps.map((st,i)=>`${i?`<div class="stp-ln ${d.steps[i-1].state}"></div>`:''}
-    <div class="stp ${st.state}"><div class="c">${st.state==='done'?svg('done',12):i+1}</div><span>${esc(st.name)}</span></div>`).join('');
-   $('tl').innerHTML=`<div class="tl-head"><span class="h">任务动态 · 点成员看明细</span></div>`+
-     d.activities.map(a=>`<div class="ev k-${a.kind}">
-      <div class="n">${svg(a.kind,13)}</div>
-      <div class="c"><div class="l1"><b style="cursor:pointer" onclick="openMember('${esc(a.actor)}')">${esc(a.actor)}</b><span class="act-t">${esc(a.text.replace(a.actor,'').trim())}</span><span class="t">${esc(a.ts)}</span></div>
-      ${a.detail&&a.kind!=='note'?`<div class="sub" onclick="this.style.display='none'">${esc(a.detail.slice(0,150))}${a.detail.length>150?' …':''}</div>`:''}</div></div>`).join('')
-     ||`<div class="sk"><div style="flex:1"><div class="l" style="width:38%"></div><div class="l" style="width:64%"></div><div class="l" style="width:52%"></div></div></div>`;
-  }
- }catch(e){}}
+ if(!cid)return;
+ const g=JSON.stringify(todosCache);
+ if(force||g!==sig.act){sig.act=g;renderTasks();}}
 
 /* ── 交付物 ── */
 async function pollFiles(force){
@@ -713,7 +763,7 @@ async function openMember(role){
  const d=await jget(`/api/customer/sessions/${cid}/members/${sid}`);
  if(!d.ok)return;
  const mine=todosCache.filter(t=>t.assignee===role);
- $('dw-head').innerHTML=`<div class="a" style="background:${avc(role)}">${esc((role||'?').slice(0,2))}</div>
+ $('dw-head').innerHTML=`<div class="a" style="background:${avaOf(role).bg}">${avaOf(role).txt}</div>
   <div><b>${esc(role)}</b><small>项目成员 · 点成员名随时查看</small></div><button class="x" onclick="closeDrawer()">✕</button>`;
  const K={think:['思考','st-think'],tool:['工具','st-tool'],tool_result:['结果','st-result'],result:['结果','st-result'],say:['发言','st-say'],rest:['休息','st-rest'],input:['输入','st-input']};
  $('dw-body').innerHTML=`<h6>负责任务（${mine.length}）</h6>`+
@@ -741,9 +791,6 @@ function openRPage(title,small,html,onBack){
 function closeRPage(){$('rpage').classList.remove('open');}
 
 /* ── 项目配置（成员 · 订阅/工具面/能力 · 看门狗 · 增加成员） ── */
-const ALL_TOOLS=['sense_project_peers','send_chat_message','project_file_list','project_file_read','project_file_write','deliver_to_shared','project_todo_create','project_todo_list','project_todo_update'];
-const ALL_SUBS=['message','group_message','timer','project_stall'];
-const ALL_CAPS=['vitals','routines','perception','projects'];
 async function aget(u){const r=await fetch(u);return r.json()}
 let cfgPid='';
 async function openProjCfg(){
@@ -781,31 +828,158 @@ async function toggleWd(){
   body:JSON.stringify({enabled:!(pr&&pr.watchdog)})});
  openProjCfg();
 }
+/* ── agent 配置页（基本信息 / Skill / Tool） ── */
+let AG={};
 async function openSvcCfg(sid){
- const d=await aget('/api/admin/services/'+sid);
- const s=d.service;
- const chk=(list,all)=>all.map(x=>`<label class="cfg-chk"><input type="checkbox" value="${x}" ${(list||[]).includes(x)?'checked':''}>${x}</label>`).join('');
- openRPage(s.role+' · agent 配置',s.agent_def_id||'',`
-  <div class="cfg-card"><span class="cfg-mono" style="flex:none">角色名</span><input class="cfg-in" id="cfg-name" value="${esc(s.role)}"></div>
-  <div class="cfg-card"><span class="cfg-mono" style="flex:none">定义</span><span class="cfg-mono">${esc(s.agent_def_id)}</span></div>
-  <div class="cfg-sec">事件订阅</div><div>${chk(s.subscriptions,ALL_SUBS)}</div>
-  <div class="cfg-sec">工具面${s.tools?'':' <span class="cfg-mono">（默认全量，勾选即收紧）</span>'}</div><div>${chk(s.tools||ALL_TOOLS,ALL_TOOLS)}</div>
-  <div class="cfg-sec">能力开关</div><div>${ALL_CAPS.map(c=>`<label class="cfg-chk"><input type="checkbox" data-cap="${c}" ${((s.capabilities||{})[c]===true)?'checked':''}>${c}</label>`).join('')}</div>
-  <button class="cfg-btn pri" id="cfg-save" style="margin-top:14px" onclick="saveSvcCfg('${sid}')">保存配置</button>
-  <div class="cfg-note" style="margin-top:8px">即时生效于该成员的下一次唤醒</div>`,openProjCfg);
+ const [pf,tl,sv]=await Promise.all([
+  aget(`/api/admin/agents/${sid}/profile`),aget('/api/admin/tools'),aget('/api/admin/services/'+sid)]);
+ AG={sid,profile:pf,tools:tl.tools||[],svc:sv.service||{},tab:'basic'};
+ openRPage((pf.name||'agent')+' · 配置',(pf.def_id||'')+' · 深度配置',`
+  <div class="cfg-tabs">
+   <button data-t="basic" class="on" onclick="setCfgTab('basic')">基本信息</button>
+   <button data-t="skill" onclick="setCfgTab('skill')">Skill</button>
+   <button data-t="tool" onclick="setCfgTab('tool')">Tool</button>
+  </div><div id="cfg-tab"></div>`,openProjCfg);
+ renderCfgTabBody();
 }
-async function saveSvcCfg(sid){
- const name=document.getElementById('cfg-name').value.trim();
- if(!name){alert('角色名不能为空');return;}
- const boxes=[...document.querySelectorAll('#rp-body input[type=checkbox]')];
- const caps={};boxes.filter(b=>b.dataset.cap).forEach(b=>caps[b.dataset.cap]=b.checked);
- const tools=boxes.filter(b=>!b.dataset.cap&&ALL_TOOLS.includes(b.value)&&b.checked).map(b=>b.value);
- const subs=boxes.filter(b=>!b.dataset.cap&&ALL_SUBS.includes(b.value)&&b.checked).map(b=>b.value);
+function setCfgTab(t){AG.tab=t;
+ document.querySelectorAll('.cfg-tabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+ renderCfgTabBody();}
+function renderCfgTabBody(){
+ const el=$('cfg-tab');if(!el)return;
+ if(AG.tab==='basic')el.innerHTML=cfgBasicHTML();
+ else if(AG.tab==='skill'){el.innerHTML='<div id="skill-list" class="cfg-note">加载中…</div>';loadSkills();}
+ else el.innerHTML=cfgToolHTML();}
+
+function cfgBasicHTML(){const p=AG.profile;
+ return `
+ <h6>名称与头像</h6>
+ <div class="cfg-card"><span class="cfg-mono" style="flex:none">名称</span><input class="cfg-in" id="cfg-name" value="${esc(p.name)}"></div>
+ <div class="cfg-card"><span class="cfg-mono" style="flex:none">头像</span><input class="cfg-in" id="cfg-avatar" value="${esc(p.avatar)}" placeholder="emoji 或 #色值，如 🧭 / #7a5cff" oninput="avaPreview()"><span id="ava-prev" style="width:30px;height:30px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:650;color:#fff;background:${p.avatar&&!p.avatar.startsWith('#')?'linear-gradient(135deg,#4d7cff,#b078ec)':(p.avatar||avc(p.name))}">${esc(p.avatar&&!p.avatar.startsWith('#')?p.avatar:(p.name||'A').slice(0,2))}</span></div>
+ <h6>人设（persona · 身份层）</h6>
+ <div class="cfg-note" style="margin:-4px 0 6px">来源 <span class="mk-src ${p.persona.source==='overlay'?'src-overlay':p.persona.source==='def'?'src-def':'src-system'}">${p.persona.source==='overlay'?'服务级覆盖':p.persona.source==='def'?'定义层共享':'缺失'}</span>：保存写入本 agent 私有覆盖，不影响同定义的其他 agent；清空内容再保存 = 回到定义层共享。</div>
+ <textarea class="cfg-area" id="cfg-persona" rows="10">${esc(p.persona.content)}</textarea>
+ <h6>附加指令（追加到系统提示词尾部）</h6>
+ <div class="cfg-note" style="margin:-4px 0 6px">本 agent 私有，留空 = 无附加。系统提示词其余部分（生命周期引擎段落 + 技能索引）由引擎组装，不在此覆盖。</div>
+ <textarea class="cfg-area" id="cfg-extra" rows="4" placeholder="例如：输出务必分点、结论先行；对客户保持正式称呼…">${esc(p.extra_prompt)}</textarea>
+ <div style="margin-top:14px"><button class="cfg-btn pri" id="cfg-save" onclick="saveProfile()">保存基本信息</button></div>`;
+}
+function avaPreview(){
+ const v=$('cfg-avatar').value.trim(),el=$('ava-prev');if(!el)return;
+ if(v&&!v.startsWith('#')){el.style.background='linear-gradient(135deg,#4d7cff,#b078ec)';el.textContent=v;}
+ else if(v){el.style.background=v;el.textContent=(AG.profile.name||'A').slice(0,2);}
+ else{el.style.background=avc(AG.profile.name);el.textContent=(AG.profile.name||'A').slice(0,2);}
+}
+async function saveProfile(){
  const btn=$('cfg-save');btn.textContent='保存中…';btn.disabled=true;
- try{await fetch(`/api/admin/services/${sid}/config`,{method:'PATCH',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({display_name:name,subscriptions:subs,tools,capabilities:caps})});
-  btn.textContent='已保存 ✓';setTimeout(()=>{btn.textContent='保存配置';btn.disabled=false;},1600);
- }catch(e){btn.textContent='保存失败';btn.disabled=false;}
+ try{
+  const r=await fetch(`/api/admin/agents/${AG.sid}/profile`,{method:'PUT',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({name:$('cfg-name').value.trim(),avatar:$('cfg-avatar').value.trim(),
+    persona:$('cfg-persona').value,extra_prompt:$('cfg-extra').value})});
+  const d=await r.json();
+  if(!d.ok)throw new Error(d.error||'未知错误');
+  AG.profile=await aget(`/api/admin/agents/${AG.sid}/profile`);
+  sig={chat:'',act:'',files:''};commSig='';poll(); // 头像/名称即时反映到会话（失效消息缓存强制重绘）
+  btn.textContent='已保存 ✓';setTimeout(()=>{btn.textContent='保存基本信息';btn.disabled=false;},1500);
+ }catch(e){btn.textContent='保存失败：'+e.message;btn.disabled=false;}
+}
+
+async function loadSkills(){
+ const d=await aget(`/api/admin/agents/${AG.sid}/skills`);
+ AG.skills=d.skills||[];
+ const el=$('skill-list');if(!el)return;
+ el.innerHTML=`
+  <div class="cfg-card"><input class="cfg-in" id="new-skill" placeholder="新增 skill 名（字母数字与 _ -）"><button class="cfg-btn pri" style="flex:none" onclick="newSkill()">新建</button></div>
+  <div class="cfg-note" style="margin:0 0 8px">编辑与新增均写入本 agent 私有覆盖（同名覆盖定义层/系统 skill）；下载导出 .md；删除仅对覆盖有效。保存后 agent 下次唤醒即可调用。</div>
+  ${AG.skills.map(s=>`<div class="skill-row" data-skill="${esc(s.name)}">
+   <div class="sr-h" onclick="toggleSkillRow(this,'${esc(s.name)}')">
+    <b>${esc(s.name)}</b>${s.registered?'<span class="mk-src src-def">已注册</span>':''}<span class="d">${esc(s.description)}</span>
+    <span class="mk-src ${s.source==='overlay'?'src-overlay':s.source==='def'?'src-def':'src-system'}">${s.source==='overlay'?'覆盖':s.source==='def'?'定义层':'系统'}</span>
+   </div><div class="sr-b"></div></div>`).join('')||'<div class="cfg-note">还没有 skill</div>'}`;
+}
+async function toggleSkillRow(head,name){
+ const row=head.parentElement,body=row.querySelector('.sr-b');
+ const opening=row.classList.toggle('open');
+ if(opening&&!body.dataset.loaded){
+  const d=await aget(`/api/admin/agents/${AG.sid}/skills/${encodeURIComponent(name)}`);
+  body.dataset.loaded=1;
+  body.innerHTML=`<div style="padding:10px 12px;border-top:1px solid var(--bd)">
+   <textarea class="cfg-area" id="sk-md" rows="14">${esc(d.content)}</textarea>
+   <div class="cfg-note" style="margin:6px 0 0">当前来源：${d.source==='overlay'?'服务级覆盖':d.source==='def'?'定义层共享（保存后在本 agent 生效为覆盖）':'系统内置（保存后在本 agent 生效为覆盖）'}</div>
+   <div style="display:flex;gap:8px;margin-top:8px">
+    <button class="cfg-btn pri" onclick="saveSkill('${esc(name)}')">保存到服务覆盖</button>
+    <button class="cfg-btn" onclick="dlSkill('${esc(name)}')">下载 .md</button>
+    ${d.source==='overlay'?`<button class="cfg-btn" style="color:#c0353b;border-color:#e5b4b4" onclick="delSkill('${esc(name)}')">删除覆盖</button>`:''}
+   </div></div>`;
+ }
+}
+async function saveSkill(name){
+ const ta=document.getElementById('sk-md');if(!ta)return;
+ if(!ta.value.trim()){alert('内容不能为空');return;}
+ try{const r=await fetch(`/api/admin/agents/${AG.sid}/skills/${encodeURIComponent(name)}`,{
+  method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:ta.value})});
+  const d=await r.json();
+  if(!d.ok)throw new Error(d.error||'');
+  loadSkills();
+ }catch(e){alert('保存失败：'+e.message);}
+}
+async function dlSkill(name){
+ try{const d=await aget(`/api/admin/agents/${AG.sid}/skills/${encodeURIComponent(name)}`);
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([d.content],{type:'text/markdown'}));
+  a.download=name+'.SKILL.md';a.click();
+ }catch(e){alert('下载失败');}
+}
+async function delSkill(name){
+ if(!confirm('删除「'+name+'」的服务级覆盖？删除后回退到定义层/系统版本（如有）。'))return;
+ try{const r=await fetch(`/api/admin/agents/${AG.sid}/skills/${encodeURIComponent(name)}`,{method:'DELETE'});
+  const d=await r.json();
+  if(!d.ok)throw new Error(d.error||'');
+  loadSkills();
+ }catch(e){alert('删除失败：'+e.message);}
+}
+function newSkill(){
+ const name=($('new-skill').value||'').trim();
+ if(!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)){alert('skill 名仅限字母数字与 _ -，且以字母数字开头');return;}
+ if(AG.skills.some(s=>s.name===name)){alert('同名 skill 已存在，直接展开编辑即可');return;
+ }
+ AG.skills.unshift({name,description:'',version:'',source:'overlay'});
+ const el=$('skill-list');const tmp=el.querySelector('.cfg-card');
+ tmp.insertAdjacentHTML('afterend',`<div class="skill-row open" data-skill="${esc(name)}">
+  <div class="sr-h" onclick="toggleSkillRow(this,'${esc(name)}')"><b>${esc(name)}</b><span class="d"></span><span class="mk-src src-overlay">覆盖</span></div>
+  <div class="sr-b" data-loaded="1"><div style="padding:10px 12px;border-top:1px solid var(--bd)">
+   <textarea class="cfg-area" id="sk-md" rows="14">---\nname: ${esc(name)}\ndescription: 一句话描述该技能的用途\n---\n\n# ${esc(name)}\n\n在这里写方法论正文（Markdown）。</textarea>
+   <div style="display:flex;gap:8px;margin-top:8px">
+    <button class="cfg-btn pri" onclick="saveSkill('${esc(name)}')">保存到服务覆盖</button>
+   </div></div></div></div>`);
+}
+
+function cfgToolHTML(){
+ const explicit=Array.isArray(AG.svc.tools);
+ // 工具清单 = master registry 全量 ∪ 该服务工具面（service 九件套在 worker 进程注册，master 侧无 schema）
+ const regNames=new Set(AG.tools.map(t=>t.name));
+ const extra=(explicit?AG.svc.tools:[]).filter(n=>n&&!regNames.has(n))
+  .map(n=>({name:n,toolset:'service',description:'服务运行时注册的工具（schema 由服务侧定义）',schema:{name:n,parameters:{}}}));
+ const rows=[...AG.tools,...extra];
+ const enabled=new Set(explicit?AG.svc.tools:rows.map(t=>t.name));
+ return `
+ <div class="cfg-note" style="margin:0 0 10px">工具面：当前${explicit?'为显式清单':'未配置 = 默认全量'}。保存任意勾选即成为显式清单（勾=启用），即时生效于下次唤醒。点行展开完整 schema 定义。</div>
+ ${rows.map(t=>{const on=enabled.has(t.name);return `<div class="tool-row">
+  <div class="tr-h" onclick="this.parentElement.classList.toggle('open')">
+   <input type="checkbox" data-tool="${esc(t.name)}" ${on?'checked':''} onclick="event.stopPropagation()">
+   <b>${esc(t.name)}</b><span class="ts">${esc(t.toolset)}</span>
+   <span class="d" style="flex:1;font-size:12px;color:var(--tx-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.description)}</span>
+  </div>
+  <div class="tr-b"><pre>${esc(JSON.stringify(t.schema,null,2))}</pre></div>
+ </div>`}).join('')}
+ <div style="margin-top:12px"><button class="cfg-btn pri" onclick="saveToolset()">保存工具面</button></div>`;
+}
+async function saveToolset(){
+ const tools=[...document.querySelectorAll('#cfg-tab input[data-tool]')].filter(c=>c.checked).map(c=>c.dataset.tool);
+ if(!tools.length&&!confirm('全部取消将禁用所有工具，确定？'))return;
+ const r=await fetch(`/api/admin/services/${AG.sid}/config`,{method:'PATCH',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({tools})});
+ const d=await r.json();
+ if(d.ok)openSvcCfg(AG.sid);else alert(d.error||'保存失败');
 }
 async function addProjMember(){
  const role=document.getElementById('add-role').value.trim();

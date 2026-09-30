@@ -142,6 +142,8 @@ async def handle_get_messages(request: web.Request) -> web.Response:
             })
 
     # 项目进展：团队 + 待办（角色名映射，供客户侧展示）
+    from domain.service.overlay import read_agent_meta
+
     sid_to_role = {}
     team = []
     for svc in services_registry.list_services_by_project(
@@ -152,12 +154,15 @@ async def handle_get_messages(request: web.Request) -> web.Response:
             "role": svc.get("display_name") or "",
             "sid": svc["service_id"],
             "is_pm": svc["service_id"] == project.get("pm_id"),
+            "avatar": read_agent_meta(svc["service_id"]).get("avatar") or "",
         })
     todos = [
         {
             "title": t["title"],
             "status": t["status"],
             "assignee": sid_to_role.get(t.get("assignee_id") or "", ""),
+            "created_at": (t.get("created_at") or "")[:16],
+            "updated_at": (t.get("updated_at") or "")[:16],
         }
         for t in services_registry.list_project_todos(project["project_id"])
     ]

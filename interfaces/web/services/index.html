@@ -51,11 +51,13 @@ pre.doc{background:var(--soft);border:1px solid var(--bd);border-radius:10px;pad
 <header>
   <div class="logo">SV</div>
   <h1>服务台<small>服务型 agent 运行过程 · 项目群 · 配置</small></h1>
-  <span style="margin-left:auto" class="badge b-blue" id="sync">—</span>
+  <button class="btn" style="margin-left:auto" onclick="newAgent()">＋ 新建 agent</button>
+  <span class="badge b-blue" id="sync">—</span>
 </header>
 <div class="tabs">
   <div class="tab on" data-t="services">服务</div>
   <div class="tab" data-t="projects">项目</div>
+  <div class="tab" data-t="templates">项目模版</div>
 </div>
 <div class="wrap" id="main"></div>
 <div id="drawer"><div class="dh"><b id="d-title">详情</b><button class="x" onclick="closeDrawer()">✕</button></div><div class="db" id="d-body"></div></div>
@@ -68,6 +70,42 @@ function closeDrawer(){$('#drawer').classList.remove('open')}
 function openDrawer(title,html){$('#d-title').textContent=title;db_.innerHTML=html;$('#drawer').classList.add('open')}
 
 async function jget(u){const r=await fetch(u);return r.json()}
+
+/* ── 新建 agent（独立服务，不挂项目；加入项目走项目配置） ── */
+async function newAgent(){
+  const defs=await jget('/api/admin/defs');
+  openDrawer('新建 agent',`
+   <div class="kv"><i>名称</i><input id="na-name" placeholder="如：数据分析师" style="font-size:13px;border:1px solid var(--bd);border-radius:8px;padding:7px 10px;flex:1"></div>
+   <div class="kv"><i>定义</i><select id="na-def" class="btn" style="font-size:13px;flex:1">${(defs.defs||[]).map(d=>`<option value="${d.def_id}">${esc(d.display_name)}</option>`).join('')}</select></div>
+   <div class="hint">创建后为独立运行的服务 agent；要进项目，在客户页「项目配置 → 增加成员」里选它。</div>
+   <button class="btn" style="background:#2563eb;color:#fff;border:none;margin-top:10px;padding:8px 18px" onclick="createAgent()">创建</button>`);
+}
+async function createAgent(){
+  const name=document.getElementById('na-name').value.trim();
+  const def=document.getElementById('na-def').value;
+  if(!name){alert('名称必填');return;}
+  const r=await fetch('/api/admin/agents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({def,name})});
+  const d=await r.json();
+  if(d.ok){closeDrawer();render();}else alert(d.error||'创建失败');
+}
+
+/* ── 项目模版编辑 ── */
+async function tplEdit(tid){
+  const d=await jget('/api/admin/templates/'+tid);
+  openDrawer('模版 · '+tid,`
+   <textarea id="tpl-raw" style="width:100%;min-height:56vh;font-family:ui-monospace,monospace;font-size:12px;line-height:1.7;border:1px solid var(--bd);border-radius:10px;padding:12px">${esc(d.raw)}</textarea>
+   <div style="display:flex;gap:8px;margin-top:10px">
+    <button class="btn" style="background:#2563eb;color:#fff;border:none;padding:8px 18px" onclick="tplSave('${esc(tid)}')">保存</button>
+    <button class="btn" onclick="tplSave('${esc(tid)}',true)">校验不保存</button>
+   </div>`);
+}
+async function tplSave(tid,dry){
+  const raw=document.getElementById('tpl-raw').value;
+  const r=await fetch('/api/admin/templates/'+tid,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({raw})});
+  const d=await r.json();
+  if(d.ok){alert(dry?'YAML 语法 OK':'已保存（建项目链路即时使用新模版）');if(!dry)closeDrawer();}
+  else alert(d.error||'失败');
+}
 
 async function render(){
   $('#sync').textContent='加载中…';
@@ -88,7 +126,7 @@ async function render(){
       <td><button class="btn" onclick="detail('${s.service_id}')">明细</button>
       <button class="btn" onclick="toggle('${s.service_id}','${s.status==='active'?'archived':'active'}')">${s.status==='active'?'归档':'恢复'}</button></td>
     </tr>`).join('')+`</table><div class="hint">点「明细」看该服务的唤醒记录与运行统计</div>`;
-  } else {
+  } else if(TAB==='projects'){
     const d=await jget('/api/admin/projects');
     if(!d.projects.length){main.innerHTML='<div class="empty">暂无项目</div>';$('#sync').textContent='就绪';return;}
     main.innerHTML=`<table><tr><th>项目</th><th>进度</th><th>PM</th><th>成员</th><th>待办</th><th>客户</th><th>看门狗</th><th>创建</th><th>操作</th></tr>`+
@@ -105,6 +143,15 @@ async function render(){
       <button class="btn" onclick="files('${p.project_id}','')">交付物</button>
       <button class="btn" onclick="projCfg('${p.project_id}','${esc(p.name)}')">配置</button></td>
     </tr>`).join('')+`</table><div class="hint">群沟通=项目内服务间的协作直播 · 交付物=共享区文件</div>`;
+  } else if(TAB==='templates'){
+    const d=await jget('/api/admin/templates');
+    if(!d.templates.length){main.innerHTML='<div class="empty">暂无模版</div>';$('#sync').textContent='就绪';return;}
+    main.innerHTML=`<table><tr><th>模版 ID</th><th>名称</th><th>大小</th><th>操作</th></tr>`+
+    d.templates.map(t=>`<tr>
+      <td class="mono">${esc(t.id)}</td><td><b>${esc(t.name)}</b></td>
+      <td>${(t.size/1000).toFixed(1)} KB</td>
+      <td><button class="btn" onclick="tplEdit('${esc(t.id)}')">编辑</button></td>
+    </tr>`).join('')+`</table><div class="hint">模版即建项目时的角色/工具面/初始待办定义（config/project_templates/*.yaml）；保存前过 YAML 语法闸</div>`;
   }
   $('#sync').textContent='就绪';
 }

@@ -802,6 +802,25 @@ event_types:
 
       '
 
+  project_quiet:
+    display_name: 项目静默预警
+    trigger_type: condition
+    trigger_description: 项目未挂起但持续 2 小时无任何真实事件（客户/群/任务/协作全无）且无人工作中时，项目管理系统发信号给项目经理，由其决定挂起收队还是继续推进
+    priority: 5
+    payload_schema:
+      project_id: string
+      project_name: string?
+      quiet_hours: number
+    description: 仅发信号不自动挂起——决策权在项目经理；同一静默期只提醒一次，真实事件到来后重新武装
+    debounce_window_s: 0
+    merge_policy: latest
+    consumption_policy: on_trigger
+    wake_prompt: '🛎️ 项目静默预警：项目「{project_name}」已经 {quiet_hours} 小时没有任何新的进展事件（客户消息、任务指派、协作往来都没有），当前也没有成员在工作中。
+
+      作为项目经理，请判断现状并行动：我方能做的都已完成、唯一阻塞在客户侧 → 调 suspend_project 收队挂起（客户回来会自动恢复，成员安心静眠）；还有可推进的事 → 安排推进或催办；在等某位成员 → 提醒 TA。若决定再等一轮也可以，但不要设短闹钟反复查看。
+
+      '
+
   todo_assigned:
     display_name: 任务被指派
     trigger_type: condition

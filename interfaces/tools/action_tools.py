@@ -2826,6 +2826,10 @@ def _build_pre_rest_card() -> str:
     except Exception:
         iid = ""
 
+    # 服务型分流：没有实例 todo/项目/灵感/精力那套，卡内容=项目待办+闹钟
+    if _is_service_runtime():
+        return _build_service_pre_rest_card(iid)
+
     parts: list[str] = []
 
     # ── 0. 本轮产出（session 内的产出汇总, 来自同一 session 的 summarize_tool_call） ──
@@ -2927,6 +2931,31 @@ def _build_pre_rest_card() -> str:
         logger.debug("pre_rest_card insights gather failed: %s", exc)
 
     # ── 4. 闹钟（未来 8 小时会触发的） ──
+    parts.extend(_upcoming_alarm_lines())
+
+    if not parts:
+        return ""
+
+    return "## 🌙 睡前提示卡（rest 前 30 秒扫一眼，决定要不要补一刀）\n\n" + "\n".join(parts)
+
+
+def _is_service_runtime() -> bool:
+    """当前运行体是否服务型（挂 consulting 项目的 worker）。
+
+    服务型没有精力模拟（vitals 恒 70 快照、零落盘）、没有实例 todo/项目/
+    灵感碎片那套——rest 的提示卡与话术按类型分流。
+    """
+    try:
+        from infrastructure.config import get_app_instance_id
+        from infrastructure.persistence.services_registry import resolve_service_def
+
+        return bool(resolve_service_def(get_app_instance_id() or ""))
+    except Exception:
+        return False
+
+
+def _upcoming_alarm_lines() -> list[str]:
+    """未来 8 小时会触发的闹钟行（实例/服务提示卡共用）。"""
     try:
         from domain.lifecycle.alarms import list_pending_alarms
         from domain.lifecycle.clock import beijing_now_dt
@@ -2950,14 +2979,59 @@ def _build_pre_rest_card() -> str:
                 f"#{u['id']}({u['fire_at'][11:16] if len(u['fire_at']) > 16 else u['fire_at']})"
                 for u in upcoming[:4]
             )
-            parts.append(f"⏰ 未来 8h 内 {len(upcoming)} 个闹钟会触发：{preview}（避免起冲突）")
+            return [f"⏰ 未来 8h 内 {len(upcoming)} 个闹钟会触发：{preview}（避免起冲突）"]
     except Exception as exc:
         logger.debug("pre_rest_card alarms gather failed: %s", exc)
+    return []
+
+
+def _build_service_pre_rest_card(iid: str) -> str:
+    """服务型睡前提示卡：本轮产出 + 项目待办 + 闹钟。
+
+    实例版的 todo 清单/项目交付物/灵感碎片对服务无意义——服务的世界是
+    项目任务与团队协作（工作空间即记忆），没有精力上下文。
+    """
+    parts: list[str] = []
+
+    # ── 0. 本轮产出 ──
+    try:
+        outputs_summary = _summarize_current_session_outputs()
+        if outputs_summary:
+            parts.append(f"📤 本轮产出: {outputs_summary}")
+    except Exception as exc:
+        logger.debug("service pre_rest_card outputs summary failed: %s", exc)
+
+    # ── 1. 项目待办（分给我的优先列出） ──
+    try:
+        from infrastructure.persistence import services_registry as sr
+        svc = sr.lookup_service(iid) or {}
+        pid = svc.get("project_id") or ""
+        if pid:
+            todos = [t for t in sr.list_project_todos(pid)
+                     if (t.get("status") or "") not in ("done", "cancelled")]
+            if todos:
+                counts: dict[str, int] = {}
+                for t in todos:
+                    s = t.get("status") or "open"
+                    counts[s] = counts.get(s, 0) + 1
+                my_name = svc.get("display_name") or ""
+                mine = [t for t in todos if my_name and t.get("assign_role") == my_name]
+                parts.append(
+                    f"📋 项目待办：{len(todos)} 项未完成"
+                    f"（进行中 {counts.get('in_progress', 0)} · 阻塞 {counts.get('blocked', 0)} · 待启动 {counts.get('open', 0)}）"
+                    + (f"，分给我的 {len(mine)} 项" if mine else "")
+                )
+                for t in (mine or todos)[:3]:
+                    lock = " 🔒" if t.get("status") == "blocked" else ""
+                    parts.append(f"  - [{t.get('status')}] {(t.get('title') or '')[:40]}{lock}")
+    except Exception as exc:
+        logger.debug("service pre_rest_card todos gather failed: %s", exc)
+
+    parts.extend(_upcoming_alarm_lines())
 
     if not parts:
         return ""
-
-    return "## 🌙 睡前提示卡（rest 前 30 秒扫一眼，决定要不要补一刀）\n\n" + "\n".join(parts)
+    return "## 🌙 睡前提示卡（rest 前扫一眼：项目里还有没有该我收尾的事）\n\n" + "\n".join(parts)
 
 
 # 每个 session 至多展示一次提示卡——第一次调 rest 弹卡让模型先看，
@@ -3074,7 +3148,6 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
         if not target_alarm:
             # 闹钟已触发或不存在 — 列出可用 pending 闹钟（timer + routine）让模型重选
             pending = list_pending_alarms("timer") + list_pending_alarms("routine")
-            snap = vitals.consume_energy(0)
             import json as _j_reuse_fallback
             timer_lines = []
             for a in pending[:5]:
@@ -3084,13 +3157,16 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
                 except Exception:
                     r = ""
                 timer_lines.append(f"  · id={a.get('id')} {a.get('fire_at')}" + (f" ({r})" if r else ""))
-            return _j({
+            reuse_fallback = {
                 "preview": True,
                 "note": f"reuse={reuse_id} 对应的 timer 已触发或不存在。以下是当前可用的 pending timer, 请从中选一个 reuse:",
                 "available_alarms": "\n".join(timer_lines) if timer_lines else "(当前没有任何 pending timer, 请用 rest(until=...) 新建)",
                 "pre_rest_card": _build_pre_rest_card() or None,
-                "energy": round(snap.energy, 1),
-            })
+            }
+            if not _is_service_runtime():
+                snap = vitals.consume_energy(0)
+                reuse_fallback["energy"] = round(snap.energy, 1)
+            return _j(reuse_fallback)
 
         target_fire_at = target_alarm.get("fire_at") or ""
         if show_card:
@@ -3282,8 +3358,8 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
 
     if target_dt is None:
         _mark_pre_rest_card_shown(**kwargs)
-        snap = vitals.consume_energy(0)  # 不消耗精力, 只拿 snapshot
-        energy = round(snap.energy, 1)
+        snap = vitals.consume_energy(0) if not _is_service_runtime() else None
+        energy = round(snap.energy, 1) if snap else None  # 不消耗精力, 只拿 snapshot（服务型无精力模拟，不注入）
         existing_timers = list_pending_alarms("timer")
         import json as _j_hint
         timer_lines = []
@@ -3299,7 +3375,7 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
                 if suggested_reuse is None:
                     suggested_reuse = a.get("id")
         card = _build_pre_rest_card() or ""
-        return _j({
+        no_args_preview = {
             "preview": True,
             "note": (
                 "rest 无参数 = 预览睡前提示卡。看完后三选一：\n"
@@ -3312,10 +3388,19 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
             "will_reuse_alarm_id": suggested_reuse,
             "pre_rest_card": card or None,
             "available_alarms": "\n".join(timer_lines) if timer_lines else "(无未触发 timer)",
-            "energy": energy,
-        })
+        }
+        if energy is not None:
+            no_args_preview["energy"] = energy
+        return _j(no_args_preview)
 
     target_iso = _clock.to_storage_iso(target_dt)
+
+    # 服务型无精力模拟（vitals 恒 70 快照）：不说"精力恢复后叫醒"，
+    # 也没有精力上下文——提前唤醒的来源是团队事件。
+    if _is_service_runtime():
+        sleep_msg = f"进入休息，预计 {target_iso} 醒来。闹钟已设置。团队成员的消息或任务指派会提前唤醒你。"
+    else:
+        sleep_msg = f"进入休息，预计 {target_iso} 醒来。闹钟已设置。当你的精力恢复之后，系统会自然而然地叫醒你（不必等到闹钟）。"
 
     # ── 查现有闹钟：精确同 fire_at OR ±10min 近似重叠 ──
     # 设计语义：模型 rest(until=15:00) 时如果已有 15:00（或 14:55-15:05）的 timer
@@ -3416,7 +3501,7 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
             "affair_id": None,
             "wake_at": target_iso,
             "mental_context": mental,
-            "message": f"进入休息，预计 {target_iso} 醒来。闹钟已设置。当你的精力恢复之后，系统会自然而然地叫醒你（不必等到闹钟）。",
+            "message": sleep_msg,
             "pre_rest_card": _build_pre_rest_card() or None,
         })
 
@@ -3448,7 +3533,7 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
         "affair_id": aid,
         "wake_at": target_iso,
         "mental_context": mental,
-        "message": f"进入休息，预计 {target_iso} 醒来。闹钟已设置。当你的精力恢复之后，系统会自然而然地叫醒你（不必等到闹钟）。",
+        "message": sleep_msg,
         "pre_rest_card": _build_pre_rest_card() or None,
     })
 
@@ -3484,7 +3569,7 @@ registry.register(
             "  给未来自己的留言(做到哪/下一步/卡点)。reuse 时会追加到原备注后。\n"
             "\n"
             "## 醒来\n"
-            "  设了 until 的：精力恢复后系统自动叫醒(可能比 until 早)。\n"
+            "  设了 until 的：到点唤醒；期间有新事件（消息/任务指派）也会提前唤醒。\n"
             "  静眠的：外部事件(消息/任务/闹钟)到来即醒。"
         ),
         "parameters": {

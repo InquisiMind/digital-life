@@ -149,15 +149,17 @@ def _member_active(member_id: str, now: float) -> bool:
 
 
 _LAST_SILENCE_CHECK = 0.0
-IDLE_SUSPEND_HOURS = 2.0  # 事件静默超 N 小时 → 自动挂起（可复活；比关闭温柔）
+IDLE_SIGNAL_HOURS = 2.0  # 无真实事件超 N 小时 → 发静默信号给 PM（决策权在 PM，不自动挂起）
 
 
-def run_silence_suspender() -> int:
-    """项目静默治理：超过 2 小时无真实事件且无人工作中 → 挂起（非关闭）。
+def run_quiet_signaler() -> int:
+    """项目静默信号：active 项目超 2 小时无真实事件且无人工作中 → 发
+    project_quiet 事件给项目经理，由 PM 决定挂起收队/推进/再等。
 
-    判据=最后一条非 timer 事件入队时间（客户/群/任务指派/催办都算活跃；
-    timer 是 agent 自转不算）。有人干活（wake 进行中）不挂。
-    客户回来发消息自动恢复。
+    旧版（2026-09-29 前）超时直接 suspend_project——引擎替 PM 做了决策；
+    新版改为纯信号：系统只报告事实（多久没动静），收不收队 PM 判断，
+    一切回到事件驱动的解耦逻辑。同一静默期只提醒一次（PM 决定再等
+    也不会被反复催），真实事件到来后自动重新武装。
     """
     global _LAST_SILENCE_CHECK
     import time as _time
@@ -166,34 +168,89 @@ def run_silence_suspender() -> int:
     if now - _LAST_SILENCE_CHECK < 600:  # 10 分钟一轮即可
         return 0
     _LAST_SILENCE_CHECK = now
-    from domain.service.registry import last_external_activity, suspend_project
+    from domain.service.registry import last_external_activity
     from domain.service.status import service_runtime_status
     from infrastructure.persistence import services_registry
 
-    suspended = 0
-    for p in services_registry.list_projects():
-        if p.get("status") != "active":
+    signaled = 0
+    for p in services_registry.list_projects(status="active"):
+        pid = p.get("project_id") or ""
+        pm_id = p.get("pm_id") or ""
+        if not pid or not pm_id:
             continue
-        members = services_registry.list_services_by_project(
-            p["project_id"], status="active")
+        members = services_registry.list_services_by_project(pid, status="active")
         if not members:
             continue
-        # 有人正在干活 → 不挂
+        # 有人正在干活 → 不算静默
         if any(service_runtime_status(m["service_id"]).get("state") == "working"
                for m in members):
             continue
-        last = last_external_activity(p["project_id"])
-        if last <= 0:
+        activity = last_external_activity(pid)
+        if activity <= 0:
             continue
-        if (now - last) / 3600 >= IDLE_SUSPEND_HOURS:
-            r = suspend_project(p["project_id"], reason="idle_timeout",
-                                actor="scheduler")
-            if r.get("ok"):
-                suspended += 1
-    if suspended:
-        logger.info("IDLE_SUSPEND suspended=%d (>%dh no external events)",
-                    suspended, IDLE_SUSPEND_HOURS)
-    return suspended
+        if (now - activity) / 3600 < IDLE_SIGNAL_HOURS:
+            continue
+        # 同一静默期已提醒过（提醒后仍无真实事件）→ 不重复催
+        last_ping = p.get("last_quiet_ping_at") or ""
+        if last_ping:
+            try:
+                from datetime import datetime as _dt
+
+                if activity <= _dt.fromisoformat(last_ping).timestamp():
+                    continue
+            except ValueError:
+                pass
+        quiet_hours = round((now - activity) / 3600, 1)
+        payload = {
+            "project_id": pid,
+            "project_name": p.get("name") or pid,
+            "quiet_hours": quiet_hours,
+        }
+        ok = False
+        if services_registry.resolve_service_def(pm_id):
+            from domain.service import emit_to_service
+
+            pm = services_registry.lookup_service(pm_id) or {}
+            subs = pm.get("subscriptions") or []
+            if "project_quiet" not in subs:
+                services_registry.update_service_fields(
+                    pm_id, subscriptions=list(subs) + ["project_quiet"])
+            ok = emit_to_service(pm_id, "project_quiet", payload) > 0
+        else:
+            # PM 是实例：只入队（该实例进程的 cron 会取走叫醒）
+            from domain.lifecycle.events import (
+                emit_event,
+                reset_instance_context,
+                reset_wake_suppressed,
+                set_instance_context,
+                set_wake_suppressed,
+            )
+            from infrastructure.config import (
+                reset_current_instance_id,
+                set_current_instance_id,
+            )
+
+            cfg = set_current_instance_id(pm_id)
+            evt = set_instance_context(pm_id)
+            sup = set_wake_suppressed(True)
+            try:
+                ok = emit_event("project_quiet", payload) > 0
+            finally:
+                reset_wake_suppressed(sup)
+                reset_instance_context(evt)
+                reset_current_instance_id(cfg)
+        if ok:
+            from datetime import datetime, timezone
+
+            services_registry.update_project_fields(
+                pid, last_quiet_ping_at=datetime.now(timezone.utc).isoformat()
+            )
+            signaled += 1
+            logger.warning(
+                "PROJECT_QUIET_SIGNAL project=%s quiet_h=%.1f pm=%s",
+                pid, quiet_hours, pm_id[:12],
+            )
+    return signaled
 
 
 def run_stall_watchdog(now: float | None = None) -> list[str]:
@@ -355,11 +412,11 @@ class ServiceWorkerLoop:
                     run_stall_watchdog(now)
                 except Exception:
                     logger.exception("stall watchdog scan failed")
-            # 客户弃单治理：静默超阈值项目自动挂起（内部节流每小时）
+            # 项目静默信号：无真实事件超阈值 → 发 project_quiet 给 PM 决策（内部 10min 节流）
             try:
-                run_silence_suspender()
+                run_quiet_signaler()
             except Exception:
-                logger.exception("silence suspender scan failed")
+                logger.exception("quiet signaler scan failed")
             self._stop.wait(self._scan_interval)
 
     # ── 单轮扫描 ──────────────────────────────────────────────────────

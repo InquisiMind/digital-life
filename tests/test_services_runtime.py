@@ -819,6 +819,72 @@ def test_stall_watchdog(service_env, project_template):
     sr.release_lease(result["services"][1]["service_id"], "worker:x")
 
 
+def test_quiet_signaler(service_env, project_template):
+    """静默信号（2026-09-30 架构反转）：2h 无真实事件 → 发 project_quiet 给
+    PM 决策，不再自动挂起；信号本身不算真实事件（不刷新活跃时钟，否则
+    会永动复读）；同一静默期只提醒一次。"""
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import patch
+
+    from domain.service.registry import last_external_activity
+    from infrastructure.scheduler import service_runner
+
+    result = _create_duo(service_env, customer={"id": "cust-1", "name": "客户"})
+    pid = result["project"]["project_id"]
+    pm_id = result["pm_service_id"]
+
+    def db_of(sid):
+        return service_env / "apps" / "echo-def" / "services" / sid / "data" / "state.db"
+
+    # 造一条 3 小时前的真实事件（群消息）落在成员乙信箱：先真实 emit 建
+    # 信箱（state.db 懒建），再把 created_at 拨回 3 小时前
+    sid_b = result["services"][1]["service_id"]
+    from domain.service import emit_to_service
+
+    assert emit_to_service(sid_b, "group_message", {"text": "旧消息", "chat_id": "g1"}) > 0
+    stale_iso = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    conn = sqlite3.connect(str(db_of(sid_b)))
+    conn.execute(
+        "UPDATE events SET created_at = ? WHERE kind = 'group_message'",
+        (stale_iso,),
+    )
+    conn.commit()
+    conn.close()
+
+    # 有人 working → 不发信号
+    with patch("domain.service.status.service_runtime_status",
+               return_value={"state": "working", "detail": ""}):
+        service_runner._LAST_SILENCE_CHECK = 0.0
+        assert service_runner.run_quiet_signaler() == 0
+
+    # 无人 working + 静默超阈值 → 发信号给 PM（自动补订阅，不挂起项目）
+    service_runner._LAST_SILENCE_CHECK = 0.0
+    assert service_runner.run_quiet_signaler() == 1
+    assert services_registry.lookup_project(pid).get("status") == "active"
+    pm = services_registry.lookup_service(pm_id)
+    assert "project_quiet" in (pm.get("subscriptions") or [])
+    conn = sqlite3.connect(str(db_of(pm_id)))
+    row = conn.execute(
+        "SELECT payload FROM events WHERE kind='project_quiet'"
+    ).fetchone()
+    conn.close()
+    assert row, "PM 信箱应有 project_quiet 事件"
+    assert json.loads(row[0])["quiet_hours"] >= 2.9
+    assert services_registry.lookup_project(pid).get("last_quiet_ping_at")
+
+    # 信号本身不算真实事件：活跃时钟不被刷新（排除 timer/stall/quiet）
+    assert last_external_activity(pid) < datetime.now(timezone.utc).timestamp() - 3600
+
+    # 同一静默期（提醒后仍无真实事件）→ 不重复催
+    service_runner._LAST_SILENCE_CHECK = 0.0
+    assert service_runner.run_quiet_signaler() == 0
+
+    # 没有 PM 的项目无人可催 → 跳过
+    services_registry.update_project_fields(pid, last_quiet_ping_at=None, pm_id="")
+    service_runner._LAST_SILENCE_CHECK = 0.0
+    assert service_runner.run_quiet_signaler() == 0
+
+
 def test_loop_fires_due_alarms_respects_subscription(service_env):
     from domain.lifecycle.clock import now_dt
     from domain.service import create_service

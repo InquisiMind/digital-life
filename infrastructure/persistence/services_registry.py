@@ -118,6 +118,7 @@ _MIGRATION_COLUMNS = {
         "pm_id": "TEXT DEFAULT ''",
         "watchdog_enabled": "INTEGER DEFAULT 0",
         "last_stall_ping_at": "TEXT",
+        "last_quiet_ping_at": "TEXT",
         "customer_id": "TEXT DEFAULT ''",
     },
     "services": {
@@ -253,7 +254,8 @@ def update_project_fields(project_id: str, *, name: str | None = None,
                           status: str | None = None, stage: str | None = None,
                           description: str | None = None, pm_id: str | None = None,
                           watchdog_enabled: bool | None = None,
-                          last_stall_ping_at: str | None = None) -> bool:
+                          last_stall_ping_at: str | None = None,
+                          last_quiet_ping_at: str | None = None) -> bool:
     _ensure_schema()
     sets = ["updated_at = ?"]
     params: list[Any] = [_now_iso()]
@@ -271,6 +273,8 @@ def update_project_fields(project_id: str, *, name: str | None = None,
         sets.append("watchdog_enabled = ?"); params.append(1 if watchdog_enabled else 0)
     if last_stall_ping_at is not None:
         sets.append("last_stall_ping_at = ?"); params.append(last_stall_ping_at)
+    if last_quiet_ping_at is not None:
+        sets.append("last_quiet_ping_at = ?"); params.append(last_quiet_ping_at)
     params.append(project_id)
     with _connect() as conn:
         cur = conn.execute(

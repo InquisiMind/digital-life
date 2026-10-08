@@ -270,3 +270,80 @@ def test_confirm_true_no_args_silent_sleeps_first_call(isolated_instance, monkey
     assert data.get("silent") is True
     assert data.get("preview") is not True
     assert not set_alarm_calls, "静眠不设闹钟"
+
+
+# ── 服务型分流（2026-09-30）：无精力上下文 + 项目待办提示卡 ─────────────
+
+
+def _patch_service_runtime(monkeypatch, todos=None):
+    """把当前测试实例伪装成挂项目的服务型运行体。"""
+    monkeypatch.setattr(
+        "infrastructure.persistence.services_registry.resolve_service_def",
+        lambda rid: {"def_id": "echo-def"} if rid else None)
+    monkeypatch.setattr(
+        "infrastructure.persistence.services_registry.lookup_service",
+        lambda rid: ({"service_id": rid, "project_id": "proj-1",
+                      "display_name": "行业研究员"}
+                     if rid == "test-rest-session-iid" else {}))
+    monkeypatch.setattr(
+        "infrastructure.persistence.services_registry.list_project_todos",
+        lambda pid, **kw: (todos or []))
+    monkeypatch.setattr("domain.lifecycle.alarms.set_alarm", lambda *a, **kw: None)
+    monkeypatch.setattr("domain.lifecycle.alarms.list_pending_alarms", lambda *a, **kw: [])
+
+
+def test_service_preview_no_energy_project_card(isolated_instance, monkeypatch):
+    """服务型 rest() 预览：无 energy 字段；提示卡是项目待办版（无灵感碎片）。"""
+    _patch_service_runtime(monkeypatch, todos=[
+        {"todo_id": "t1", "title": "行业研究初稿", "status": "in_progress",
+         "assign_role": "行业研究员"},
+        {"todo_id": "t2", "title": "等待客户材料", "status": "open",
+         "assign_role": "项目经办"},
+    ])
+
+    out = _at._handle_rest({}, session_id="sess-SVC1")
+    data = json.loads(out) if isinstance(out, str) else out
+    assert data.get("preview") is True
+    assert "energy" not in data, "服务型没有精力模拟，不该有精力上下文"
+    card = data.get("pre_rest_card") or ""
+    assert "项目待办" in card
+    assert "分给我的 1 项" in card
+    assert "灵感碎片" not in card, "实例版栏目不该出现在服务型卡上"
+
+
+def test_service_until_message_no_energy_words(isolated_instance, monkeypatch):
+    """服务型 rest(until, confirm) 真睡：话术无精力，说团队事件提前唤醒。"""
+    _patch_service_runtime(monkeypatch, todos=[])
+    monkeypatch.setattr("domain.lifecycle.runtime_context.get_current_affair", lambda: "aff-SVC")
+    monkeypatch.setattr("domain.lifecycle.affairs.runtime.get_affair", lambda aid: MagicMock())
+    monkeypatch.setattr("domain.lifecycle.affairs.runtime.update_affair", lambda *a, **kw: None)
+    monkeypatch.setattr("domain.lifecycle.affairs.runtime.set_wait_intent", lambda aid, intent: None)
+
+    out = _at._handle_rest(
+        {"confirm": True, "until": "2026-07-15T15:00:00+08:00"}, session_id="sess-SVC2")
+    data = json.loads(out) if isinstance(out, str) else out
+    assert data.get("__l4_block__") is True
+    assert "精力" not in data.get("message", "")
+    assert "团队成员" in data.get("message", "")
+
+
+def test_instance_rest_keeps_energy_context(isolated_instance, monkeypatch):
+    """实例路径回归：energy 字段与精力话术原样保留（服务分流不误伤实例）。"""
+    monkeypatch.setattr("domain.lifecycle.alarms.set_alarm", lambda *a, **kw: None)
+    monkeypatch.setattr("domain.lifecycle.alarms.list_pending_alarms", lambda *a, **kw: [])
+    monkeypatch.setattr("domain.lifecycle.runtime_context.get_current_affair", lambda: "aff-INST")
+    monkeypatch.setattr("domain.lifecycle.affairs.runtime.get_affair", lambda aid: MagicMock())
+    monkeypatch.setattr("domain.lifecycle.affairs.runtime.update_affair", lambda *a, **kw: None)
+    monkeypatch.setattr("domain.lifecycle.affairs.runtime.set_wait_intent", lambda aid, intent: None)
+
+    out = _at._handle_rest(
+        {"confirm": True, "until": "2026-07-15T15:00:00+08:00"}, session_id="sess-INST")
+    data = json.loads(out) if isinstance(out, str) else out
+    assert data.get("__l4_block__") is True
+    assert "精力" in data.get("message", "")
+
+    # 预览路径 energy 字段保留
+    out2 = _at._handle_rest({}, session_id="sess-INST2")
+    d2 = json.loads(out2) if isinstance(out2, str) else out2
+    assert d2.get("preview") is True
+    assert isinstance(d2.get("energy"), (int, float)), "实例预览保留 energy 快照"

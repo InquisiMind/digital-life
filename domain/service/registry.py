@@ -245,9 +245,11 @@ def resume_project(project_id: str, *, reason: str = "") -> dict:
 
 
 def last_external_activity(project_id: str) -> float:
-    """项目最近一次真实事件入队时间（客户/群/任务/催办——timer 自转不算）。
+    """项目最近一次真实事件入队时间（客户/群/任务/催办）。
 
     全员信箱取非 timer 事件的最大 created_at（ISO）。判"项目是否还活着"。
+    系统自身发的治理信号（project_stall/project_quiet）不算真实事件——
+    否则信号本身会刷新静默时钟，PM 决定"再等等"后会被反复催。
     """
     import sqlite3 as _sq
     from datetime import datetime as _dt
@@ -265,7 +267,8 @@ def last_external_activity(project_id: str) -> float:
             try:
                 row = conn.execute(
                     "SELECT created_at FROM events"
-                    " WHERE kind != 'timer' ORDER BY event_id DESC LIMIT 1"
+                    " WHERE kind NOT IN ('timer', 'project_stall', 'project_quiet')"
+                    " ORDER BY event_id DESC LIMIT 1"
                 ).fetchone()
             finally:
                 conn.close()

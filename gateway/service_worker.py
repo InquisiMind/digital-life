@@ -58,6 +58,14 @@ def run_service_worker(service_id: str) -> int:
     cfg_token = set_current_instance_id(service_id)
     evt_token = None
     try:
+        # 业务扩展（事件类型/工具/闸等）必须在本进程激活——master 靠组合根
+        # 访问器惰性加载，worker 直连调度器不经过那些访问器；不加载则
+        # todo_assigned/project_stall 等业务事件在注册表缺失，wake 全部
+        # 误落 birth 兜底（2026-10-08 实测"任务解锁唤醒显示第一次醒来"）。
+        from infrastructure.extension import load_extensions
+
+        load_extensions()
+
         from domain.lifecycle.events import (
             pop_due_events,
             reset_instance_context,

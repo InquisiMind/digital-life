@@ -89,6 +89,10 @@ event_types:
 
       {sender_notes_block}
 
+      📋 你沉默期间该窗口的最近对话（旧→新，供上下文参考，不必逐条回复）：
+
+      {recent_context}
+
 
       —— 回复：chat_id 留空 = 回到本群。@ 人时用对方的 OU。
 

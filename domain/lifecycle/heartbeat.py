@@ -447,12 +447,18 @@ def _resolve_event_prompt(reason: str, pending_events: list | None = None) -> st
         import re
         return re.sub(r"\{[a-zA-Z_][a-zA-Z0-9_]*\}", "", template)
 
-    # Fallback: use birth event prompt as generic awake
-    birth_def = get_event_type("birth")
-    if birth_def and birth_def.prompt_template:
-        return birth_def.prompt_template
+    # Fallback: 事件类型未注册或无模板——给诚实的中性唤醒。不再借 birth 模板：
+    # "第一次醒来"会让任务/治理类唤醒的模型完全误判处境
+    # （2026-10-08 实测：todo_assigned 唤醒显示"第一次醒来"）。
+    if reason == "birth":
+        birth_def = get_event_type("birth")
+        if birth_def and birth_def.prompt_template:
+            return birth_def.prompt_template
 
-    return "你醒了。先 sense_time 看时间，sense_vitals 看精力，然后继续推进。"
+    return (
+        f"你醒了（唤醒原因：{reason}）。先 sense_time 看时间，"
+        "sense_vitals 看精力，sense_todos 看待办，然后继续推进。"
+    )
 
 
 _MULTI_EVENT_HINT = (

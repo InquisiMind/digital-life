@@ -423,6 +423,25 @@ async def handle_member_detail(request: web.Request) -> web.Response:
     })
 
 
+async def handle_close_session(request: web.Request) -> web.Response:
+    """POST /api/customer/sessions/{cid}/close {project_id} — 客户显式结束咨询。
+
+    归档项目 + 取消成员闹钟 + 成员静眠（记忆产物保留）。
+    """
+    customer_id = request.match_info["customer_id"]
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    from domain.service.registry import close_project
+
+    project = _find_project(customer_id, str(body.get("project_id") or ""))
+    if project is None:
+        return _json({"ok": False, "error": "会话不存在"}, 404)
+    r = close_project(project["project_id"], reason="customer_closed")
+    return _json(r)
+
+
 async def handle_attachment(request: web.Request) -> web.Response:
     """POST /api/customer/sessions/{cid}/attachments（multipart file）
 
@@ -493,6 +512,7 @@ _ROUTER.router.add_get(
 )
 _ROUTER.router.add_get("/sessions/{customer_id}/activity", handle_activity)
 _ROUTER.router.add_post("/sessions/{customer_id}/attachments", handle_attachment)
+_ROUTER.router.add_post("/sessions/{customer_id}/close", handle_close_session)
 
 
 async def _serve_page(_request: web.Request) -> web.Response:

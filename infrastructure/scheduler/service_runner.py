@@ -148,6 +148,42 @@ def _member_active(member_id: str, now: float) -> bool:
     return False
 
 
+_LAST_SILENCE_CHECK = 0.0
+SILENCE_SUSPEND_DAYS = 3.0  # 客户静默超 N 天 → 自动挂起项目（闹钟循环根治）
+
+
+def run_silence_suspender() -> int:
+    """客户弃单治理：客户静默超阈值的项目自动关闭（幂等，每小时查一次）。
+
+    判据只看客户真实发言（PM 私库 customer 窗口最后入站时间）——
+    agent 的闹钟/跟进/群聊都是自转，不算客户意图。
+    """
+    global _LAST_SILENCE_CHECK
+    import time as _time
+
+    now = _time.time()
+    if now - _LAST_SILENCE_CHECK < 3600:
+        return 0
+    _LAST_SILENCE_CHECK = now
+    from domain.service.registry import close_project, last_customer_activity
+    from infrastructure.persistence import services_registry
+
+    closed = 0
+    for p in services_registry.list_projects():
+        if p.get("status") != "active":
+            continue
+        last = last_customer_activity(p["project_id"])
+        if last <= 0:
+            continue  # 从未收到过客户消息的不动（可能尚未启动）
+        if (now - last) / 86400 >= SILENCE_SUSPEND_DAYS:
+            r = close_project(p["project_id"], reason="customer_silence")
+            if r.get("ok"):
+                closed += 1
+    if closed:
+        logger.info("SILENCE_SUSPEND closed=%d", closed)
+    return closed
+
+
 def run_stall_watchdog(now: float | None = None) -> list[str]:
     """扫 watchdog_enabled 且 active 的项目：待办未清 + 全员不活跃 → 催 PM。
 
@@ -307,6 +343,11 @@ class ServiceWorkerLoop:
                     run_stall_watchdog(now)
                 except Exception:
                     logger.exception("stall watchdog scan failed")
+            # 客户弃单治理：静默超阈值项目自动挂起（内部节流每小时）
+            try:
+                run_silence_suspender()
+            except Exception:
+                logger.exception("silence suspender scan failed")
             self._stop.wait(self._scan_interval)
 
     # ── 单轮扫描 ──────────────────────────────────────────────────────

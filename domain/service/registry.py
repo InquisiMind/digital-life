@@ -126,3 +126,102 @@ def service_allows_kind(svc: dict, kind: str) -> bool:
     if subs == "all":
         return True
     return kind in subs
+
+
+# ── 项目关闭（僵尸项目治理）：归档 + 取消成员闹钟 + 成员静眠 ────────────
+
+
+def close_project(project_id: str, *, reason: str = "") -> dict:
+    from infrastructure.persistence.services_registry import (
+        SERVICE_STATUS_ARCHIVED,
+        list_services_by_project,
+        lookup_project,
+        set_service_status,
+        update_project_fields,
+    )
+    """优雅关闭项目：客户弃单/静默超时的统一收口。
+
+    做四件事（幂等）：
+    1. 项目 status → archived；
+    2. 删除全部成员未消费的未来 timer 事件（闹钟循环的根源）；
+    3. 成员服务 status → archived（事件层拒绝，永不唤醒）；
+    4. 返回收尾统计。
+    记忆/产物/待办全部保留——重新激活走 activate。
+    """
+    import sqlite3 as _sq
+
+    from infrastructure.config import resolve_runtime_dir
+
+    project = lookup_project(project_id)
+    if project is None:
+        return {"ok": False, "error": "项目不存在"}
+    members = list_services_by_project(project_id)
+    cancelled_timers = 0
+    for m in members:
+        sid = m["service_id"]
+        db = resolve_runtime_dir(sid) / "data" / "state.db"
+        if db.exists():
+            try:
+                conn = _sq.connect(str(db), timeout=3.0)
+                try:
+                    cur = conn.execute(
+                        "DELETE FROM events WHERE kind = 'timer'"
+                        " AND consumed_at IS NULL"
+                    )
+                    cancelled_timers += cur.rowcount
+                    conn.commit()
+                finally:
+                    conn.close()
+            except _sq.Error:
+                pass
+        set_service_status(sid, SERVICE_STATUS_ARCHIVED)
+    update_project_fields(project_id, status=SERVICE_STATUS_ARCHIVED)
+    logger.info(
+        "PROJECT_CLOSED project=%s members=%d cancelled_timers=%d reason=%s",
+        project_id[:12], len(members), cancelled_timers, reason[:40],
+    )
+    return {"ok": True, "members": len(members), "cancelled_timers": cancelled_timers}
+
+
+def last_customer_activity(project_id: str) -> float:
+    from infrastructure.persistence.services_registry import lookup_project
+    """项目里客户最后一次真实发言的时间戳（PM 私库 customer 窗口最后一条入站）。
+
+    无记录返回 0。这是"客户是否还理这个项目"的唯一判据——
+    不看 agent 闹钟/群聊（那些是自转，不是客户意图）。
+    """
+    import sqlite3 as _sq
+
+    from infrastructure.config import resolve_runtime_dir
+
+    project = lookup_project(project_id)
+    if project is None:
+        return 0.0
+    pm = project.get("pm_id") or ""
+    if not pm:
+        return 0.0
+    db = resolve_runtime_dir(pm) / "data" / "messages.db"
+    if not db.exists():
+        return 0.0
+    try:
+        conn = _sq.connect(str(db), timeout=3.0)
+        try:
+            row = conn.execute(
+                "SELECT ts FROM messages WHERE chat_id LIKE 'customer:%'"
+                " AND direction = 'in' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        if not (row and row[0]):
+            return 0.0
+        try:  # ts 为 ISO 字符串（含 +08:00）；兼容历史数值型
+            from datetime import datetime as _dt
+
+            return _dt.fromisoformat(str(row[0])).timestamp()
+        except (TypeError, ValueError):
+            try:
+                return float(row[0])
+            except (TypeError, ValueError):
+                return 0.0
+    except _sq.Error:
+        return 0.0

@@ -554,10 +554,11 @@ function renderHist(){
  if(!projCache.length){el.innerHTML='<div class="rail-empty">空空如也，一句话开场</div>';return;}
  el.innerHTML=projCache.map(p=>`<div class="sess ${p.project_id===projSel?'on':''}" data-pid="${p.project_id}" onclick="switchProj('${p.project_id}')">
    <div class="t">${esc(p.name)}</div>
-   <div class="m"><span class="dot-st ${p.stage==='已完成'||p.stage==='已归档'?'fin':''}"></span>${esc(p.stage||'…')} · ${esc((p.created_at||'').slice(5,10))}</div>
+   <div class="m"><span class="dot-st ${p.status!=='active'?'fin':(p.stage==='已完成'?'fin':'')}"></span>${p.status!=='active'?'已结束':esc(p.stage||'…')} · ${esc((p.created_at||'').slice(5,10))}</div>
    <button class="more" title="更多" onclick="toggleSessMenu(event,'${p.project_id}')">···</button>
    <div class="menu">
     <button onclick="renameProj(event,'${p.project_id}')">重命名</button>
+    ${p.status==='active'?`<button onclick="closeProj(event,'${p.project_id}')">结束咨询</button>`:''}
     <button class="danger" onclick="delProj(event,'${p.project_id}')">删除</button>
    </div></div>`).join('');
 }
@@ -590,6 +591,15 @@ async function saveRename(pid){
  try{await fetch(`/api/admin/projects/${pid}/config`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});}catch(err){}
  await loadProjects();
  if(pid===projSel)loadHead();
+}
+async function closeProj(e,pid){
+ e.stopPropagation();
+ const row=projCache.find(p=>p.project_id===pid);if(!row)return;
+ if(!confirm('结束「'+row.name+'」？\n成员闹钟将全部取消并静眠（记忆与产物保留），可到服务台恢复。'))return;
+ try{await fetch(`/api/customer/sessions/${cid}/close`,{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({project_id:pid})});
+  await loadProjects();
+ }catch(err){alert('操作失败');}
 }
 async function delProj(e,pid){
  e.stopPropagation();
@@ -648,7 +658,7 @@ async function jget(u){
 async function loadProjects(){
  try{const d=await jget('/api/customer/sessions');
   // 客户页只列/只绑带 customer_id 的活跃会话；归档（=客户侧删除）与内部项目不进列表
-  projCache=(d.projects||[]).filter(p=>p.customer_id&&p.status!=='archived');
+  projCache=(d.projects||[]).filter(p=>p.customer_id);
   // 绑定顺序：当前选中 > 上次看过 > 该客户最近 > 全局最新；有数据默认进会话
   let row=projCache.find(p=>p.project_id===projSel);
   if(!row)row=projCache.find(p=>p.customer_id===cid);

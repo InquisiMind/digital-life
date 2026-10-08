@@ -72,7 +72,7 @@ event_types:
       mention_map: string?
       attachments: object[]?
     description: 群聊中有新消息时触发
-    debounce_window_s: 0
+    debounce_window_s: 45
     merge_policy: accumulate
     consumption_policy: on_trigger
     wake_prompt: '💬 群聊有新消息。

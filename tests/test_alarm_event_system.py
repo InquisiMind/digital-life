@@ -358,10 +358,12 @@ class TestDebounce:
         # Both return the same event_id (merged)
         assert eid1 == eid2
 
-    def test_debounce_disabled_for_group_message(self, test_db):
-        # 新架构:group_message 的 debounce 已关闭(窗口=0)。消息合并在 ingress
-        # adapter 层完成(interfaces/ingress/group_buffer.py 一次 flush 一条带
-        # merged_texts 的 NormalizedMessage),事件层每条入站 = 一个独立事件。
+    def test_debounce_enabled_for_group_message(self, test_db):
+        # 2026-10-08 决策反转:group_message 事件层防抖重开(窗口=45s accumulate)。
+        # 原窗口=0 是因为合并移到 ingress adapter(interfaces/ingress/group_buffer.py,
+        # 人工飞书群上游已预合批);但服务群路径(business/consulting/social.py 的
+        # svcgroup 投递)逐条 emit、无任何一层合批,吴总项目实测 26 事件 16 次唤醒
+        # 并把全队拖进 GLM 429。人工路径的预合批事件 45s 内相继到达时合并,语义一致。
         from domain.lifecycle.events import emit_event
 
         eid1 = emit_event(kind="group_message", payload={
@@ -370,8 +372,8 @@ class TestDebounce:
         eid2 = emit_event(kind="group_message", payload={
             "text": "msg2", "sender_name": "Bob", "chat_name": "group1"
         })
-        # 窗口=0 → 两条独立事件
-        assert eid1 != eid2
+        # 窗口=45s → 合并为一条(accumulate,主字段最新)
+        assert eid1 == eid2
 
     def test_debounce_skip_for_fire_at(self, test_db):
         """Events with fire_at should not be debounced."""

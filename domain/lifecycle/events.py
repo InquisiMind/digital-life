@@ -250,6 +250,16 @@ def _apply_debounce(kind: str, payload: Dict, fire_at: Optional[str]) -> Optiona
                     texts = []
                 new_sender = payload.get("sender_name") or payload.get("sender_id") or "?"
                 new_text = payload.get("text") or payload.get("last_sent_text") or ""
+                # 归档现有主文本(风暴延后后多级合并成为常态:延后事件的主字段
+                # 会被后续合并覆盖,不归档该条就从 batch 视图里消失了)
+                old_text = str(existing_payload.get("text") or "")
+                old_sender = str(
+                    existing_payload.get("sender_name")
+                    or existing_payload.get("sender_id")
+                    or "?"
+                )
+                if old_text and old_text != new_text and not any(t.get("text") == old_text for t in texts):
+                    texts.append({"sender": old_sender, "text": old_text[:200]})
                 if new_text:
                     texts.append({"sender": new_sender, "text": new_text[:200]})
                 # 不设条数上限——按你的设计"按时间区间累积,不看消息数量"
@@ -490,6 +500,14 @@ def _wake_or_inject(triggering_event_id: int) -> None:
                 triggering_event_id,
             )
             return
+        # 风暴合批(2026-10-08 吴总项目群聊实测:26 事件 16 次唤醒,还把全队拖进
+        # GLM 429):队列里只有触发这一条、且同 kind 在防抖窗口内刚消费过一醒
+        # → 推后 window 秒让它攒同伴,窗口期内后续消息经 _apply_debounce 合并
+        # 进来,下次一醒带走。首条消息(窗口内无已消费同类)仍即时唤醒;多条 due
+        # 一起到则直接走多事件清单,无需延后。
+        if len(events) == 1 and _storm_should_defer(events[0], instance_channel):
+            _defer_storm_event(events[0], instance_id, life_aid)
+            return
         reason = _choose_reason(events)
         logger.info(
             "WAKE_OR_INJECT dispatch: instance=%s reason=%s pending=%d event_ids=%s",
@@ -530,6 +548,100 @@ def _wake_or_inject(triggering_event_id: int) -> None:
         threading.Thread(target=_bg_wake, daemon=True).start()
     except Exception as exc:
         logger.warning("WAKE_OR_INJECT failed: %s", exc)
+
+
+def _debounce_window_s(kind: str) -> int:
+    """事件类型的防抖窗口秒数（解析与 _apply_debounce 一致），未注册/0 → 0。"""
+    try:
+        from .event_registry import resolve_event_config
+
+        cfg = resolve_event_config(kind)
+        window_range = cfg.get("debounce_window_s", (0, 0))
+        if isinstance(window_range, int):
+            return max(0, int(window_range))
+        if isinstance(window_range, (list, tuple)) and len(window_range) >= 2:
+            return max(0, int(window_range[0]), int(window_range[1]))
+    except Exception:
+        pass
+    return 0
+
+
+def _storm_should_defer(event: Dict, instance_channel: str) -> bool:
+    """空闲派发前的风暴判断：同 kind 在防抖窗口内刚消费过一醒 → 该延后攒批。
+
+    只读查询；任何异常一律按"不延后"处理（fail-open 退回即时唤醒）。
+    """
+    kind = event.get("kind", "")
+    window = _debounce_window_s(kind)
+    if window <= 0:
+        return False
+    try:
+        cutoff = (now_dt() - timedelta(seconds=window)).isoformat(timespec="seconds")
+        with _conn() as conn:
+            row = conn.execute(
+                "SELECT MAX(consumed_at) AS last_consumed FROM events "
+                "WHERE kind = ? AND consumed_at IS NOT NULL "
+                "AND (channel LIKE ? OR channel IS NULL)",
+                (kind, instance_channel + "%"),
+            ).fetchone()
+        last = row["last_consumed"] if row else None
+        return bool(last) and str(last) >= cutoff
+    except Exception as exc:
+        logger.debug("storm defer check failed (dispatch immediately): %s", exc)
+        return False
+
+
+def _defer_storm_event(event: Dict, instance_id: str, life_aid: str) -> None:
+    """风暴延后：fire_at 推到 now+window，并起 kick 定时器剪掉 cron 60s 的尾巴。
+
+    后续同 kind 消息在窗口内 emit 时命中 _apply_debounce 合并进这条
+    （unconsumed、fire_at 不滚动 → 延迟有上界），不再各自叫醒；
+    kick 到点只读预检有 due 才真正起 wake（防 0 事件空转唤醒）。
+    """
+    import threading
+
+    kind = event.get("kind", "")
+    window = max(_debounce_window_s(kind), 5)
+    fire_at = (now_dt() + timedelta(seconds=window)).isoformat(timespec="seconds")
+    try:
+        with _conn() as conn:
+            conn.execute(
+                "UPDATE events SET fire_at = ? WHERE event_id = ? AND consumed_at IS NULL",
+                (fire_at, event.get("event_id")),
+            )
+    except Exception as exc:
+        # 改 fire_at 失败就放弃延后：事件保持 due，cron 60s 内照常单醒兜底
+        logger.warning("storm defer UPDATE failed for event %s: %s", event.get("event_id"), exc)
+        return
+    logger.info(
+        "EMIT_STORM_DEFERRED kind=%s event_id=%s fire_at=%s window_s=%d "
+        "—— 窗口期内同 kind 消息将合并，一次唤醒带走",
+        kind, event.get("event_id"), fire_at, window,
+    )
+
+    def _kick() -> None:
+        try:
+            from infrastructure.config import set_current_instance_id
+
+            set_current_instance_id(instance_id)
+        except Exception:
+            pass
+        try:
+            set_instance_context(instance_id)
+        except Exception:
+            pass
+        try:
+            if not pop_due_events(limit=1):
+                return  # 已被其他路径消费/派发，无事可做
+            from domain.lifecycle.scheduler import wake_digital_life
+
+            wake_digital_life(life_aid, kind, "", pop_due_events(limit=20))
+        except Exception as exc:
+            logger.warning("storm kick wake error: %s", exc)
+
+    timer = threading.Timer(window + 8, _kick)
+    timer.daemon = True
+    timer.start()
 
 
 def _inject_to_running_session(event_id: int, instance_id: str) -> None:

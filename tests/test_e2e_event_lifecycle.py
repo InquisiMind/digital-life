@@ -830,10 +830,16 @@ class TestRASDebounceRealScenario:
         finally:
             _cleanup_test_env(tmp)
 
-    def test_group_message_not_accumulated_at_event_layer(self):
-        """群消息合并不在事件层做 —— group_message 的 debounce_window_s 已置 0
-        (合并移到 ingress adapter / group_buffer.py)。事件层每条入站
-        NormalizedMessage = 一个独立事件,不在此积压合并。"""
+    def test_group_message_debounced_at_event_layer(self):
+        """群消息事件层防抖 45s（2026-10-08 决策反转，原 window=0）。
+
+        原决策：合并移到 ingress adapter / group_buffer.py，事件层每条
+        NormalizedMessage 一个独立事件——那只覆盖了人工飞书群（上游已
+        20-30s 预合批）。服务群路径（business/consulting/social.py 的
+        svcgroup 投递）逐条 emit、无任何一层合批，吴总项目实测 26 事件
+        16 次唤醒并把全队拖进 GLM 429。现在事件层重新开窗：45s accumulate，
+        人工路径预合批事件 45s 内相继到达时合并，语义与 group_buffer 一致。
+        """
         tmp, db_path = _make_test_env("test-debounce-group")
         try:
             from domain.lifecycle.events import set_instance_context, reset_instance_context, emit_event, pop_due_events
@@ -847,22 +853,21 @@ class TestRASDebounceRealScenario:
                     "text": "msg2", "sender_name": "Bob", "chat_name": "group1",
                 })
 
-                # 窗口=0 → 两条独立事件
-                assert eid1 != eid2
+                # 窗口=45s → 两条合并为一条（accumulate）
+                assert eid1 == eid2
 
-                # 消费无关断言：从事件表证明"两条独立事件、未被合并"
-                # （早前测并发竞态：L4 测试泄漏的后台 wake 线程可能在此期间
-                # 消费掉其中一条——pop 视角会少一条，但"不合并"的语义以
-                # 事件表为准：两行、不同 event_id、各自完整 payload）
                 conn = sqlite3.connect(str(db_path))
                 rows = conn.execute(
                     "SELECT event_id, payload FROM events"
                     " WHERE kind='group_message' ORDER BY event_id"
                 ).fetchall()
                 conn.close()
-                assert [r[0] for r in rows] == [eid1, eid2]
-                assert json.loads(rows[0][1])["text"] == "msg1"
-                assert json.loads(rows[1][1])["text"] == "msg2"
+                assert [r[0] for r in rows] == [eid1]
+                payload = json.loads(rows[0][1])
+                assert payload["text"] == "msg2", "主字段指向最新一条"
+                assert payload["_merged_count"] == 2
+                merged_texts = payload.get("_merged_texts") or []
+                assert any(t.get("text") == "msg1" for t in merged_texts), "旧主文本必须归档"
             finally:
                 reset_instance_context(token)
         finally:

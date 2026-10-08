@@ -272,29 +272,51 @@ def test_confirm_true_no_args_silent_sleeps_first_call(isolated_instance, monkey
     assert not set_alarm_calls, "静眠不设闹钟"
 
 
-# ── 服务型分流（2026-09-30）：无精力上下文 + 项目待办提示卡 ─────────────
+# ── 能力闸与团队段（2026-09-30 解耦重构：精力跟着 capability 闸走，
+#    团队跟着项目成员身份走——都和"是不是服务型"无关）─────────────────
 
 
-def _patch_service_runtime(monkeypatch, todos=None):
-    """把当前测试实例伪装成挂项目的服务型运行体。"""
+def _patch_team_world(monkeypatch, *, service=True, project_status="active", todos=None):
+    """把当前测试实例挂进团队世界。
+
+    service=True：伪装挂项目的服务（vitals 能力默认关）。
+    service=False：伪装被聘为 PM 的实例（vitals 恒开，实例全能力在）。
+    """
+    import infrastructure.persistence.services_registry as sr_mod
+
+    iid = "test-rest-session-iid"
+    if service:
+        monkeypatch.setattr(
+            sr_mod, "resolve_service_def", lambda rid: {"def_id": "echo-def"} if rid else None)
+        monkeypatch.setattr(
+            sr_mod, "lookup_service",
+            lambda rid: ({"service_id": rid, "project_id": "proj-1",
+                          "display_name": "行业研究员", "capabilities": {}}
+                         if rid == iid else {}))
+    else:
+        monkeypatch.setattr(sr_mod, "resolve_service_def", lambda rid: None)
+        monkeypatch.setattr(sr_mod, "lookup_service", lambda rid: {})
+        monkeypatch.setattr(
+            sr_mod, "list_projects",
+            lambda status=None: [{"project_id": "proj-1", "pm_id": iid,
+                                  "status": "active", "name": "实例PM的项目"}])
     monkeypatch.setattr(
-        "infrastructure.persistence.services_registry.resolve_service_def",
-        lambda rid: {"def_id": "echo-def"} if rid else None)
+        sr_mod, "lookup_project",
+        lambda pid: ({"project_id": pid, "status": project_status, "name": "团队项目"}
+                     if pid == "proj-1" else None))
     monkeypatch.setattr(
-        "infrastructure.persistence.services_registry.lookup_service",
-        lambda rid: ({"service_id": rid, "project_id": "proj-1",
-                      "display_name": "行业研究员"}
-                     if rid == "test-rest-session-iid" else {}))
-    monkeypatch.setattr(
-        "infrastructure.persistence.services_registry.list_project_todos",
-        lambda pid, **kw: (todos or []))
+        sr_mod, "list_project_todos", lambda pid, **kw: (todos or []))
+    # 个人世界（实例段）置空：团队世界的运行体大多没有个人数据
+    monkeypatch.setattr("domain.todos.crud.list_tasks", lambda **kw: [], raising=False)
+    monkeypatch.setattr("domain.project.loader.load_all_projects", lambda: {}, raising=False)
+    monkeypatch.setattr("domain.memory.memory.consciousness.runtime.read_insights", lambda **kw: "", raising=False)
     monkeypatch.setattr("domain.lifecycle.alarms.set_alarm", lambda *a, **kw: None)
     monkeypatch.setattr("domain.lifecycle.alarms.list_pending_alarms", lambda *a, **kw: [])
 
 
-def test_service_preview_no_energy_project_card(isolated_instance, monkeypatch):
-    """服务型 rest() 预览：无 energy 字段；提示卡是项目待办版（无灵感碎片）。"""
-    _patch_service_runtime(monkeypatch, todos=[
+def test_service_preview_no_energy_with_team_card(isolated_instance, monkeypatch):
+    """挂项目的服务（vitals 关）：无 energy 字段；提示卡带团队段（项目待办）。"""
+    _patch_team_world(monkeypatch, todos=[
         {"todo_id": "t1", "title": "行业研究初稿", "status": "in_progress",
          "assign_role": "行业研究员"},
         {"todo_id": "t2", "title": "等待客户材料", "status": "open",
@@ -304,16 +326,49 @@ def test_service_preview_no_energy_project_card(isolated_instance, monkeypatch):
     out = _at._handle_rest({}, session_id="sess-SVC1")
     data = json.loads(out) if isinstance(out, str) else out
     assert data.get("preview") is True
-    assert "energy" not in data, "服务型没有精力模拟，不该有精力上下文"
+    assert "energy" not in data, "vitals 关的运行体不该有精力上下文"
     card = data.get("pre_rest_card") or ""
     assert "项目待办" in card
     assert "分给我的 1 项" in card
-    assert "灵感碎片" not in card, "实例版栏目不该出现在服务型卡上"
+    assert "灵感碎片" not in card, "个人世界栏目没数据就不该出现"
 
 
-def test_service_until_message_no_energy_words(isolated_instance, monkeypatch):
-    """服务型 rest(until, confirm) 真睡：话术无精力，说团队事件提前唤醒。"""
-    _patch_service_runtime(monkeypatch, todos=[])
+def test_instance_pm_gets_team_card_and_energy(isolated_instance, monkeypatch):
+    """正交性：实例被聘为 PM 也带队——精力上下文在（实例恒开），
+    团队段同时在。团队≠服务型。"""
+    _patch_team_world(monkeypatch, service=False, todos=[
+        {"todo_id": "t1", "title": "行业研究初稿", "status": "in_progress",
+         "assign_role": "行业研究员"},
+    ])
+
+    out = _at._handle_rest({}, session_id="sess-PM1")
+    data = json.loads(out) if isinstance(out, str) else out
+    assert data.get("preview") is True
+    assert isinstance(data.get("energy"), (int, float)), "实例 vitals 恒开"
+    card = data.get("pre_rest_card") or ""
+    assert "项目待办" in card, "实例 PM 的卡也有团队段"
+
+
+def test_suspended_project_silent_sleep_via_seam(isolated_instance, monkeypatch):
+    """团队静默接缝：项目挂起 → rest() 一步静眠（无闹钟），判定在
+    team_context，rest 只消费结论。"""
+    _patch_team_world(monkeypatch, project_status="suspended", todos=[])
+    set_alarm_calls = []
+    monkeypatch.setattr("domain.lifecycle.alarms.set_alarm",
+                        lambda *a, **kw: set_alarm_calls.append((a, kw)))
+    monkeypatch.setattr("domain.lifecycle.runtime_context.get_current_affair", lambda: "aff-SS")
+    monkeypatch.setattr("domain.lifecycle.affairs.runtime.update_affair", lambda *a, **kw: None)
+
+    out = _at._handle_rest({}, session_id="sess-SS1")
+    data = json.loads(out) if isinstance(out, str) else out
+    assert data.get("resting") is True and data.get("silent") is True
+    assert "挂起" in data.get("note", "")
+    assert not set_alarm_calls
+
+
+def test_no_energy_capability_message_generic(isolated_instance, monkeypatch):
+    """vitals 关的运行体 rest(until, confirm)：话术无精力字样。"""
+    _patch_team_world(monkeypatch, todos=[])
     monkeypatch.setattr("domain.lifecycle.runtime_context.get_current_affair", lambda: "aff-SVC")
     monkeypatch.setattr("domain.lifecycle.affairs.runtime.get_affair", lambda aid: MagicMock())
     monkeypatch.setattr("domain.lifecycle.affairs.runtime.update_affair", lambda *a, **kw: None)
@@ -324,7 +379,7 @@ def test_service_until_message_no_energy_words(isolated_instance, monkeypatch):
     data = json.loads(out) if isinstance(out, str) else out
     assert data.get("__l4_block__") is True
     assert "精力" not in data.get("message", "")
-    assert "团队成员" in data.get("message", "")
+    assert "提前唤醒" in data.get("message", "")
 
 
 def test_instance_rest_keeps_energy_context(isolated_instance, monkeypatch):

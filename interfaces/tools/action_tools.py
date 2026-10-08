@@ -2826,10 +2826,6 @@ def _build_pre_rest_card() -> str:
     except Exception:
         iid = ""
 
-    # 服务型分流：没有实例 todo/项目/灵感/精力那套，卡内容=项目待办+闹钟
-    if _is_service_runtime():
-        return _build_service_pre_rest_card(iid)
-
     parts: list[str] = []
 
     # ── 0. 本轮产出（session 内的产出汇总, 来自同一 session 的 summarize_tool_call） ──
@@ -2930,6 +2926,16 @@ def _build_pre_rest_card() -> str:
     except Exception as exc:
         logger.debug("pre_rest_card insights gather failed: %s", exc)
 
+    # ── 3.5 团队（项目成员身份——与服务型/实例型正交：服务挂项目即成员，
+    #     实例也可能被聘为 PM。不在团队返回空串，段自然略过） ──
+    try:
+        from domain.service.team_context import team_pre_rest_section
+        team_section = team_pre_rest_section(iid)
+        if team_section:
+            parts.append(team_section)
+    except Exception as exc:
+        logger.debug("pre_rest_card team gather failed: %s", exc)
+
     # ── 4. 闹钟（未来 8 小时会触发的） ──
     parts.extend(_upcoming_alarm_lines())
 
@@ -2939,19 +2945,18 @@ def _build_pre_rest_card() -> str:
     return "## 🌙 睡前提示卡（rest 前 30 秒扫一眼，决定要不要补一刀）\n\n" + "\n".join(parts)
 
 
-def _is_service_runtime() -> bool:
-    """当前运行体是否服务型（挂 consulting 项目的 worker）。
+def _energy_context_on() -> bool:
+    """本运行体是否有精力上下文（capability 闸：实例恒开，服务默认关）。
 
-    服务型没有精力模拟（vitals 恒 70 快照、零落盘）、没有实例 todo/项目/
-    灵感碎片那套——rest 的提示卡与话术按类型分流。
+    精力话术/energy 字段跟着这个闸走——和"是不是服务型"无关：哪个运行体
+    开了 vitals 能力，哪个就有精力上下文。
     """
     try:
-        from infrastructure.config import get_app_instance_id
-        from infrastructure.persistence.services_registry import resolve_service_def
+        from domain.service.capabilities import capability_enabled
 
-        return bool(resolve_service_def(get_app_instance_id() or ""))
+        return capability_enabled("vitals")
     except Exception:
-        return False
+        return True
 
 
 def _upcoming_alarm_lines() -> list[str]:
@@ -2983,55 +2988,6 @@ def _upcoming_alarm_lines() -> list[str]:
     except Exception as exc:
         logger.debug("pre_rest_card alarms gather failed: %s", exc)
     return []
-
-
-def _build_service_pre_rest_card(iid: str) -> str:
-    """服务型睡前提示卡：本轮产出 + 项目待办 + 闹钟。
-
-    实例版的 todo 清单/项目交付物/灵感碎片对服务无意义——服务的世界是
-    项目任务与团队协作（工作空间即记忆），没有精力上下文。
-    """
-    parts: list[str] = []
-
-    # ── 0. 本轮产出 ──
-    try:
-        outputs_summary = _summarize_current_session_outputs()
-        if outputs_summary:
-            parts.append(f"📤 本轮产出: {outputs_summary}")
-    except Exception as exc:
-        logger.debug("service pre_rest_card outputs summary failed: %s", exc)
-
-    # ── 1. 项目待办（分给我的优先列出） ──
-    try:
-        from infrastructure.persistence import services_registry as sr
-        svc = sr.lookup_service(iid) or {}
-        pid = svc.get("project_id") or ""
-        if pid:
-            todos = [t for t in sr.list_project_todos(pid)
-                     if (t.get("status") or "") not in ("done", "cancelled")]
-            if todos:
-                counts: dict[str, int] = {}
-                for t in todos:
-                    s = t.get("status") or "open"
-                    counts[s] = counts.get(s, 0) + 1
-                my_name = svc.get("display_name") or ""
-                mine = [t for t in todos if my_name and t.get("assign_role") == my_name]
-                parts.append(
-                    f"📋 项目待办：{len(todos)} 项未完成"
-                    f"（进行中 {counts.get('in_progress', 0)} · 阻塞 {counts.get('blocked', 0)} · 待启动 {counts.get('open', 0)}）"
-                    + (f"，分给我的 {len(mine)} 项" if mine else "")
-                )
-                for t in (mine or todos)[:3]:
-                    lock = " 🔒" if t.get("status") == "blocked" else ""
-                    parts.append(f"  - [{t.get('status')}] {(t.get('title') or '')[:40]}{lock}")
-    except Exception as exc:
-        logger.debug("service pre_rest_card todos gather failed: %s", exc)
-
-    parts.extend(_upcoming_alarm_lines())
-
-    if not parts:
-        return ""
-    return "## 🌙 睡前提示卡（rest 前扫一眼：项目里还有没有该我收尾的事）\n\n" + "\n".join(parts)
 
 
 # 每个 session 至多展示一次提示卡——第一次调 rest 弹卡让模型先看，
@@ -3163,7 +3119,7 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
                 "available_alarms": "\n".join(timer_lines) if timer_lines else "(当前没有任何 pending timer, 请用 rest(until=...) 新建)",
                 "pre_rest_card": _build_pre_rest_card() or None,
             }
-            if not _is_service_runtime():
+            if _energy_context_on():
                 snap = vitals.consume_energy(0)
                 reuse_fallback["energy"] = round(snap.energy, 1)
             return _j(reuse_fallback)
@@ -3252,76 +3208,28 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
         except Exception:
             return registry.tool_error("hours must be a number")
 
-    # ─── 路径 C：都没传 → 先看服务型特例，再走 preview→静眠 两步 ───
-    # 服务型特例（二）：项目挂起时无参静眠——闹钟已取消，恢复由客户
-    # 回来驱动，再设闹钟只会复活自转循环。
+    # ─── 路径 C：都没传 → 先看团队静默接缝，再走 preview→静眠 两步 ───
+    # 团队状态（项目挂起/待办全清）要求无闹钟静眠时一步真睡。判定在
+    # domain.service.team_context——rest 只消费结论，不关心运行体类型。
     if not until and not reuse_id and not hours:
         try:
+            from domain.service.team_context import silent_sleep_note
             from infrastructure.config import get_app_instance_id
-            from infrastructure.persistence.services_registry import (
-                lookup_project, lookup_service, resolve_service_def,
-            )
 
-            _rid = get_app_instance_id() or ""
-            if resolve_service_def(_rid):
-                _pid = (lookup_service(_rid) or {}).get("project_id") or ""
-                _proj = lookup_project(_pid) if _pid else None
-                if _proj and _proj.get("status") == "suspended":
-                    from domain.lifecycle.runtime_context import get_current_affair
+            _team_note = silent_sleep_note(get_app_instance_id() or "")
+            if _team_note:
+                _affair = get_current_affair()
+                if _affair:
+                    try:
+                        from domain.lifecycle.affairs.runtime import update_affair as _ua
+                        from domain.lifecycle.state_machine import AffairStatus as _AS
 
-                    _affair = get_current_affair()
-                    if _affair:
-                        try:
-                            from domain.lifecycle.affairs.runtime import update_affair as _ua
-                            from domain.lifecycle.state_machine import AffairStatus as _AS
-
-                            _ua(_affair.get("affair_id") or _affair.get("id"),
-                                status=_AS.BLOCKED,
-                                note="项目挂起——静眠，客户回来自动恢复")
-                        except Exception:
-                            pass
-                    return _j({"resting": True, "silent": True,
-                               "note": "项目已挂起，静眠等待客户（勿设闹钟）。"})
-        except Exception:
-            pass
-
-    # 服务型特例：项目待办全部完成时允许 rest() 无参静眠——
-    # 任务已闭环，恢复闹钟只会空转；新事件（客户消息/新任务指派）到来
-    # 自然唤醒（master 扫描 + 事件队列兜底，与实例型"无闹钟睡死"不同）。
-    if not until and not reuse_id and not hours:
-        try:
-            from infrastructure.config import get_app_instance_id
-            from infrastructure.persistence.services_registry import (
-                list_project_todos,
-                lookup_service,
-                resolve_service_def,
-            )
-
-            _rid = get_app_instance_id() or ""
-            if resolve_service_def(_rid):
-                _svc = lookup_service(_rid) or {}
-                _pid = _svc.get("project_id") or ""
-                if _pid:
-                    _todos = list_project_todos(_pid)
-                    if _todos and all(t.get("status") == "done" for t in _todos):
-                        from domain.lifecycle.runtime_context import get_current_affair
-
-                        _affair = get_current_affair()
-                        if _affair:
-                            try:
-                                from domain.lifecycle.affairs.runtime import update_affair as _ua
-                                from domain.lifecycle.state_machine import AffairStatus as _AS
-
-                                _ua(_affair.get("affair_id") or _affair.get("id"),
-                                    status=_AS.BLOCKED,
-                                    note="项目待办全部完成——静眠等待新事件（无闹钟）")
-                            except Exception:
-                                pass
-                        return _j({
-                            "resting": True,
-                            "silent": True,
-                            "note": "项目全部任务已完成，进入静眠（未设闹钟）。有新消息或新任务指派时会被唤醒。",
-                        })
+                        _ua(_affair.get("affair_id") or _affair.get("id"),
+                            status=_AS.BLOCKED,
+                            note="团队静眠——" + _team_note)
+                    except Exception:
+                        pass
+                return _j({"resting": True, "silent": True, "note": _team_note})
         except Exception:
             pass  # 判定失败走原有预览流程
 
@@ -3358,8 +3266,8 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
 
     if target_dt is None:
         _mark_pre_rest_card_shown(**kwargs)
-        snap = vitals.consume_energy(0) if not _is_service_runtime() else None
-        energy = round(snap.energy, 1) if snap else None  # 不消耗精力, 只拿 snapshot（服务型无精力模拟，不注入）
+        snap = vitals.consume_energy(0) if _energy_context_on() else None
+        energy = round(snap.energy, 1) if snap else None  # 不消耗精力, 只拿 snapshot（无精力能力的运行体不注入）
         existing_timers = list_pending_alarms("timer")
         import json as _j_hint
         timer_lines = []
@@ -3395,12 +3303,13 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
 
     target_iso = _clock.to_storage_iso(target_dt)
 
-    # 服务型无精力模拟（vitals 恒 70 快照）：不说"精力恢复后叫醒"，
-    # 也没有精力上下文——提前唤醒的来源是团队事件。
-    if _is_service_runtime():
-        sleep_msg = f"进入休息，预计 {target_iso} 醒来。闹钟已设置。团队成员的消息或任务指派会提前唤醒你。"
-    else:
+    # 无精力能力（capability 闸，与服务型/实例型无关——哪个运行体开了
+    # vitals 哪个有精力上下文）的运行体不说"精力恢复后叫醒"，提前唤醒
+    # 的来源是外部事件。
+    if _energy_context_on():
         sleep_msg = f"进入休息，预计 {target_iso} 醒来。闹钟已设置。当你的精力恢复之后，系统会自然而然地叫醒你（不必等到闹钟）。"
+    else:
+        sleep_msg = f"进入休息，预计 {target_iso} 醒来。闹钟已设置。有新消息、任务指派或其他事件时会提前唤醒你。"
 
     # ── 查现有闹钟：精确同 fire_at OR ±10min 近似重叠 ──
     # 设计语义：模型 rest(until=15:00) 时如果已有 15:00（或 14:55-15:05）的 timer

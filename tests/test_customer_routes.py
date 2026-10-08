@@ -30,8 +30,10 @@ def customer_env(tmp_path, monkeypatch):
         (cfg / "app.yaml").write_text(
             "runtime_kind: definition\ndisplay_name: x\n", encoding="utf-8"
         )
-    tpl = tmp_path / "config" / "project_templates"
+    tpl = tmp_path / "business_templates"
     tpl.mkdir(parents=True)
+    from business.consulting import projects as _bp
+    monkeypatch.setattr(_bp, "templates_dir", lambda: tpl)
     (tpl / "demo.yaml").write_text(
         "name: 演示\nroles:\n  - def: consulting-partner-def\n    name: 合伙人\n    pm: true\n"
         "  - def: consulting-researcher-def\n    name: 研究员\n",

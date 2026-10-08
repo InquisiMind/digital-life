@@ -489,10 +489,12 @@ def test_memory_index_skips_internal_projects_for_service(service_env):
 
 
 @pytest.fixture()
-def project_template(service_env):
+def project_template(service_env, monkeypatch):
     """两角色模版：PM 甲（带工具面）+ 研究员 乙；一条初始待办。"""
-    tpl_dir = service_env / "config" / "project_templates"
+    tpl_dir = service_env / "business_templates"
     tpl_dir.mkdir(parents=True, exist_ok=True)
+    from business.consulting import projects as _bp
+    monkeypatch.setattr(_bp, "templates_dir", lambda: tpl_dir)
     (tpl_dir / "duo.yaml").write_text(
         "name: 双人测试\n"
         "roles:\n"

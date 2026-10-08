@@ -2,7 +2,7 @@ runtime_kind: definition
 active: false
 display_name: enterprise-def
 model:
-  name: glm-5.3
+  name: glm-5.3-flash
   provider: glm
   base_url: https://open.bigmodel.cn/api/coding/paas/v4
 channels: {}

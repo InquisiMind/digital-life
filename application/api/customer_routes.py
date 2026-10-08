@@ -149,8 +149,10 @@ async def handle_get_messages(request: web.Request) -> web.Response:
     sid_to_role = {}
     team = []
     for svc in services_registry.list_services_by_project(
-        project["project_id"], status="active"
+        project["project_id"]
     ):
+        if svc.get("status") == "archived":
+            continue  # 挂起(suspended)成员保留显示；归档的不显示
         sid_to_role[svc["service_id"]] = svc.get("display_name") or ""
         _st = service_runtime_status(svc["service_id"])
         _open_mine = sum(

@@ -21,6 +21,7 @@ roles:
   - sense_file
   - skill_view
   - rest
+  - suspend_project
 - def: consulting-partner-def
   name: 咨询合伙人
   tools:

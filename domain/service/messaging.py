@@ -42,6 +42,15 @@ def emit_to_service(
             "SERVICE_EVENT_DROPPED service_id=%s kind=%s reason=archived", service_id, kind
         )
         return 0
+    # 挂起项目：只放行消息（客户回来能叫醒），其余自转类事件拒绝——
+    # 闹钟已在挂起时取消，这里防的是挂起后 agent 再设法自唤醒
+    _proj = services_registry.lookup_project(svc.get("project_id") or "") if svc.get("project_id") else None
+    if _proj and _proj.get("status") == "suspended" and kind not in ("message", "group_message"):
+        logger.info(
+            "SERVICE_EVENT_DROPPED service_id=%s kind=%s reason=project_suspended",
+            service_id, kind,
+        )
+        return 0
     if not service_allows_kind(svc, kind):
         logger.info(
             "SERVICE_EVENT_DROPPED service_id=%s kind=%s reason=unsubscribed subs=%r",

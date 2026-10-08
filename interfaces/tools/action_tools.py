@@ -3174,6 +3174,38 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
             return registry.tool_error("hours must be a number")
 
     # ─── 路径 C：都没传 → 不报错, 直接返回 preview 提示卡 ───
+    # 服务型特例（二）：项目挂起时无参静眠——闹钟已取消，恢复由客户
+    # 回来驱动，再设闹钟只会复活自转循环。
+    if not until and not reuse_id and not hours:
+        try:
+            from infrastructure.config import get_app_instance_id
+            from infrastructure.persistence.services_registry import (
+                lookup_project, lookup_service, resolve_service_def,
+            )
+
+            _rid = get_app_instance_id() or ""
+            if resolve_service_def(_rid):
+                _pid = (lookup_service(_rid) or {}).get("project_id") or ""
+                _proj = lookup_project(_pid) if _pid else None
+                if _proj and _proj.get("status") == "suspended":
+                    from domain.lifecycle.runtime_context import get_current_affair
+
+                    _affair = get_current_affair()
+                    if _affair:
+                        try:
+                            from domain.lifecycle.affairs.runtime import update_affair as _ua
+                            from domain.lifecycle.state_machine import AffairStatus as _AS
+
+                            _ua(_affair.get("affair_id") or _affair.get("id"),
+                                status=_AS.BLOCKED,
+                                note="项目挂起——静眠，客户回来自动恢复")
+                        except Exception:
+                            pass
+                    return _j({"resting": True, "silent": True,
+                               "note": "项目已挂起，静眠等待客户（勿设闹钟）。"})
+        except Exception:
+            pass
+
     # 服务型特例：项目待办全部完成时允许 rest() 无参静眠——
     # 任务已闭环，恢复闹钟只会空转；新事件（客户消息/新任务指派）到来
     # 自然唤醒（master 扫描 + 事件队列兜底，与实例型"无闹钟睡死"不同）。

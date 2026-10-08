@@ -311,6 +311,38 @@ def _handle_project_todo_update(args: Dict[str, Any], **_) -> str:
     return json.dumps({"updated": ok, "todo_id": todo_id}, ensure_ascii=False)
 
 
+def _handle_suspend_project(args: Dict[str, Any], **_) -> str:
+    """挂起项目：能做的都做完了、阻塞在客户侧时，PM 主动收队。"""
+    sid = _current_service_id()
+    project = _my_project()
+    if not project:
+        return registry.tool_error("本服务未挂项目")
+    if project.get("pm_id") != sid:
+        return registry.tool_error("只有项目经理可以挂起项目")
+    from domain.service.registry import suspend_project
+
+    r = suspend_project(project["project_id"],
+                        reason=(args.get("reason") or "").strip(),
+                        actor=sid)
+    if not r.get("ok"):
+        return registry.tool_error(r.get("error") or "挂起失败")
+    return json.dumps(r, ensure_ascii=False)
+
+
+def _handle_resume_project(args: Dict[str, Any], **_) -> str:
+    sid = _current_service_id()
+    project = _my_project()
+    if not project:
+        return registry.tool_error("本服务未挂项目")
+    from domain.service.registry import resume_project
+
+    r = resume_project(project["project_id"],
+                       reason=(args.get("reason") or "").strip())
+    if not r.get("ok"):
+        return registry.tool_error(r.get("error") or "恢复失败")
+    return json.dumps(r, ensure_ascii=False)
+
+
 # ── 注册 ──────────────────────────────────────────────────────────────
 
 
@@ -388,6 +420,19 @@ _reg(
     },
     required=["title"],
     emoji="☑️",
+)
+_reg(
+    "suspend_project",
+    "挂起项目（仅 PM）：团队所有能做的都完成了、当前只等客户输入时调用——"
+    "取消全员闹钟收队静眠，客户下次发言自动恢复。留 reason 说明在等什么。",
+    params={"reason": {"type": "string", "description": "在等客户什么（回填到项目记录）"}},
+    emoji="⏸️",
+)
+_reg(
+    "resume_project",
+    "恢复挂起的项目（一般由客户回来自动触发，显式调用用于误挂起纠正）。",
+    params={"reason": {"type": "string", "description": "恢复原因"}},
+    emoji="▶️",
 )
 _reg(
     "project_todo_list",

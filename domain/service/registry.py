@@ -183,6 +183,106 @@ def close_project(project_id: str, *, reason: str = "") -> dict:
     return {"ok": True, "members": len(members), "cancelled_timers": cancelled_timers}
 
 
+PROJECT_STATUS_SUSPENDED = "suspended"
+
+
+def suspend_project(project_id: str, *, reason: str = "", actor: str = "") -> dict:
+    """挂起项目：我们能做的都结束了、阻塞在客户侧。
+
+    与 close（结束）不同——挂起可复活：取消全员未来闹钟（自转根源），
+    项目标记 suspended；客户下次发言自动恢复。记忆产物全保留。
+    """
+    from infrastructure.persistence.services_registry import (
+        list_services_by_project, lookup_project, update_project_fields,
+    )
+    import sqlite3 as _sq
+
+    from infrastructure.config import resolve_runtime_dir
+
+    project = lookup_project(project_id)
+    if project is None:
+        return {"ok": False, "error": "项目不存在"}
+    if project.get("status") != "active":
+        return {"ok": False, "error": f"项目状态 {project.get('status')}，仅活跃项目可挂起"}
+    members = list_services_by_project(project_id)
+    cancelled = 0
+    for m in members:
+        db = resolve_runtime_dir(m["service_id"]) / "data" / "state.db"
+        if db.exists():
+            try:
+                conn = _sq.connect(str(db), timeout=3.0)
+                try:
+                    cur = conn.execute(
+                        "DELETE FROM events WHERE kind = 'timer' AND consumed_at IS NULL"
+                    )
+                    cancelled += cur.rowcount
+                    conn.commit()
+                finally:
+                    conn.close()
+            except _sq.Error:
+                pass
+    update_project_fields(project_id, status=PROJECT_STATUS_SUSPENDED)
+    logger.info("PROJECT_SUSPENDED project=%s members=%d cancelled_timers=%d actor=%s reason=%s",
+                project_id[:12], len(members), cancelled, actor[:12] or "system", reason[:60])
+    return {"ok": True, "members": len(members), "cancelled_timers": cancelled,
+            "note": "项目已挂起：闹钟已取消，等待客户回来自动恢复"}
+
+
+def resume_project(project_id: str, *, reason: str = "") -> dict:
+    """恢复挂起的项目（客户回来自动触发，也可显式调用）。"""
+    from infrastructure.persistence.services_registry import (
+        lookup_project, update_project_fields,
+    )
+
+    project = lookup_project(project_id)
+    if project is None:
+        return {"ok": False, "error": "项目不存在"}
+    if project.get("status") != PROJECT_STATUS_SUSPENDED:
+        return {"ok": False, "error": f"项目状态 {project.get('status')}，仅挂起项目可恢复"}
+    update_project_fields(project_id, status="active")
+    logger.info("PROJECT_RESUMED project=%s reason=%s", project_id[:12], reason[:60])
+    return {"ok": True}
+
+
+def last_external_activity(project_id: str) -> float:
+    """项目最近一次真实事件入队时间（客户/群/任务/催办——timer 自转不算）。
+
+    全员信箱取非 timer 事件的最大 created_at（ISO）。判"项目是否还活着"。
+    """
+    import sqlite3 as _sq
+    from datetime import datetime as _dt
+
+    from infrastructure.config import resolve_runtime_dir
+    from infrastructure.persistence.services_registry import list_services_by_project
+
+    best = 0.0
+    for m in list_services_by_project(project_id):
+        db = resolve_runtime_dir(m["service_id"]) / "data" / "state.db"
+        if not db.exists():
+            continue
+        try:
+            conn = _sq.connect(str(db), timeout=3.0)
+            try:
+                row = conn.execute(
+                    "SELECT created_at FROM events"
+                    " WHERE kind != 'timer' ORDER BY event_id DESC LIMIT 1"
+                ).fetchone()
+            finally:
+                conn.close()
+            if row and row[0]:
+                try:
+                    ts = _dt.fromisoformat(str(row[0])).timestamp()
+                    best = max(best, ts)
+                except (TypeError, ValueError):
+                    try:
+                        best = max(best, float(row[0]))
+                    except (TypeError, ValueError):
+                        pass
+        except _sq.Error:
+            continue
+    return best
+
+
 def last_customer_activity(project_id: str) -> float:
     from infrastructure.persistence.services_registry import lookup_project
     """项目里客户最后一次真实发言的时间戳（PM 私库 customer 窗口最后一条入站）。

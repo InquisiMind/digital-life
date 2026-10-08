@@ -315,6 +315,16 @@ def send_chat_message(sender_service_id: str, chat_id: str, text: str,
             "error": f"无法路由 chat_id={chat_id!r}（项目群 svcgroup:* / 同伴 service_id / 客户 customer:*）"}
 
 
+def _auto_resume_if_suspended(project: dict) -> None:
+    if project.get("status") == "suspended":
+        try:
+            from domain.service.registry import resume_project
+
+            resume_project(project["project_id"], reason="customer_returned")
+        except Exception:
+            pass
+
+
 def customer_message_to_pm(pm_service_id: str, customer: dict, text: str) -> int:
     """客户 → PM 的入站（S00：web 入口/脚本用）。落 PM 库 + message 事件唤醒。"""
     from domain.messages import record_inbound
@@ -322,6 +332,14 @@ def customer_message_to_pm(pm_service_id: str, customer: dict, text: str) -> int
 
     cid = customer.get("id") or "anon"
     chat = customer_chat_id(cid)
+    # 客户回来即复活：挂起项目自动恢复（在投递事件前）
+    from infrastructure.persistence.services_registry import lookup_service as _ls
+
+    _svc_row = _ls(pm_service_id) or {}
+    if _svc_row.get("project_id"):
+        from infrastructure.persistence.services_registry import lookup_project as _lp
+
+        _auto_resume_if_suspended(_lp(_svc_row["project_id"]) or {})
     with _service_context(pm_service_id):
         _, inserted = record_inbound(
             chat_id=chat,

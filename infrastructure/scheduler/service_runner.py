@@ -149,39 +149,51 @@ def _member_active(member_id: str, now: float) -> bool:
 
 
 _LAST_SILENCE_CHECK = 0.0
-SILENCE_SUSPEND_DAYS = 3.0  # 客户静默超 N 天 → 自动挂起项目（闹钟循环根治）
+IDLE_SUSPEND_HOURS = 2.0  # 事件静默超 N 小时 → 自动挂起（可复活；比关闭温柔）
 
 
 def run_silence_suspender() -> int:
-    """客户弃单治理：客户静默超阈值的项目自动关闭（幂等，每小时查一次）。
+    """项目静默治理：超过 2 小时无真实事件且无人工作中 → 挂起（非关闭）。
 
-    判据只看客户真实发言（PM 私库 customer 窗口最后入站时间）——
-    agent 的闹钟/跟进/群聊都是自转，不算客户意图。
+    判据=最后一条非 timer 事件入队时间（客户/群/任务指派/催办都算活跃；
+    timer 是 agent 自转不算）。有人干活（wake 进行中）不挂。
+    客户回来发消息自动恢复。
     """
     global _LAST_SILENCE_CHECK
     import time as _time
 
     now = _time.time()
-    if now - _LAST_SILENCE_CHECK < 3600:
+    if now - _LAST_SILENCE_CHECK < 600:  # 10 分钟一轮即可
         return 0
     _LAST_SILENCE_CHECK = now
-    from domain.service.registry import close_project, last_customer_activity
+    from domain.service.registry import last_external_activity, suspend_project
+    from domain.service.status import service_runtime_status
     from infrastructure.persistence import services_registry
 
-    closed = 0
+    suspended = 0
     for p in services_registry.list_projects():
         if p.get("status") != "active":
             continue
-        last = last_customer_activity(p["project_id"])
+        members = services_registry.list_services_by_project(
+            p["project_id"], status="active")
+        if not members:
+            continue
+        # 有人正在干活 → 不挂
+        if any(service_runtime_status(m["service_id"]).get("state") == "working"
+               for m in members):
+            continue
+        last = last_external_activity(p["project_id"])
         if last <= 0:
-            continue  # 从未收到过客户消息的不动（可能尚未启动）
-        if (now - last) / 86400 >= SILENCE_SUSPEND_DAYS:
-            r = close_project(p["project_id"], reason="customer_silence")
+            continue
+        if (now - last) / 3600 >= IDLE_SUSPEND_HOURS:
+            r = suspend_project(p["project_id"], reason="idle_timeout",
+                                actor="scheduler")
             if r.get("ok"):
-                closed += 1
-    if closed:
-        logger.info("SILENCE_SUSPEND closed=%d", closed)
-    return closed
+                suspended += 1
+    if suspended:
+        logger.info("IDLE_SUSPEND suspended=%d (>%dh no external events)",
+                    suspended, IDLE_SUSPEND_HOURS)
+    return suspended
 
 
 def run_stall_watchdog(now: float | None = None) -> list[str]:

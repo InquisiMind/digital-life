@@ -70,35 +70,69 @@ def _load_yaml_config() -> dict[str, dict]:
         return {}
 
 
+def _entry_from_cfg(type_id: str, cfg: dict):
+    trigger_type_str = cfg.get("trigger_type", "external")
+    try:
+        trigger_type = EventTriggerType(trigger_type_str)
+    except ValueError:
+        trigger_type = EventTriggerType.EXTERNAL
+    return EventTypeDefinition(
+        type_id=type_id,
+        display_name=cfg.get("display_name", type_id),
+        trigger_type=trigger_type,
+        payload_schema=cfg.get("payload_schema", {}),
+        prompt_template=cfg.get("wake_prompt", ""),
+        allowed_tools=tuple(cfg.get("allowed_tools", [])),
+        context_policy=cfg.get("context_policy", {}),
+        auth_policy={},
+        description=cfg.get("description", ""),
+        priority=int(cfg.get("priority", 5)),
+        debounce_window_s=_parse_debounce_window(cfg.get("debounce_window_s", 0)),
+        merge_policy=cfg.get("merge_policy", "latest"),
+        consumption_policy=cfg.get("consumption_policy", "on_detail"),
+        trigger_description=cfg.get("trigger_description", ""),
+    )
+
+
+def register_extension_types() -> int:
+    """并入业务扩展事件类型（extension 注册的额外 yaml）。
+
+    可重入：已注册的 type 以扩展定义整体替换（业务类型归业务定义）。
+    在 load_extensions() 完成后调用——业务 activate 比本模块首次 import
+    晚时，靠这里补齐。
+    """
+    from infrastructure import extension
+
+    n = 0
+    for path in extension.event_type_files():
+        try:
+            import yaml
+            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception as exc:
+            logger.warning("failed to load extension event types %s: %s", path, exc)
+            continue
+        for type_id, cfg in (raw.get("event_types") or {}).items():
+            if not isinstance(cfg, dict):
+                continue
+            entry = _entry_from_cfg(type_id, cfg)
+            if _registry.get(type_id) is not None:
+                _registry._definitions[type_id] = entry
+            else:
+                try:
+                    _registry.register(entry)
+                except ValueError:
+                    pass
+            n += 1
+    return n
+
+
 def _register_all() -> None:
-    """从 event_types.yaml 构建注册表——唯一数据源。"""
+    """从 event_types.yaml 构建注册表——唯一数据源（+ 扩展点业务类型）。"""
     yaml_configs = _load_yaml_config()
 
     for type_id, cfg in yaml_configs.items():
-        trigger_type_str = cfg.get("trigger_type", "external")
         try:
-            trigger_type = EventTriggerType(trigger_type_str)
-        except ValueError:
-            trigger_type = EventTriggerType.EXTERNAL
-
-        entry = EventTypeDefinition(
-            type_id=type_id,
-            display_name=cfg.get("display_name", type_id),
-            trigger_type=trigger_type,
-            payload_schema=cfg.get("payload_schema", {}),
-            prompt_template=cfg.get("wake_prompt", ""),
-            allowed_tools=tuple(cfg.get("allowed_tools", [])),
-            context_policy=cfg.get("context_policy", {}),
-            auth_policy={},
-            description=cfg.get("description", ""),
-            priority=int(cfg.get("priority", 5)),
-            debounce_window_s=_parse_debounce_window(cfg.get("debounce_window_s", 0)),
-            merge_policy=cfg.get("merge_policy", "latest"),
-            consumption_policy=cfg.get("consumption_policy", "on_detail"),
-            trigger_description=cfg.get("trigger_description", ""),
-        )
-        try:
-            _registry.register(entry)
+            _registry.register(_entry_from_cfg(type_id, cfg))
         except ValueError:
             pass  # idempotent on re-import
 

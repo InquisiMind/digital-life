@@ -2926,15 +2926,15 @@ def _build_pre_rest_card() -> str:
     except Exception as exc:
         logger.debug("pre_rest_card insights gather failed: %s", exc)
 
-    # ── 3.5 团队（项目成员身份——与服务型/实例型正交：服务挂项目即成员，
-    #     实例也可能被聘为 PM。不在团队返回空串，段自然略过） ──
+    # ── 3.5 业务扩展段（团队待办等——经 extension 注册，按运行体身份出段，
+    #     与基座无关：没有业务注册时这段自然为空） ──
     try:
-        from domain.service.team_context import team_pre_rest_section
-        team_section = team_pre_rest_section(iid)
-        if team_section:
-            parts.append(team_section)
+        from infrastructure import extension
+
+        for section in extension.rest_card_sections(iid):
+            parts.append(section)
     except Exception as exc:
-        logger.debug("pre_rest_card team gather failed: %s", exc)
+        logger.debug("pre_rest_card extension sections failed: %s", exc)
 
     # ── 4. 闹钟（未来 8 小时会触发的） ──
     parts.extend(_upcoming_alarm_lines())
@@ -3208,15 +3208,15 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
         except Exception:
             return registry.tool_error("hours must be a number")
 
-    # ─── 路径 C：都没传 → 先看团队静默接缝，再走 preview→静眠 两步 ───
-    # 团队状态（项目挂起/待办全清）要求无闹钟静眠时一步真睡。判定在
-    # domain.service.team_context——rest 只消费结论，不关心运行体类型。
+    # ─── 路径 C：都没传 → 先看业务静默接缝，再走 preview→静眠 两步 ───
+    # 业务状态（如项目挂起/待办全清）要求无闹钟静眠时一步真睡。判定经
+    # extension 注册——rest 只消费结论，不关心是什么业务状态。
     if not until and not reuse_id and not hours:
         try:
-            from domain.service.team_context import silent_sleep_note
+            from infrastructure import extension
             from infrastructure.config import get_app_instance_id
 
-            _team_note = silent_sleep_note(get_app_instance_id() or "")
+            _team_note = extension.rest_silent_notes(get_app_instance_id() or "")
             if _team_note:
                 _affair = get_current_affair()
                 if _affair:

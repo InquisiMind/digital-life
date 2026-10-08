@@ -61,7 +61,7 @@ async def handle_def_profile_get(request: web.Request) -> web.Response:
     def_id = request.match_info["def_id"]
     if not _def_exists(def_id):
         return _json({"ok": False, "error": "定义不存在"}, 404)
-    from domain.service import overlay
+    from domain.identity import agent_definition as overlay
 
     cfg = _load_def_cfg(def_id)
     persona_path = _def_dir(def_id) / "persona" / "LIFE_PERSONA.md"
@@ -94,7 +94,7 @@ async def handle_def_profile_put(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:  # noqa: BLE001
         body = {}
-    from domain.service import overlay
+    from domain.identity import agent_definition as overlay
 
     touched: list[str] = []
     cfg = _load_def_cfg(def_id)
@@ -135,7 +135,7 @@ def _collect_def_skills(def_id: str) -> list[dict]:
         iter_skill_files,
         parse_frontmatter,
     )
-    from domain.service.overlay import def_skills_dir
+    from domain.identity.agent_definition import def_skills_dir
 
     cfg = _load_def_cfg(def_id)
     registered = set(cfg.get("skills") or [])
@@ -175,7 +175,7 @@ async def handle_def_skill_get(request: web.Request) -> web.Response:
     name = request.match_info["name"]
     if not _def_exists(def_id):
         return _json({"ok": False, "error": "定义不存在"}, 404)
-    from domain.service.overlay import def_skills_dir
+    from domain.identity.agent_definition import def_skills_dir
 
     p = (def_skills_dir(def_id) or _def_dir(def_id) / "skills") / name / "SKILL.md"
     if p.exists():
@@ -215,7 +215,7 @@ async def handle_def_skill_put(request: web.Request) -> web.Response:
     content = str(body.get("content") or "").strip()
     if not content:
         return _json({"ok": False, "error": "content 不能为空"}, 400)
-    from domain.service.overlay import def_skills_dir
+    from domain.identity.agent_definition import def_skills_dir
 
     sdir = def_skills_dir(def_id) or (_def_dir(def_id) / "skills")
     target = sdir / name / "SKILL.md"
@@ -231,7 +231,7 @@ async def handle_def_skill_delete(request: web.Request) -> web.Response:
     name = request.match_info["name"]
     if not _def_exists(def_id):
         return _json({"ok": False, "error": "定义不存在"}, 404)
-    from domain.service.overlay import def_skills_dir
+    from domain.identity.agent_definition import def_skills_dir
 
     sdir = def_skills_dir(def_id)
     target = (sdir / name) if sdir else None
@@ -311,7 +311,7 @@ async def handle_def_skill_upload(request: web.Request) -> web.Response:
     if not _SAFE_NAME.match(skill_name):
         return _json({"ok": False, "error": f"skill 名不合法: {skill_name}"}, 400)
 
-    from domain.service.overlay import def_skills_dir
+    from domain.identity.agent_definition import def_skills_dir
 
     sdir = def_skills_dir(def_id) or (_def_dir(def_id) / "skills")
     target = sdir / skill_name
@@ -409,7 +409,7 @@ async def handle_def_avatar_post(request: web.Request) -> web.Response:
     ext = Path(fname).suffix if Path(fname).suffix in (".png", ".jpg", ".jpeg", ".webp", ".gif") else ""
     if not ext:
         return _json({"ok": False, "error": "仅支持 png/jpg/webp/gif"}, 400)
-    from domain.service.overlay import write_def_agent_meta
+    from domain.identity.agent_definition import write_def_agent_meta
 
     d = _def_dir(def_id) / "persona"
     d.mkdir(parents=True, exist_ok=True)
@@ -475,49 +475,6 @@ async def handle_def_subscriptions_put(request: web.Request) -> web.Response:
 
 
 # ── 联系人/窗口唤醒策略（服务实例私有；仅@唤醒等） ────────────────────────
-
-
-async def handle_wake_policy_get(request: web.Request) -> web.Response:
-    sid = request.match_info["service_id"]
-    from domain.service.social import _wake_policy_mention_only  # noqa: F401 — 复用同表
-
-    from infrastructure.config import resolve_runtime_dir
-
-    db = resolve_runtime_dir(sid) / "data" / "state.db"
-    out = []
-    if db.exists():
-        import sqlite3
-
-        conn = sqlite3.connect(str(db), timeout=3.0)
-        try:
-            rows = conn.execute(
-                "SELECT chat_id, mention_only, updated_at FROM wake_policies"
-            ).fetchall()
-            out = [{"chat_id": r[0], "mention_only": bool(r[1]), "updated_at": r[2] or ""}
-                   for r in rows]
-        except sqlite3.Error:
-            out = []
-        finally:
-            conn.close()
-    return _json({"ok": True, "policies": out})
-
-
-async def handle_wake_policy_put(request: web.Request) -> web.Response:
-    """PUT {chat_id, mention_only} — 窗口级唤醒策略（仅被提及才唤醒）。"""
-    sid = request.match_info["service_id"]
-    try:
-        body = await request.json()
-    except Exception:  # noqa: BLE001
-        body = {}
-    chat_id = str(body.get("chat_id") or "").strip()
-    if not chat_id:
-        return _json({"ok": False, "error": "chat_id 必填"}, 400)
-    from domain.service.social import set_wake_policy
-
-    set_wake_policy(sid, chat_id, bool(body.get("mention_only")))
-    logger.info("WAKE_POLICY_SET service=%s chat=%s mention_only=%s",
-                sid[:12], chat_id[:20], bool(body.get("mention_only")))
-    return _json({"ok": True})
 
 
 # ── 事件订阅与唤醒文案（registry prompt_template + 定义层 prompts_override） ──
@@ -591,12 +548,19 @@ async def handle_tools_list(_request: web.Request) -> web.Response:
     from interfaces.tools.registry import registry
 
     # 工具注册是 import 副作用：显式装载全部模块，master 进程也能拿全量清单
-    for _mod in ("sense_tools", "action_tools", "memory_cognition_tools",
-                 "capability_tools", "vision_tool", "terminal_tool",
-                 "skills_tool", "perception_tools", "service_collab_tools",
-                 "code_execution_tool"):
+    mods = ["interfaces.tools." + m for m in (
+        "sense_tools", "action_tools", "memory_cognition_tools",
+        "capability_tools", "vision_tool", "terminal_tool",
+        "skills_tool", "perception_tools", "code_execution_tool")]
+    try:
+        from infrastructure import extension
+
+        mods += extension.tool_modules()
+    except Exception:  # noqa: BLE001 — 扩展点不可用按基座清单
+        pass
+    for _mod in mods:
         try:
-            __import__(f"interfaces.tools.{_mod}")
+            __import__(_mod)
         except Exception:  # noqa: BLE001 — 单模块装载失败不拦清单
             pass
     tools = []
@@ -681,142 +645,6 @@ async def handle_def_create(request: web.Request) -> web.Response:
 # ── 项目模版：列表 / 读取 / 保存（raw + structured） ─────────────────────
 
 
-def _templates_dir() -> Path:
-    from infrastructure.config import get_project_root
-
-    return get_project_root() / "config" / "project_templates"
-
-
-async def handle_templates_list(_request: web.Request) -> web.Response:
-    items = []
-    for f in sorted(_templates_dir().glob("*.yaml")):
-        raw = f.read_text(encoding="utf-8")
-        name = ""
-        m = re.search(r"^name:\s*(.+)$", raw, re.M)
-        if m:
-            name = m.group(1).strip()
-        items.append({"id": f.stem, "name": name or f.stem, "size": len(raw)})
-    return _json({"ok": True, "templates": items})
-
-
-async def handle_template_get(request: web.Request) -> web.Response:
-    tid = request.match_info["template_id"]
-    f = _templates_dir() / f"{tid}.yaml"
-    if not _SAFE_NAME.match(tid) or not f.exists():
-        return _json({"ok": False, "error": "模版不存在"}, 404)
-    raw = f.read_text(encoding="utf-8")
-    try:
-        parsed = yaml.safe_load(raw) or {}
-    except Exception:  # noqa: BLE001
-        parsed = {}
-    return _json({"ok": True, "id": tid, "raw": raw, "parsed": parsed})
-
-
-async def handle_template_put(request: web.Request) -> web.Response:
-    tid = request.match_info["template_id"]
-    if not _SAFE_NAME.match(tid):
-        return _json({"ok": False, "error": "模版 id 非法"}, 400)
-    try:
-        body = await request.json()
-    except Exception:  # noqa: BLE001
-        body = {}
-    raw = str(body.get("raw") or "")
-    if not raw.strip():
-        return _json({"ok": False, "error": "raw 不能为空"}, 400)
-    try:
-        yaml.safe_load(raw)
-    except Exception as exc:  # noqa: BLE001
-        return _json({"ok": False, "error": f"YAML 语法错误: {exc}"}, 400)
-    f = _templates_dir() / f"{tid}.yaml"
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(raw, encoding="utf-8")
-    logger.info("TEMPLATE_SAVED id=%s existed=%s", tid, f.exists())
-    return _json({"ok": True})
-
-
-async def handle_template_put_structured(request: web.Request) -> web.Response:
-    # PUT /api/admin/templates/{tid}/structured — 结构化保存（表单编辑器）。
-    tid = request.match_info["template_id"]
-    if not _SAFE_NAME.match(tid):
-        return _json({"ok": False, "error": "模版 id 非法"}, 400)
-    try:
-        body = await request.json()
-    except Exception:  # noqa: BLE001
-        body = {}
-    tpl = body.get("template")
-    if not isinstance(tpl, dict):
-        return _json({"ok": False, "error": "缺少 template 对象"}, 400)
-
-    roles = tpl.get("roles")
-    if not isinstance(roles, list) or not roles:
-        return _json({"ok": False, "error": "roles 必须非空"}, 400)
-    pm_seen = False
-    for r in roles:
-        if not isinstance(r, dict) or not str(r.get("def") or "").strip():
-            return _json({"ok": False, "error": "每个成员的 def 必填"}, 400)
-        if r.get("pm"):
-            if pm_seen:
-                return _json({"ok": False, "error": "pm 角色只能有一个"}, 400)
-            pm_seen = True
-    todos = tpl.get("initial_todos")
-    if not isinstance(todos, list):
-        todos = []
-    role_names = {str(r.get("name") or r.get("def") or "") for r in roles}
-    todo_titles = {str(t.get("title") or "").strip() for t in todos if isinstance(t, dict)}
-    for t in todos:
-        if not isinstance(t, dict) or not str(t.get("title") or "").strip():
-            return _json({"ok": False, "error": "预设任务每项需 title"}, 400)
-        ar = str(t.get("assign_role") or "")
-        if ar and ar not in role_names:
-            return _json({"ok": False, "error": f"预设任务的执行角色不存在: {ar}"}, 400)
-        if t.get("kind") not in (None, "task", "milestone"):
-            return _json({"ok": False, "error": "kind 仅 task / milestone"}, 400)
-        after = t.get("after")
-        if after is not None:
-            if not isinstance(after, list):
-                return _json({"ok": False, "error": "after 需为前置任务标题数组"}, 400)
-            for dep in after:
-                if str(dep).strip() not in todo_titles:
-                    return _json({"ok": False, "error": f"前置任务不存在: {dep}"}, 400)
-
-    out = {
-        "name": str(tpl.get("name") or tid)[:60],
-        "watchdog": bool(tpl.get("watchdog")),
-        "description": str(tpl.get("description") or "")[:500],
-        "roles": [
-            {
-                "def": str(r.get("def")),
-                "name": str(r.get("name") or r.get("def"))[:30],
-                **({"pm": True} if r.get("pm") else {}),
-                **({"tools": [str(x) for x in r.get("tools")]}
-                   if isinstance(r.get("tools"), list) else {}),
-                **({"subscriptions": [str(x) for x in r.get("subscriptions")]}
-                   if isinstance(r.get("subscriptions"), list) else {}),
-                **({"capabilities": r.get("capabilities")}
-                   if isinstance(r.get("capabilities"), dict) else {}),
-            }
-            for r in roles
-        ],
-        "initial_todos": [
-            {
-                "title": str(t.get("title"))[:200],
-                **({"detail": str(t.get("detail"))[:1000]} if t.get("detail") else {}),
-                **({"assign_role": str(t.get("assign_role"))} if t.get("assign_role") else {}),
-                **({"kind": t.get("kind")} if t.get("kind") else {}),
-                **({"after": [str(x) for x in t.get("after")]}
-                   if isinstance(t.get("after"), list) and t.get("after") else {}),
-            }
-            for t in todos
-        ],
-    }
-    raw = yaml.safe_dump(out, allow_unicode=True, sort_keys=False)
-    f = _templates_dir() / f"{tid}.yaml"
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(raw, encoding="utf-8")
-    logger.info("TEMPLATE_SAVED_STRUCTURED id=%s", tid)
-    return _json({"ok": True, "raw": raw})
-
-
 def register_into(router: web.Application) -> None:
     """并进 services_admin 的 /api/admin/ 子应用（须在 add_subapp freeze 之前）。"""
     router.router.add_get("/agent-defs/{def_id}/profile", handle_def_profile_get)
@@ -834,14 +662,8 @@ def register_into(router: web.Application) -> None:
     router.router.add_get("/agent-defs/{def_id}/avatar", handle_def_avatar_get)
     router.router.add_get("/agent-defs/{def_id}/subscriptions", handle_def_subscriptions_get)
     router.router.add_put("/agent-defs/{def_id}/subscriptions", handle_def_subscriptions_put)
-    router.router.add_get("/services/{service_id}/wake-policies", handle_wake_policy_get)
-    router.router.add_put("/services/{service_id}/wake-policies", handle_wake_policy_put)
     router.router.add_get("/agent-defs/{def_id}/events", handle_def_events_get)
     router.router.add_put("/agent-defs/{def_id}/events", handle_def_events_put)
     router.router.add_get("/tools", handle_tools_list)
     router.router.add_post("/agent-defs", handle_def_create)
-    router.router.add_get("/templates", handle_templates_list)
-    router.router.add_get("/templates/{template_id}", handle_template_get)
-    router.router.add_put("/templates/{template_id}", handle_template_put)
-    router.router.add_put("/templates/{template_id}/structured", handle_template_put_structured)
     logger.info("Agent-def admin routes registered into /api/admin/")

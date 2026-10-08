@@ -1325,7 +1325,7 @@ def _wake_digital_life_inner_safe(
         # 服务级 L4 覆盖（存在则整段替换引擎默认）
         if instance_id:
             try:
-                from domain.service.overlay import read_l4
+                from domain.identity.agent_definition import read_l4
                 _l4_override = read_l4(instance_id)
                 if _l4_override and _l4_override.strip():
                     _l4_lifecycle = _l4_override
@@ -1356,7 +1356,7 @@ def _wake_digital_life_inner_safe(
         # 服务级附加指令（overlay EXTRA_PROMPT.md）——存在则追加到 system prompt 尾部
         _extra_prompt = ""
         try:
-            from domain.service.overlay import read_extra_prompt
+            from domain.identity.agent_definition import read_extra_prompt
             _extra_prompt = read_extra_prompt(instance_id or "")
         except Exception:
             pass

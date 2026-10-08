@@ -19,6 +19,29 @@
       </div>
     </div>
 
+    <!-- 服务型 agent 概要 -->
+    <div class="neon-card" style="margin-bottom: var(--space-5);" v-if="svcSummary.def_count">
+      <div style="display: flex; align-items: center; margin-bottom: var(--space-3);">
+        <h3 style="font-family: var(--font-display); color: var(--text-secondary); margin: 0;">
+          Service Agents · {{ svcSummary.def_count }} 个定义 / {{ svcSummary.service_count }} 个实例
+        </h3>
+        <el-button link type="primary" style="margin-left: auto;" @click="router.push('/system/services')">
+          进入服务管理 →
+        </el-button>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+        <el-tag
+          v-for="sd in svcDefs"
+          :key="sd.def_id"
+          effect="plain"
+          style="cursor: pointer;"
+          @click="router.push('/system/services')"
+        >
+          {{ sd.display_name }} · {{ sd.service_count }} 实例
+        </el-tag>
+      </div>
+    </div>
+
     <!-- 跨实例 token 消耗走势 (汇总所有实例) -->
     <div class="neon-card" style="margin-bottom: var(--space-5);">
       <h3 style="font-family: var(--font-display); color: var(--text-secondary); margin: 0 0 var(--space-3);">
@@ -139,6 +162,8 @@ const subtitle = computed(() => '')
 
 const instances = ref([])
 const projects = ref([])
+const svcDefs = ref([])
+const svcSummary = ref({})
 const toggling = ref('') // 正在切换 active 的实例 id
 const refreshTimer = ref(null)
 const now = ref(Date.now())
@@ -275,6 +300,8 @@ async function load() {
   if (d.error) return
   instances.value = d.instances || []
   projects.value = d.projects || []
+  svcDefs.value = (d.services && d.services.defs) || []
+  svcSummary.value = d.services || {}
 }
 
 onMounted(() => {

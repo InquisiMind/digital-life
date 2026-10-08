@@ -10,16 +10,19 @@ from pathlib import Path
 import pytest
 
 from infrastructure.persistence import services_registry
+from business.consulting import projects_registry
 
 
 @pytest.fixture()
 def customer_env(tmp_path, monkeypatch):
     monkeypatch.setenv("DIGITAL_LIFE_SERVICES_DB", str(tmp_path / "data" / "services.db"))
+    monkeypatch.setenv("DIGITAL_LIFE_PROJECTS_DB", str(tmp_path / "data" / "projects.db"))
     monkeypatch.setattr("infrastructure.config.get_project_root", lambda: tmp_path)
     from tests.test_services_runtime import _restore_default_runtime_hooks
 
     _restore_default_runtime_hooks()
     services_registry.reset_for_test()
+    projects_registry.reset_for_test()
     # 演示 defs
     for d in ("consulting-partner-def", "consulting-researcher-def"):
         cfg = tmp_path / "apps" / d / "config"
@@ -52,14 +55,14 @@ class _FakeRequest:
 
 
 def _start(body):
-    from application.api import customer_routes as cr
+    from business.consulting import api_customer as cr
 
     resp = asyncio.run(cr.handle_start_session(_FakeRequest(body)))
     return json.loads(resp.text)
 
 
 def _get_messages(customer_id):
-    from application.api import customer_routes as cr
+    from business.consulting import api_customer as cr
 
     resp = asyncio.run(cr.handle_get_messages(_FakeRequest(match_info={"customer_id": customer_id})))
     return resp.status, json.loads(resp.text)
@@ -72,7 +75,7 @@ def test_start_session_creates_project_and_routes(customer_env):
 
     from infrastructure.persistence import services_registry as sr
 
-    project = sr.lookup_project(pid)
+    project = projects_registry.lookup_project(pid)
     assert project["customer_id"] == cid
     assert project["pm_id"]
 
@@ -89,8 +92,8 @@ def test_get_messages_replay(customer_env):
 
     from infrastructure.persistence import services_registry as sr
 
-    pm_id = sr.lookup_project(pm)["pm_id"]
-    from domain.service.social import _service_context
+    pm_id = projects_registry.lookup_project(pm)["pm_id"]
+    from business.consulting.social import _service_context
 
     with _service_context(pm_id):
         from domain.messages import record_outbound
@@ -101,7 +104,7 @@ def test_get_messages_replay(customer_env):
             source="customer",
         )
 
-    from application.api import customer_routes as cr
+    from business.consulting import api_customer as cr
 
     status, data = _get_messages(cid)
     assert status == 200 and data["ok"]
@@ -111,7 +114,7 @@ def test_get_messages_replay(customer_env):
 
 
 def test_get_messages_unknown_session(customer_env):
-    from application.api import customer_routes as cr
+    from business.consulting import api_customer as cr
 
     status, _ = _get_messages("cust-none")
     assert status == 404

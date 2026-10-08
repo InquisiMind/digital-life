@@ -971,13 +971,14 @@ async def run_master_gateway() -> None:
     from application.api.broadcast_routes import add_broadcast_routes
     add_broadcast_routes(app)
 
-    # 客户会话通道（刀3 最小闭环）：/customer 聊天页 + /api/customer/*
-    from application.api.customer_routes import add_customer_routes
-    add_customer_routes(app)
-
-    # 服务台（管理视角）：/services 页 + /api/admin/*
+    # 服务注册管理 API（基座能力）：/api/admin/*（服务实例/agent-defs/skills/
+    # tools/events/subscriptions；业务管理端点经扩展点在冻结前注入）
     from application.api.services_admin_routes import add_services_admin_routes
     add_services_admin_routes(app)
+
+    # 业务应用（咨询台/配置台页面/客户 API 等）经扩展点挂载——基座只认注册
+    from infrastructure import extension
+    extension.mount_api(app)
 
     # 感知 endpoint:接收感知 daemon(独立子进程)的录屏录音理解结果
     # (feature 003-perception;spec FR-010/FR-012)。daemon 只打 master 8642。

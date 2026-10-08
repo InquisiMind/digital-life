@@ -491,13 +491,13 @@ def get_workspace_dir(instance_id: str | None = None, *, only_probe: bool = Fals
     if _service_def_id(iid):
         svc_ws = None
         try:
-            from domain.project.customer import get_project_of_service, member_personal_dir
+            # 业务工作区 provider（挂项目的服务 → 项目内个人区）——经扩展点
+            # 注册；基座不知道"项目"是什么，未注册时回落私有 workspace。
+            from infrastructure import extension
 
-            project = get_project_of_service(iid)
-            if project is not None:
-                svc_ws = member_personal_dir(project["project_id"], iid)
+            svc_ws = extension.service_workspace_dir(iid)
         except Exception as exc:
-            log.debug("workspace: project lookup failed for %s: %s", iid[:12], exc)
+            log.debug("workspace: extension provider failed for %s: %s", iid[:12], exc)
         if svc_ws is None:
             svc_ws = resolve_runtime_dir(iid) / "workspace"
         if only_probe:

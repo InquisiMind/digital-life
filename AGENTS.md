@@ -35,7 +35,11 @@ workflow. For Python review, use `python-review` and keep the review findings-fi
 - `interfaces/` — CLI, Feishu ingress, tools, skills, employee-console frontend.
 - `application/` — use cases, normalized message workflow, console APIs, ingress checks, event service.
 - `domain/` — lifecycle, memory, orchestration, execution semantics, feedback, identity, projects, vital simulation, flow logs.
-- `infrastructure/` — AI runtime, HTTP, persistence, scheduler, config, filesystem, observability.
+- `infrastructure/` — AI runtime, HTTP, persistence, scheduler, config, filesystem, observability, extension registry.
+- `business/{app}/` — business applications on top of the base runtime. The extension
+  registry is the only coupling: `business/*/activate.py` registers tool modules, HTTP
+  routes, admin endpoints, scheduler jobs, event types, event gates, tool-face policies,
+  workspace providers, and rest context into the base.
 - `apps/{id}/` — per-instance persona, config, memories, and runtime data.
 
 ## Commands

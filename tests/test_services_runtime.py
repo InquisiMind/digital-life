@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from infrastructure.persistence import services_registry
+from business.consulting import projects_registry
 
 
 def _restore_default_runtime_hooks() -> None:
@@ -39,13 +40,16 @@ def service_env(tmp_path, monkeypatch):
     """隔离环境：services.db 重定向 + 项目根指向 tmp + 缓存清零 + 钩子还原。"""
     db_path = tmp_path / "data" / "services.db"
     monkeypatch.setenv("DIGITAL_LIFE_SERVICES_DB", str(db_path))
+    monkeypatch.setenv("DIGITAL_LIFE_PROJECTS_DB", str(tmp_path / "data" / "projects.db"))
     monkeypatch.setattr("infrastructure.config.get_project_root", lambda: tmp_path)
     _restore_default_runtime_hooks()
     services_registry.reset_for_test()
+    projects_registry.reset_for_test()
     yield tmp_path
     # worker 会写 DIGITAL_LIFE_INSTANCE_ID，清掉避免泄漏给后续测试
     os.environ.pop("DIGITAL_LIFE_INSTANCE_ID", None)
     services_registry.reset_for_test()
+    projects_registry.reset_for_test()
     _restore_default_runtime_hooks()
 
 
@@ -508,7 +512,7 @@ def project_template(service_env):
 
 
 def _create_duo(env, name="双人项目", customer=None):
-    from domain.project.customer import create_project_from_template
+    from business.consulting.projects import create_project_from_template
 
     _make_def(env)
     return create_project_from_template(name, "duo", customer=customer)
@@ -527,10 +531,10 @@ def test_project_bootstrap_with_social_circle(service_env, project_template):
                           "project_file_write", "deliver_to_shared",
                           "project_todo_create"]
     assert b["tools"] is None  # 未配置=默认全量
-    assert len(sr.list_project_members(pid)) == 2
+    assert len(projects_registry.list_project_members(pid)) == 2
 
     # 初始待办已按角色解析派单
-    todos = sr.list_project_todos(pid)
+    todos = projects_registry.list_project_todos(pid)
     assert len(todos) == 1 and todos[0]["assignee_id"] == b["service_id"]
 
     # 目录骨架：shared + members/{sid}
@@ -541,7 +545,7 @@ def test_project_bootstrap_with_social_circle(service_env, project_template):
     # 社交圈：两人都有群窗口 + 互为联系人；PM 另有客户窗口/联系人
     from domain.contacts.store import lookup_chat, lookup_name
 
-    from domain.service.social import PEER_PLATFORM, _service_context
+    from business.consulting.social import PEER_PLATFORM, _service_context
 
     for sid, peer_sid, peer_name in (
         (a["service_id"], b["service_id"], "乙"),
@@ -560,7 +564,7 @@ def test_project_bootstrap_with_social_circle(service_env, project_template):
 
 
 def test_chat_message_routing(service_env, project_template):
-    from domain.service.social import (
+    from business.consulting.social import (
         _service_context,
         customer_message_to_pm,
         group_chat_id,
@@ -591,7 +595,7 @@ def test_chat_message_routing(service_env, project_template):
     conn.close()
 
     # 联系人级策略：乙对本群设"仅被提及才唤醒"→ 未提及的群消息静默落库
-    from domain.service.social import set_wake_policy
+    from business.consulting.social import set_wake_policy
 
     set_wake_policy(b["service_id"], gid, True)
     r_silent = send_chat_message(a["service_id"], gid, "记个备忘：预算还没定")
@@ -628,7 +632,7 @@ def test_chat_message_routing(service_env, project_template):
 
 
 def test_workspace_personal_shared_deliver(service_env, project_template):
-    from domain.project.customer import (
+    from business.consulting.projects import (
         WorkspaceEscapeError,
         deliver_file,
         resolve_workspace_path,
@@ -677,9 +681,9 @@ def test_workspace_personal_shared_deliver(service_env, project_template):
 
 
 def test_todo_tools_and_tool_face(service_env, project_template):
-    from domain.service.capabilities import project_tools_allowed, service_only_tools_hidden
+    from business.consulting.tool_face import project_tools_allowed, service_only_tools_hidden
 
-    import interfaces.tools.service_collab_tools as collab  # noqa: F401 注册
+    import business.consulting.collab_tools as collab  # noqa: F401 注册
 
     result = _create_duo(service_env)
     a, b = result["services"]
@@ -787,7 +791,7 @@ def test_todo_tools_and_tool_face(service_env, project_template):
 
 def test_stall_watchdog(service_env, project_template):
     from infrastructure.persistence import services_registry as sr
-    from infrastructure.scheduler.service_runner import run_stall_watchdog
+    from business.consulting.governance import run_stall_watchdog
 
     result = _create_duo(service_env, customer={"id": "cust-1", "name": "客户"})
     pid = result["project"]["project_id"]
@@ -797,7 +801,7 @@ def test_stall_watchdog(service_env, project_template):
     assert run_stall_watchdog() == []
 
     # 打开 + 有未完成待办 + 全员不活跃 → 催 PM（自动补订阅）
-    sr.update_project_fields(pid, watchdog_enabled=True)
+    projects_registry.update_project_fields(pid, watchdog_enabled=True)
     assert run_stall_watchdog() == [pid]
     pm = sr.lookup_service(a)
     assert "project_stall" in (pm.get("subscriptions") or [])
@@ -813,7 +817,7 @@ def test_stall_watchdog(service_env, project_template):
     assert run_stall_watchdog() == []
 
     # 有人活跃（持租约）→ 不催
-    sr.update_project_fields(pid, last_stall_ping_at=None)
+    projects_registry.update_project_fields(pid, last_stall_ping_at=None)
     assert sr.try_acquire_lease(result["services"][1]["service_id"], "worker:x", stale_seconds=3600)
     assert run_stall_watchdog() == []
     sr.release_lease(result["services"][1]["service_id"], "worker:x")
@@ -826,8 +830,8 @@ def test_quiet_signaler(service_env, project_template):
     from datetime import datetime, timedelta, timezone
     from unittest.mock import patch
 
-    from domain.service.registry import last_external_activity
-    from infrastructure.scheduler import service_runner
+    from business.consulting.governance import last_external_activity
+    from business.consulting import governance as service_runner
 
     result = _create_duo(service_env, customer={"id": "cust-1", "name": "客户"})
     pid = result["project"]["project_id"]
@@ -852,7 +856,7 @@ def test_quiet_signaler(service_env, project_template):
     conn.close()
 
     # 有人 working → 不发信号
-    with patch("domain.service.status.service_runtime_status",
+    with patch("business.consulting.status.service_runtime_status",
                return_value={"state": "working", "detail": ""}):
         service_runner._LAST_SILENCE_CHECK = 0.0
         assert service_runner.run_quiet_signaler() == 0
@@ -860,7 +864,7 @@ def test_quiet_signaler(service_env, project_template):
     # 无人 working + 静默超阈值 → 发信号给 PM（自动补订阅，不挂起项目）
     service_runner._LAST_SILENCE_CHECK = 0.0
     assert service_runner.run_quiet_signaler() == 1
-    assert services_registry.lookup_project(pid).get("status") == "active"
+    assert projects_registry.lookup_project(pid).get("status") == "active"
     pm = services_registry.lookup_service(pm_id)
     assert "project_quiet" in (pm.get("subscriptions") or [])
     conn = sqlite3.connect(str(db_of(pm_id)))
@@ -870,7 +874,7 @@ def test_quiet_signaler(service_env, project_template):
     conn.close()
     assert row, "PM 信箱应有 project_quiet 事件"
     assert json.loads(row[0])["quiet_hours"] >= 2.9
-    assert services_registry.lookup_project(pid).get("last_quiet_ping_at")
+    assert projects_registry.lookup_project(pid).get("last_quiet_ping_at")
 
     # 信号本身不算真实事件：活跃时钟不被刷新（排除 timer/stall/quiet）
     assert last_external_activity(pid) < datetime.now(timezone.utc).timestamp() - 3600
@@ -880,7 +884,7 @@ def test_quiet_signaler(service_env, project_template):
     assert service_runner.run_quiet_signaler() == 0
 
     # 没有 PM 的项目无人可催 → 跳过
-    services_registry.update_project_fields(pid, last_quiet_ping_at=None, pm_id="")
+    projects_registry.update_project_fields(pid, last_quiet_ping_at=None, pm_id="")
     service_runner._LAST_SILENCE_CHECK = 0.0
     assert service_runner.run_quiet_signaler() == 0
 
@@ -938,9 +942,9 @@ def test_loop_fires_due_alarms_respects_subscription(service_env):
 
 
 def test_activity_translation(service_env, project_template):
-    from domain.project.customer import deliver_file
-    from domain.project.activity import build_project_activity
-    from domain.service.social import _service_context, group_chat_id, send_chat_message
+    from business.consulting.projects import deliver_file
+    from business.consulting.activity import build_project_activity
+    from business.consulting.social import _service_context, group_chat_id, send_chat_message
 
     result = _create_duo(service_env, customer={"id": "cust-9", "name": "测试"})
     pid = result["project"]["project_id"]
@@ -963,14 +967,14 @@ def test_activity_translation(service_env, project_template):
 
 
 def test_activity_with_deliver_versions(service_env, project_template):
-    from domain.project.activity import build_project_activity
-    from domain.project.customer import deliver_file
+    from business.consulting.activity import build_project_activity
+    from business.consulting.projects import deliver_file
 
     result = _create_duo(service_env)
     pid = result["project"]["project_id"]
     a = result["services"][0]
 
-    from domain.project.customer import resolve_workspace_path
+    from business.consulting.projects import resolve_workspace_path
 
     p = resolve_workspace_path(a["service_id"], f"members/{a['service_id']}/草稿.md", for_write=True)
     p.parent.mkdir(parents=True, exist_ok=True)

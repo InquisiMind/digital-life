@@ -88,14 +88,12 @@ async def handle_list_services(_request: web.Request) -> web.Response:
 
     rows = []
     for svc in services_registry.list_services():
-        pid = svc.get("project_id") or ""
-        project = services_registry.lookup_project(pid) if pid else None
         rows.append({
             "service_id": svc["service_id"],
             "role": svc.get("display_name") or "",
             "agent_def_id": svc["agent_def_id"],
-            "project_id": pid,
-            "project_name": (project or {}).get("name", ""),
+            "project_id": svc.get("project_id") or "",
+            "project_name": "",
             "status": svc["status"],
             "subscriptions": svc.get("subscriptions") or [],
             "tools": svc.get("tools"),
@@ -171,107 +169,6 @@ async def handle_service_status(request: web.Request) -> web.Response:
 # ── 项目 ──────────────────────────────────────────────────────────────
 
 
-async def handle_list_projects(_request: web.Request) -> web.Response:
-    from infrastructure.persistence import services_registry
-
-    rows = []
-    for p in services_registry.list_projects():
-        members = services_registry.list_services_by_project(p["project_id"])
-        todos = services_registry.list_project_todos(p["project_id"])
-        rows.append({
-            "project_id": p["project_id"],
-            "name": p["name"],
-            "status": p["status"],
-            "pm_id": p.get("pm_id") or "",
-            "customer_id": p.get("customer_id") or "",
-            "template_id": p.get("template_id") or "",
-            "watchdog": bool(p.get("watchdog_enabled")),
-            "members": [m.get("display_name") or m["service_id"][:10] for m in members],
-            "todos_done": sum(1 for t in todos if t["status"] == "done"),
-            "todos_total": len(todos),
-            "created_at": (p.get("created_at") or "")[:16],
-        })
-    return _json({"ok": True, "projects": rows})
-
-
-async def handle_project_group(request: web.Request) -> web.Request:
-    """项目群消息回放（从 PM 库 svcgroup 窗口读双向流）。"""
-    pid = request.match_info["project_id"]
-    from infrastructure.persistence import services_registry
-
-    project = services_registry.lookup_project(pid)
-    if project is None:
-        return _json({"ok": False, "error": "项目不存在"}, 404)
-    messages = []
-    db = _svc_db(project["pm_id"], "messages.db")
-    if db.exists():
-        conn = sqlite3.connect(str(db), timeout=3.0)
-        try:
-            rows = conn.execute(
-                "SELECT ts, direction, sender_name, text FROM messages"
-                " WHERE chat_id = ? ORDER BY id LIMIT 500",
-                (f"svcgroup:{pid}",),
-            ).fetchall()
-        finally:
-            conn.close()
-        messages = [
-            {"ts": ts, "from": "self" if d == "out" else "peer",
-             "sender_name": s or "", "text": t or ""}
-            for ts, d, s, t in rows
-        ]
-    return _json({"ok": True, "project_id": pid, "messages": messages})
-
-
-async def handle_project_files(request: web.Request) -> web.Response:
-    """项目共享区文件浏览/读取（锚定 shared/ 内，防越界）。"""
-    pid = request.match_info["project_id"]
-    rel = request.query.get("path", "").strip()
-    from infrastructure.config import get_project_root
-    from infrastructure.persistence import services_registry
-
-    if services_registry.lookup_project(pid) is None:
-        return _json({"ok": False, "error": "项目不存在"}, 404)
-    base = (get_project_root() / "projects" / pid / "shared").resolve()
-    target = (base / rel).resolve() if rel else base
-    if target != base and base not in target.parents:
-        return _json({"ok": False, "error": "越界拒绝"}, 403)
-    if not target.exists():
-        return _json({"ok": False, "error": "路径不存在"}, 404)
-    if target.is_file():
-        return _json({
-            "ok": True, "kind": "file", "path": rel,
-            "content": target.read_text(encoding="utf-8", errors="replace")[:100_000],
-        })
-    entries = [
-        {"name": p.name, "type": "dir" if p.is_dir() else "file",
-         "size": p.stat().st_size if p.is_file() else 0,
-         "rel": str(p.relative_to(base))}
-        for p in sorted(target.iterdir()) if not p.name.startswith(".")
-    ]
-    return _json({"ok": True, "kind": "dir", "path": rel, "entries": entries})
-
-
-_ROUTER.router.add_get("/services", handle_list_services)
-_ROUTER.router.add_get("/services/{service_id}", handle_service_detail)
-_ROUTER.router.add_post("/services/{service_id}/status", handle_service_status)
-_ROUTER.router.add_get("/projects", handle_list_projects)
-_ROUTER.router.add_get("/projects/{project_id}/group", handle_project_group)
-_ROUTER.router.add_get("/projects/{project_id}/files", handle_project_files)
-
-
-async def handle_project_activity(request: web.Request) -> web.Response:
-    """GET /api/admin/projects/{pid}/activity — 转译动态流 + 阶段步骤（C14）。"""
-    from domain.project.activity import build_project_activity
-
-    return _json({"ok": True, **build_project_activity(request.match_info["project_id"])})
-
-
-_ROUTER.router.add_get("/projects/{project_id}/activity", handle_project_activity)
-
-
-# ── 配置中心（项目/agent 配置，PRD M7 提前） ─────────────────────────
-
-
 async def handle_list_defs(_request: web.Request) -> web.Response:
     """GET /api/admin/defs — 可用的 agent 定义目录（runtime_kind: definition）。"""
     import yaml as _yaml
@@ -327,128 +224,24 @@ async def handle_service_config(request: web.Request) -> web.Response:
     return _json({"ok": True, "service": services_registry.lookup_service(sid)})
 
 
-async def handle_add_member(request: web.Request) -> web.Response:
-    """POST /api/admin/projects/{pid}/members {def, role} — 项目增加 agent。"""
-    pid = request.match_info["project_id"]
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    def_id = str(body.get("def") or "").strip()
-    role = str(body.get("role") or "").strip()
-    if not def_id or not role:
-        return _json({"ok": False, "error": "def 和 role 必填"}, 400)
-    from domain.project.customer import load_template  # noqa: F401 复用校验思想
-
-    from domain.service import create_service
-    from domain.service.social import register_social_circle
-    from infrastructure.persistence import services_registry
-
-    project = services_registry.lookup_project(pid)
-    if project is None:
-        return _json({"ok": False, "error": "项目不存在"}, 404)
-    try:
-        svc = create_service(def_id, project_id=pid, display_name=role)
-    except ValueError as exc:
-        return _json({"ok": False, "error": str(exc)}, 400)
-    services_registry.add_project_member(pid, svc["service_id"], role)
-    # 社交圈补登（幂等）：老成员补新人联系人，新人进群
-    members = [
-        {"service_id": m["service_id"], "role": m.get("display_name") or m["service_id"][:10]}
-        for m in services_registry.list_services_by_project(pid, status="active")
-    ]
-    register_social_circle(pid, members, project.get("pm_id") or members[0]["service_id"], None)
-    return _json({"ok": True, "service": svc})
-
-
-async def handle_project_watchdog(request: web.Request) -> web.Response:
-    """POST /api/admin/projects/{pid}/watchdog {enabled} — 停滞看门狗开关。"""
-    pid = request.match_info["project_id"]
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    from infrastructure.persistence import services_registry
-
-    ok = services_registry.update_project_fields(
-        pid, watchdog_enabled=bool(body.get("enabled"))
-    )
-    return _json({"ok": ok})
-
-
-async def handle_remove_member(request: web.Request) -> web.Response:
-    """DELETE /api/admin/projects/{pid}/members/{sid} — 成员退出项目。
-
-    成员表行删除 + 服务 project_id 置空（服务保留为独立 agent，可再加入）。
-    """
-    pid = request.match_info["project_id"]
-    sid = request.match_info["service_id"]
-    from infrastructure.persistence import services_registry
-
-    members = services_registry.list_project_members(pid)
-    if not any(m.get("member_id") == sid for m in members):
-        return _json({"ok": False, "error": "该成员不在本项目"}, 404)
-    services_registry.remove_project_member(pid, sid)
-    services_registry.update_service_fields(sid, project_id="")
-    logger.info("PROJECT_MEMBER_REMOVED project=%s member=%s", pid[:12], sid[:12])
-    return _json({"ok": True})
-
-
-async def handle_project_config(request: web.Request) -> web.Response:
-    """PATCH /api/admin/projects/{pid}/config — 项目改名/归档（客户页 rail 管理）。
-
-    归档=软删除：客户会话列表过滤 archived，服务台仍可见可恢复。
-    """
-    pid = request.match_info["project_id"]
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    from infrastructure.persistence import services_registry
-
-    if services_registry.lookup_project(pid) is None:
-        return _json({"ok": False, "error": "项目不存在"}, 404)
-    kw = {}
-    name = str(body.get("name") or "").strip()
-    if name:
-        kw["name"] = name[:60]
-    status = str(body.get("status") or "").strip()
-    if status in ("active", "archived"):
-        kw["status"] = status
-    if not kw:
-        return _json({"ok": False, "error": "无可更新字段（name / status）"}, 400)
-    services_registry.update_project_fields(pid, **kw)
-    logger.info("PROJECT_CONFIG_UPDATED %s fields=%s", pid[:12], list(kw))
-    return _json({"ok": True, "project": services_registry.lookup_project(pid)})
-
-
+_ROUTER.router.add_get("/services", handle_list_services)
+_ROUTER.router.add_get("/services/{service_id}", handle_service_detail)
+_ROUTER.router.add_post("/services/{service_id}/status", handle_service_status)
 _ROUTER.router.add_get("/defs", handle_list_defs)
 _ROUTER.router.add_patch("/services/{service_id}/config", handle_service_config)
-_ROUTER.router.add_post("/projects/{project_id}/members", handle_add_member)
-_ROUTER.router.add_delete("/projects/{project_id}/members/{service_id}", handle_remove_member)
-_ROUTER.router.add_post("/projects/{project_id}/watchdog", handle_project_watchdog)
-_ROUTER.router.add_patch("/projects/{project_id}/config", handle_project_config)
-
-
-async def _serve_page(_request: web.Request) -> web.Response:
-    from infrastructure.config import get_project_root
-
-    page = get_project_root() / "interfaces" / "web" / "services" / "index.html"
-    if not page.exists():
-        return web.Response(status=404, text="services page missing")
-    resp = web.FileResponse(page)
-    resp.headers["Cache-Control"] = "no-cache"  # 内联脚本的零构建页：旧缓存会让用户看不到新版
-    return resp
 
 
 def add_services_admin_routes(app: web.Application) -> None:
-    # agent 深度配置路由并进同一 _ROUTER——须在 add_subapp（freeze）之前
+    # agent 深度配置路由并进同一 _ROUTER——须在 add_subapp（freeze）之前；
+    # 业务管理路由（模版/项目端点）同样经扩展点在冻结前注入。
     from application.api.agent_admin_routes import register_into
 
     register_into(_ROUTER)
+    from infrastructure import extension
+
+    extension.mount_admin_routers(_ROUTER)
     app.add_subapp("/api/admin/", _ROUTER)
-    app.router.add_get("/services", _serve_page)
-    logger.info("Services admin routes registered: /services + /api/admin/*")
+    logger.info("Services admin routes registered: /api/admin/*")
 
 
 def collect_services_overview() -> dict:
@@ -488,15 +281,13 @@ def collect_services_overview() -> dict:
     svc_rows: list[dict] = []
     try:
         for svc in services_registry.list_services():
-            pid = svc.get("project_id") or ""
-            project = services_registry.lookup_project(pid) if pid else None
             svc_rows.append(
                 {
                     "service_id": svc["service_id"],
                     "agent_def_id": svc["agent_def_id"],
                     "role": svc.get("display_name") or "",
-                    "project_id": pid,
-                    "project_name": (project or {}).get("name", ""),
+                    "project_id": svc.get("project_id") or "",
+                    "project_name": "",
                     "status": svc["status"],
                     **_service_stats(svc["service_id"]),
                 }
@@ -515,6 +306,13 @@ def collect_services_overview() -> dict:
     for d in def_rows:
         d.update(by_def.get(d["def_id"], {"service_count": 0, "active_count": 0}))
 
+    # 业务 enricher（项目名等）经扩展点补全——基座不知道"项目"是什么
+    try:
+        from infrastructure import extension
+
+        extension.enrich_service_rows(svc_rows)
+    except Exception:
+        pass
     active = [s for s in svc_rows if s["status"] == "active"]
     last_wake = max(
         (s["last_wake_at"] for s in svc_rows if s.get("last_wake_at")), default=None

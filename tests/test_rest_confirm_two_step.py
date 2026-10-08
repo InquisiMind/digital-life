@@ -283,6 +283,7 @@ def _patch_team_world(monkeypatch, *, service=True, project_status="active", tod
     service=False：伪装被聘为 PM 的实例（vitals 恒开，实例全能力在）。
     """
     import infrastructure.persistence.services_registry as sr_mod
+    import business.consulting.projects_registry as pr_mod
 
     iid = "test-rest-session-iid"
     if service:
@@ -297,15 +298,15 @@ def _patch_team_world(monkeypatch, *, service=True, project_status="active", tod
         monkeypatch.setattr(sr_mod, "resolve_service_def", lambda rid: None)
         monkeypatch.setattr(sr_mod, "lookup_service", lambda rid: {})
         monkeypatch.setattr(
-            sr_mod, "list_projects",
+            pr_mod, "list_projects",
             lambda status=None: [{"project_id": "proj-1", "pm_id": iid,
                                   "status": "active", "name": "实例PM的项目"}])
     monkeypatch.setattr(
-        sr_mod, "lookup_project",
+        pr_mod, "lookup_project",
         lambda pid: ({"project_id": pid, "status": project_status, "name": "团队项目"}
                      if pid == "proj-1" else None))
     monkeypatch.setattr(
-        sr_mod, "list_project_todos", lambda pid, **kw: (todos or []))
+        pr_mod, "list_project_todos", lambda pid, **kw: (todos or []))
     # 个人世界（实例段）置空：团队世界的运行体大多没有个人数据
     monkeypatch.setattr("domain.todos.crud.list_tasks", lambda **kw: [], raising=False)
     monkeypatch.setattr("domain.project.loader.load_all_projects", lambda: {}, raising=False)

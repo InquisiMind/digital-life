@@ -165,3 +165,11 @@ export const instanceApi = (iid) => ({
   socialRevoke:  () => api.post(`/api/employee/${iid}/social/revoke`),
   events:        () => api.get(`/api/employee/${iid}/events`),
 })
+
+// ── 服务管理（服务型 agent）──
+// L1 /api/admin/defs · L2 /api/admin/services · L3 /api/admin/services/{id}
+export const adminApi = {
+  defs:          () => api.get('/api/admin/defs'),
+  services:      (p = {}) => api.get('/api/admin/services', { agent_def_id: p.agent_def_id, status: p.status, limit: p.limit, offset: p.offset }),
+  serviceDetail: (sid) => api.get(`/api/admin/services/${sid}`),
+}

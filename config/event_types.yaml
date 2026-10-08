@@ -556,61 +556,7 @@ event_types:
       include_proactive_policy: false
       include_recent_sent: false
       include_vector_recall: false
-  project_created:
-    priority: 8
-    payload_schema:
-      project_id: string
-      project_name: string
-      manager: string
-      created_by: string
-    description: 用户通过控制台创建了新项目（事件本质：通知项目经理——有人建了个项目给它）
-    debounce_window_s: 0
-    merge_policy: latest
-    consumption_policy: on_detail
-    wake_prompt: '### 唤醒原因
 
-
-      🆕 项目创建通知：{project_name}
-
-
-      用户通过控制台创建了项目空壳，项目经理是你。创建动作已完成（项目目录、project.yaml、初始根待办 都在了），不需要你再调 create_project
-      工具。
-
-
-      现在按 `skill_view("project_bootstrap")` 走「完善分支」：
-
-      1. `sense_projects("{project_id}")` 核对当前内容
-
-      2. 拆分工 / 设目标 / 创首批待办 / 通知协作者
-
-
-      跳过「创建分支」——项目目录、project.yaml 已经在了，不要重建。
-
-      '
-    allowed_tools:
-    - sense_projects
-    - sense_projects
-    - sense_schedule
-    - sense_conversation
-    - todo
-    - todo_note
-    - todo_plan
-    - skill_view
-    - set_entity_profile
-    - add_cognition
-    - express_to_human
-    - rest
-    context_policy:
-      include_history: false
-      include_rules: true
-      include_daily: false
-      include_consciousness: false
-      include_session_digests: true
-      include_entity_recall: false
-      include_self_review: false
-      include_proactive_policy: false
-      include_recent_sent: true
-      include_vector_recall: false
   budget_soft_warning:
     display_name: 轮次预算提醒
     trigger_type: system
@@ -782,59 +728,5 @@ event_types:
       include_recent_sent: false
       include_vector_recall: false
 
-  project_stall:
-    display_name: 项目停滞预警
-    trigger_type: condition
-    trigger_description: 项目存在未完成待办但全员不活跃（无 worker 在跑且近期无唤醒）时，项目看门狗提醒项目经理推进或催办
-    priority: 6
-    payload_schema:
-      project_id: string
-      project_name: string?
-      open_todos: integer?
-      stalled_members: string?
-    description: 仅服务型项目启用（watchdog_enabled），冷却期内不重复触发
-    debounce_window_s: 0
-    merge_policy: latest
-    consumption_policy: on_trigger
-    wake_prompt: '🚨 项目停滞预警：项目「{project_name}」有 {open_todos} 项未完成待办，但当前没有任何成员在干活（停滞成员：{stalled_members}）。
 
-      作为项目经理，请检查：待办是否卡在没人认领？该派活的派活（send_chat_message 在群里@队友），该调整的调整（project_todo_update），确实无事可做就收尾关闭。
 
-      '
-
-  project_quiet:
-    display_name: 项目静默预警
-    trigger_type: condition
-    trigger_description: 项目未挂起但持续 2 小时无任何真实事件（客户/群/任务/协作全无）且无人工作中时，项目管理系统发信号给项目经理，由其决定挂起收队还是继续推进
-    priority: 5
-    payload_schema:
-      project_id: string
-      project_name: string?
-      quiet_hours: number
-    description: 仅发信号不自动挂起——决策权在项目经理；同一静默期只提醒一次，真实事件到来后重新武装
-    debounce_window_s: 0
-    merge_policy: latest
-    consumption_policy: on_trigger
-    wake_prompt: '🛎️ 项目静默预警：项目「{project_name}」已经 {quiet_hours} 小时没有任何新的进展事件（客户消息、任务指派、协作往来都没有），当前也没有成员在工作中。
-
-      作为项目经理，请判断现状并行动：我方能做的都已完成、唯一阻塞在客户侧 → 调 suspend_project 收队挂起（客户回来会自动恢复，成员安心静眠）；还有可推进的事 → 安排推进或催办；在等某位成员 → 提醒 TA。若决定再等一轮也可以，但不要设短闹钟反复查看。
-
-      '
-
-  todo_assigned:
-    display_name: 任务被指派
-    trigger_type: condition
-    trigger_description: 项目内有人（通常是 PM）给该成员创建了待办任务并指派给它
-    priority: 4
-    payload_schema:
-      todo_id: string
-      title: string
-      detail: string?
-      assign_role: string
-      from_role: string
-      project_name: string
-    description: 任务交接的核心通道——指派即通知，被指派者醒来看任务并开工
-    debounce_window_s: 30
-    merge_policy: latest
-    consumption_policy: on_trigger
-    wake_prompt: "📌 任务动态（{action}）。「{from_role}」在项目「{project_name}」：\n\n任务：{title}\n说明：{detail}\n\n涉及你——确认理解后行动（不懂就在项目群里问）；若是指派给你，请开工并在完成后把待办置 done；若是他人代完成且无异议，继续手头事即可。"

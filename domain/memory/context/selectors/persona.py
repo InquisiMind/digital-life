@@ -23,7 +23,7 @@ def get_life_persona_path(instance_id: str | None = None) -> Path:
     """
     if instance_id:
         try:
-            from domain.service.overlay import persona_path
+            from domain.identity.agent_definition import persona_path
 
             overlay = persona_path(instance_id)
             if overlay is not None and overlay.exists():

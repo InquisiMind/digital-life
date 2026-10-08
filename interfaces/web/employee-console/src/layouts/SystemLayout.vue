@@ -115,7 +115,7 @@ import { useRoute, useRouter, RouterLink, RouterView } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Back, Odometer, ChatDotRound, List, Calendar, Folder, MagicStick,
-  Collection, User, Document, Setting, DataAnalysis, Cpu, Bell, RefreshRight,
+  Collection, User, Document, Setting, DataAnalysis, Cpu, Bell, RefreshRight, Connection,
 } from '@element-plus/icons-vue'
 import { systemApi } from '../api/client'
 
@@ -137,6 +137,7 @@ const currentInstance = computed(() =>
 const systemNav = [
   { path: '/system/overview', label: '系统实况', icon: DataAnalysis },
   { path: '/system/instances', label: '实例管理', icon: Cpu },
+  { path: '/system/services', label: '服务管理', icon: Connection },
   { path: '/system/projects', label: '项目', icon: Folder },
   { path: '/system/skills', label: '技能市场', icon: MagicStick },
   { path: '/system/events', label: '事件类型', icon: Bell },

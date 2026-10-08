@@ -23,6 +23,7 @@ import ProjectsView from './views/system/ProjectsView.vue'
 import ProjectDetailView from './views/system/ProjectDetailView.vue'
 import SkillsMarketView from './views/system/SkillsMarketView.vue'
 import EventsView from './views/system/EventsView.vue'
+import ServicesView from './views/system/ServicesView.vue'
 
 // 实例台 view
 import InstanceOverview from './views/instance/OverviewTab.vue'
@@ -49,6 +50,7 @@ const routes = [
       { path: 'projects/:pid', component: ProjectDetailView, meta: { title: '项目详情', icon: 'Folder' } },
       { path: 'skills', component: SkillsMarketView, meta: { title: '技能市场', icon: 'MagicStick' } },
       { path: 'events', component: EventsView, meta: { title: '事件类型', icon: 'Bell' } },
+      { path: 'services', component: ServicesView, meta: { title: '服务管理', icon: 'Connection' } },
     ],
   },
 

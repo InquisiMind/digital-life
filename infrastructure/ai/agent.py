@@ -1042,26 +1042,12 @@ class AIAgent:
                 base = [n for n in base if n not in blocked]
         except Exception:
             pass
-        # 服务专属工具（刀 4b 项目协作原语）反向闸：实例不装载——实例间协作走
-        # broadcast 对等链，语义不同。服务侧再按岗位工具面（模版角色 →
-        # services.tools_json）收紧：只留交集，未配置=默认全量。
+        # 业务工具面策略（协作工具装载/收紧）经扩展点过滤——基座不认识
+        # 哪些工具是"业务专属"，只把当前面交给注册的过滤器。
         try:
-            from domain.service.capabilities import (
-                SERVICE_PROJECT_TOOLS,
-                project_tools_allowed,
-                service_only_tools_hidden,
-            )
+            from infrastructure import extension
 
-            if base and any(n in SERVICE_PROJECT_TOOLS for n in base):
-                if service_only_tools_hidden():
-                    base = [n for n in base if n not in SERVICE_PROJECT_TOOLS]
-                else:
-                    allowed = project_tools_allowed()
-                    if allowed is not None:
-                        base = [
-                            n for n in base
-                            if n not in SERVICE_PROJECT_TOOLS or n in allowed
-                        ]
+            base = extension.apply_tool_face_filters(base)
         except Exception:
             pass
         # V6: 合并条件暴露工具 (rest preview 后动态加入)
@@ -1081,13 +1067,23 @@ class AIAgent:
             "domain.todos.tools",
             "domain.project.tools",
             "interfaces.tools.terminal_tool",
-            "interfaces.tools.service_collab_tools",
             "interfaces.tools.code_execution_tool",
         ):
             try:
                 __import__(module_name)
             except Exception:
                 logger.warning("Tool module load failed: %s", module_name, exc_info=True)
+        # 业务工具模块（extension 注册；business/*/activate.py 声明）
+        try:
+            from infrastructure import extension
+
+            for module_name in extension.tool_modules():
+                try:
+                    __import__(module_name)
+                except Exception:
+                    logger.warning("Tool module load failed: %s", module_name, exc_info=True)
+        except Exception:
+            pass
 
         # 加载 register_tool 注册的工具 (从 manifest 重建, 防重启丢失)
         try:

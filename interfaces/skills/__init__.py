@@ -152,7 +152,7 @@ def get_instance_registered_skills(instance_id: str | None = None) -> list[str]:
 
     # 服务 overlay 注册（仅服务实例存在；异常时忽略，不影响原列表）
     try:
-        from domain.service.overlay import read_agent_meta
+        from domain.identity.agent_definition import read_agent_meta
 
         extra = read_agent_meta(uuid).get("skills")
         if isinstance(extra, list):
@@ -181,7 +181,7 @@ def get_overlay_skills_dir(instance_id: str | None = None) -> Path | None:
 
     uuid = get_app_instance_id(instance_id)
     try:
-        from domain.service.overlay import service_skills_dir
+        from domain.identity.agent_definition import service_skills_dir
 
         d = service_skills_dir(uuid)
         return d if (d is not None and d.is_dir()) else None

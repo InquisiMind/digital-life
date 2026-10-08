@@ -148,3 +148,34 @@ def test_get_messages_archived_project_replay(customer_env):
     resp2 = asyncio.run(cr.handle_get_messages(_FakeRequest(
         match_info={"customer_id": cid})))
     assert resp2.status == 200 and json.loads(resp2.text)["ok"]
+
+
+def test_files_root_shares_and_personal_zones(customer_env):
+    """交付物浏览根目录 = 📦 shared + 每位成员个人区；越界拒绝。"""
+    import asyncio as _aio
+
+    from business.consulting import api_customer as cr
+
+    d = _start({"customer_name": "孙总", "text": "启动", "template": "demo"})
+    cid = d["customer_id"]
+    pid = d["project_id"]
+
+    resp = _aio.run(cr.handle_files(_FakeRequest(match_info={"customer_id": cid})))
+    data = json.loads(resp.text)
+    assert resp.status == 200 and data["ok"]
+    names = [e["name"] for e in data["entries"]]
+    assert any("交付物" in n for n in names)
+    assert sum(1 for n in names if "工作区" in n) >= 2  # 至少 PM+研究员两个人区
+    shared_rel = next(e["rel"] for e in data["entries"] if "交付物" in e["name"])
+    member_rel = next(e["rel"] for e in data["entries"] if "工作区" in e["name"])
+    assert shared_rel == "shared" and member_rel.startswith("members/")
+
+    # 成员个人区可浏览（目录已随建项目生成）
+    resp2 = _aio.run(cr.handle_files(_FakeRequest(
+        match_info={"customer_id": cid}, query={"project_id": pid, "path": member_rel})))
+    assert resp2.status == 200 and json.loads(resp2.text)["kind"] == "dir"
+
+    # 越界（跳出 shared/members 作用域）拒绝
+    resp3 = _aio.run(cr.handle_files(_FakeRequest(
+        match_info={"customer_id": cid}, query={"path": "../../etc"})))
+    assert resp3.status == 403

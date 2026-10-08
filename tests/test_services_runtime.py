@@ -987,3 +987,33 @@ def test_activity_with_deliver_versions(service_env, project_template):
     file_acts = [x for x in d["activities"] if x["kind"] == "file"]
     assert len(file_acts) == 1  # 二次转正留档 → 版本动态
     assert "草稿.md" in file_acts[0]["text"]
+
+
+def test_unlock_notifies_assignee(service_env, project_template):
+    """前置满足 → 解锁任务的负责人收到 todo_assigned（S04 等下游任务
+    结构性激活——不靠群消息顺带叫醒）。"""
+    from unittest.mock import patch
+
+    result = _create_duo(service_env, customer={"id": "cust-9", "name": "客户"})
+    pid = result["project"]["project_id"]
+    pm, worker = result["pm_service_id"], result["services"][1]["service_id"]
+
+    t1 = projects_registry.create_project_todo(pid, "S03 事实底稿",
+                                               assignee_id=pm, status="open")
+    t2 = projects_registry.create_project_todo(
+        pid, "S04 战略判断", assignee_id=worker,
+        depends_on=["S03 事实底稿"], status="blocked")
+    assert t2["status"] == "blocked"
+
+    emitted = []
+    with patch("domain.service.emit_to_service",
+               lambda sid, kind, payload=None, **kw: emitted.append((sid, kind, payload)) or 1):
+        assert projects_registry.update_project_todo(
+            t1["todo_id"], status="done", actor=pm)
+
+    # 下游解锁
+    assert projects_registry.get_project_todo(t2["todo_id"])["status"] == "open"
+    # 负责人被点名通知
+    hits = [e for e in emitted if e[0] == worker and e[1] == "todo_assigned"]
+    assert hits and hits[0][2]["action"] == "前置已满足，轮到你了"
+    assert "S04 战略判断" in hits[0][2]["title"]

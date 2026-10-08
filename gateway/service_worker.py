@@ -80,7 +80,7 @@ def run_service_worker(service_id: str) -> int:
         # worker 自己就是唯一的叫醒者，不需要（也不该）再起后台 wake 线程。
         sup_token = set_wake_suppressed(True)
         try:
-            affair_id = ensure_life_affair()
+            affair_id = ensure_life_affair(skip_birth=True)
         finally:
             reset_wake_suppressed(sup_token)
 

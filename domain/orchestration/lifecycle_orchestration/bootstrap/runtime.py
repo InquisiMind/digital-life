@@ -32,8 +32,12 @@ def _find_life_affair() -> str | None:
     return None
 
 
-def ensure_life_affair() -> str:
-    """Create the root affair and its initial continuity markers if needed."""
+def ensure_life_affair(*, skip_birth: bool = False) -> str:
+    """Create the root affair and its initial continuity markers if needed.
+
+    skip_birth：服务型用——服务的首次唤醒由客户/编排事件驱动，
+    birth 事件不在服务订阅内（emit 即被闸拦残留），不再产生。
+    """
     existing = _find_life_affair()
     if existing:
         logger.info("Life affair already exists: %s", existing)
@@ -56,10 +60,11 @@ def ensure_life_affair() -> str:
         tag="first_boot",
     )
 
-    affair_runtime.enqueue_event(
-        "birth",
-        {"affair_id": affair.affair_id, "at": now_iso()},
-    )
+    if not skip_birth:
+        affair_runtime.enqueue_event(
+            "birth",
+            {"affair_id": affair.affair_id, "at": now_iso()},
+        )
 
     return affair.affair_id
 

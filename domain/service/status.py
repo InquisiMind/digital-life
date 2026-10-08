@@ -83,9 +83,28 @@ def _status(service_id: str) -> Optional[dict]:
                 " WHERE kind = 'timer' AND consumed_at IS NULL AND fire_at IS NOT NULL"
                 " ORDER BY fire_at LIMIT 1"
             ).fetchall()
+            # 只统计「到期且订阅闸会拉起」的事件（对齐 has_due_events 语义）——
+            # 否则 birth 等不在订阅内的残留会永远假报"排队"
+            from domain.service.registry import service_allows_kind
+            from infrastructure.persistence.services_registry import lookup_service
+
+            _subs = (lookup_service(service_id) or {}).get("subscriptions")
+            _svc_row = {"subscriptions": _subs}
+            ph = ",".join("?" * len(rows_kind := [r[0] for r in conn.execute(
+                "SELECT DISTINCT kind FROM events WHERE consumed_at IS NULL AND kind != ''"
+            ).fetchall()]))
+            kinds_sched = [
+                k for k in rows_kind if k in ("message", "group_message")
+                or service_allows_kind(_svc_row, k)
+            ] if rows_kind else []
             open_ev = conn.execute(
-                "SELECT COUNT(*) FROM events WHERE consumed_at IS NULL"
-            ).fetchone()[0]
+                f"SELECT COUNT(*) FROM events WHERE consumed_at IS NULL"
+                f" AND kind IN ({ph})"
+                " AND (fire_at IS NULL OR fire_at <= ?)",
+                (*kinds_sched, __import__("datetime").datetime.now(
+                    __import__("datetime").timezone(__import__("datetime").timedelta(hours=8))
+                ).isoformat(timespec="seconds")),
+            ).fetchone()[0] if kinds_sched else 0
         finally:
             conn.close()
         if rows:

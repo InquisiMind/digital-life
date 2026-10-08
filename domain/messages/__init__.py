@@ -235,6 +235,7 @@ def record_outbound(
     text: str,
     msg_id: str = "",
     source: str = "feishu",
+    attachments: list[str] | None = None,
 ) -> tuple[Optional[int], bool]:
     """出站消息:实例自己发群/私聊消息成功后调。返回 (row_id, inserted)。
 
@@ -249,6 +250,7 @@ def record_outbound(
         sender_role="self",
         text=text,
         msg_ref=msg_id,
+        attachments=attachments,
     )
 
 

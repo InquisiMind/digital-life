@@ -198,3 +198,75 @@ def test_different_session_each_shows_card(isolated_instance, monkeypatch):
     d2 = json.loads(out2) if isinstance(out2, str) else out2
     assert d1.get("preview") is True
     assert d2.get("preview") is True, "不同 session 都应看到提示卡"
+
+
+# ── 无参静眠（2026-09-30：闹钟时间可为空，没事不必硬设时间）─────────────
+
+
+def test_no_args_first_call_preview_offers_silent_option(isolated_instance, monkeypatch):
+    """首次 rest() 无参 → 提示卡 preview，note 里给出静眠选项（不是逼着设闹钟）。"""
+    set_alarm_calls = []
+    monkeypatch.setattr("domain.lifecycle.alarms.set_alarm",
+                        lambda *a, **kw: set_alarm_calls.append((a, kw)))
+    monkeypatch.setattr("domain.lifecycle.alarms.list_pending_alarms", lambda *a, **kw: [])
+    monkeypatch.setattr("domain.todos.crud.list_tasks", lambda **kw: [], raising=False)
+    monkeypatch.setattr("domain.memory.memory.consciousness.runtime.read_insights", lambda **kw: "", raising=False)
+
+    out = _at._handle_rest({}, session_id="sess-I")
+    data = json.loads(out) if isinstance(out, str) else out
+    assert data.get("preview") is True
+    assert "__l4_block__" not in data
+    assert "静眠" in data.get("note", "")
+    assert not set_alarm_calls
+
+
+def test_no_args_second_call_silent_sleeps(isolated_instance, monkeypatch):
+    """第二次 rest() 无参 → 静眠真睡：BLOCKED + WaitIntent(EVENT)，不设任何闹钟。"""
+    set_alarm_calls = []
+    monkeypatch.setattr("domain.lifecycle.alarms.set_alarm",
+                        lambda *a, **kw: set_alarm_calls.append((a, kw)))
+    monkeypatch.setattr("domain.lifecycle.alarms.list_pending_alarms", lambda *a, **kw: [])
+    monkeypatch.setattr("domain.memory.memory.consciousness.runtime.read_insights", lambda **kw: "", raising=False)
+    monkeypatch.setattr("domain.todos.crud.list_tasks", lambda **kw: [], raising=False)
+    monkeypatch.setattr("domain.lifecycle.runtime_context.get_current_affair", lambda: "affair-S1")
+    monkeypatch.setattr("domain.lifecycle.affairs.runtime.get_affair", lambda aid: MagicMock())
+    monkeypatch.setattr("domain.lifecycle.affairs.runtime.update_affair", lambda *a, **kw: None)
+    intent_calls = []
+    monkeypatch.setattr("domain.lifecycle.affairs.runtime.set_wait_intent",
+                        lambda aid, intent: intent_calls.append((aid, intent)))
+
+    out1 = _at._handle_rest({}, session_id="sess-J")
+    assert json.loads(out1).get("preview") is True
+
+    out2 = _at._handle_rest({}, session_id="sess-J")
+    data = json.loads(out2) if isinstance(out2, str) else out2
+    assert data.get("__l4_block__") is True, "第二次无参必须真睡"
+    assert data.get("silent") is True
+    assert data.get("wake_at") is None
+    assert not set_alarm_calls, "静眠不设闹钟"
+    assert intent_calls, "静眠要落 WaitIntent"
+    _aid, intent = intent_calls[0]
+    assert _aid == "affair-S1"
+    from domain.lifecycle.state_machine import WaitType
+    assert intent.wait_type == WaitType.EVENT
+    assert intent.resume_when == ""
+
+
+def test_confirm_true_no_args_silent_sleeps_first_call(isolated_instance, monkeypatch):
+    """rest(confirm=true) 无参 → 首次直接静眠（一步睡，跳过提示卡）。"""
+    set_alarm_calls = []
+    monkeypatch.setattr("domain.lifecycle.alarms.set_alarm",
+                        lambda *a, **kw: set_alarm_calls.append((a, kw)))
+    monkeypatch.setattr("domain.lifecycle.alarms.list_pending_alarms", lambda *a, **kw: [])
+    monkeypatch.setattr("domain.memory.memory.consciousness.runtime.read_insights", lambda **kw: "", raising=False)
+    monkeypatch.setattr("domain.lifecycle.runtime_context.get_current_affair", lambda: "affair-S2")
+    monkeypatch.setattr("domain.lifecycle.affairs.runtime.get_affair", lambda aid: MagicMock())
+    monkeypatch.setattr("domain.lifecycle.affairs.runtime.update_affair", lambda *a, **kw: None)
+    monkeypatch.setattr("domain.lifecycle.affairs.runtime.set_wait_intent", lambda aid, intent: None)
+
+    out = _at._handle_rest({"confirm": True}, session_id="sess-K")
+    data = json.loads(out) if isinstance(out, str) else out
+    assert data.get("__l4_block__") is True
+    assert data.get("silent") is True
+    assert data.get("preview") is not True
+    assert not set_alarm_calls, "静眠不设闹钟"

@@ -3,7 +3,7 @@
 工具分类：
   通信类：
     - express_to_human: 发送消息给用户（飞书 API 直连）
-    - rest: 进入休息（设置 WaitIntent + 闹钟 + BLOCKED 状态）
+    - rest: 进入休息（WaitIntent + BLOCKED；设闹钟或无闹钟静眠等外部事件）
 
   记忆类：
     - record_thought: 留思绪（意识残留，穿越睡眠保持连续性）
@@ -3001,16 +3001,17 @@ def _gc_session_rest_state(active_session_ids: set[str]) -> None:
 
 
 def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
-    """rest — 设闹钟 + 结束 session。
+    """rest — 设闹钟（或静眠）+ 结束 session。
 
-    新语义（2026-06-15：
-      until 或 reuse 必填一个）：
+    三种语义（2026-09-30 起无参静眠为一等公民）：
 
       rest(until='2026-06-15T15:00:00+08:00', mental_context='...')
           设新闹钟 → BLOCKED → 等到点 wakeup
       rest(reuse=42, mental_context='补充...')
           复用现有 timer 闘钟 #42（不新建）→ BLOCKED → 等原 fire_at wakeup
-      rest()  → 报错，并提示现有可复用的闹钟 id 列表
+      rest()  → 首次返提示卡；再次无参（或 confirm=true）→ 静眠：
+          不设闹钟，WaitIntent(EVENT)，等新消息/任务指派/日程闹钟唤醒。
+          无事可等或阻塞在别人身上时用——不必硬给自己编一个时间。
 
     重叠检测（核心机制）：
       until=X 但 ±10min 内已有 timer → 报错提示 "和 #X 重叠" + ID。
@@ -3019,15 +3020,17 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
     这套语义=人设闘钟的样子：
       「我想设下午 3 点」→ rest(until=15:00)
       「发现已经设过 3 点」→ rest(reuse=<刚提示的 id>)
+      「没别的事了」→ rest() ×2 静眠，来事了自然醒
     """
     from datetime import timedelta, datetime
     from domain.lifecycle import clock as _clock
 
     # ── 解析参数 ──
-    # 两种语义（必填其一）：
+    # 三种语义：
     #   until=<ISO8601>          新建/覆盖闹钟，到点唤醒
     #   reuse=<alarm_id>         复用现有 timer 闹钟（重叠场景）
-    # 不传任何参数 → 报错强制让模型做决定（避免无限期睡死）
+    #   都不传                   首次=提示卡预览；再次/confirm=true=静眠（无闹钟，
+    #                           等外部事件唤醒——事件到达时 _wake_or_inject 会拉起）
     until = (args.get("until") or "").strip()
     hours = args.get("hours")
     reuse_raw = args.get("reuse")
@@ -3173,7 +3176,7 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
         except Exception:
             return registry.tool_error("hours must be a number")
 
-    # ─── 路径 C：都没传 → 不报错, 直接返回 preview 提示卡 ───
+    # ─── 路径 C：都没传 → 先看服务型特例，再走 preview→静眠 两步 ───
     # 服务型特例（二）：项目挂起时无参静眠——闹钟已取消，恢复由客户
     # 回来驱动，再设闹钟只会复活自转循环。
     if not until and not reuse_id and not hours:
@@ -3246,9 +3249,39 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
         except Exception:
             pass  # 判定失败走原有预览流程
 
-    # 设计: 第一次 rest() 无参 = 看"睡前提示卡", 模型拿到后处理再调 rest(reuse/until) 真睡。
-    # 之前这里返 tool_error, 模型被迫多走一轮试错 → 压缩为 2 轮 preview→sleep。
+    # 设计: 第一次 rest() 无参 = 看"睡前提示卡", 模型拿到后处理再决定怎么睡。
+    # 之前这里永远只返 preview（把模型往 reuse/until 上逼——没事也得硬编个时间）；
+    # 现在第二次无参调用（或 confirm=true）→ 静眠真睡：不设闹钟，等外部事件唤醒。
+    if target_dt is None and not show_card:
+        aid = get_current_affair()
+        if aid:
+            existing_affair = get_affair(aid)
+            if existing_affair:
+                update_affair(aid, status=AffairStatus.BLOCKED)
+            intent = WaitIntent(
+                wait_type=WaitType.EVENT,
+                resume_when="",
+                reason=reason,
+                resume_action="",
+                meta={"vitals_at_sleep": {}, "silent": True},
+            )
+            set_wait_intent(aid, intent)
+        return _j({
+            _BLOCK_SENTINEL: True,
+            "started": True,
+            "affair_id": aid,
+            "wake_at": None,
+            "silent": True,
+            "mental_context": mental,
+            "message": (
+                "已进入休息（未设闹钟）。有新消息、任务指派或日程闹钟时会自然唤醒——"
+                "没事的时候不必硬给自己设一个时间。"
+            ),
+            "pre_rest_card": _build_pre_rest_card() or None,
+        })
+
     if target_dt is None:
+        _mark_pre_rest_card_shown(**kwargs)
         snap = vitals.consume_energy(0)  # 不消耗精力, 只拿 snapshot
         energy = round(snap.energy, 1)
         existing_timers = list_pending_alarms("timer")
@@ -3268,7 +3301,14 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
         card = _build_pre_rest_card() or ""
         return _j({
             "preview": True,
-            "note": "rest 无参数 = 预览睡前提示卡。看一眼处理完后, 再调 rest(reuse=<id>) 或 rest(until=...) 真睡。" if suggested_reuse else "rest 无参数 = 预览。当前无可复用闹钟, 处理完后调 rest(until=...) 新建闹钟真睡。",
+            "note": (
+                "rest 无参数 = 预览睡前提示卡。看完后三选一：\n"
+                "  · rest(reuse=<id>) 复用现有闹钟\n"
+                "  · rest(until='...') 新建闹钟\n"
+                "  · 再次 rest()（或 rest(confirm=true)）静眠——不设闹钟，"
+                "等新消息/任务指派唤醒。\n"
+                "无事可等或阻塞在别人身上时选静眠即可，不必硬给自己设一个时间。"
+            ),
             "will_reuse_alarm_id": suggested_reuse,
             "pre_rest_card": card or None,
             "available_alarms": "\n".join(timer_lines) if timer_lines else "(无未触发 timer)",
@@ -3419,7 +3459,7 @@ registry.register(
     schema={
         "name": "rest",
         "description": (
-            "休息 — 设定闹钟 + 结束 session。两步式：\n"
+            "休息 — 设闹钟或静眠 + 结束 session。两步式：\n"
             "\n"
             "## 创建新闹钟(默认)\n"
             "  rest(until='<ISO8601 时间>')\n"
@@ -3433,26 +3473,30 @@ registry.register(
             "  只用本次 wake 注入的日程清单里标注的 id，或先调 sense_schedule\n"
             "  查当前 pending 闹钟。21:00 选择或 reuse 不确定时，直接 rest(until=…) 新建更简单。\n"
             "\n"
-            "## 不传任何参数(无参 rest)\n"
-            "  rest() 无参 → 直接返睡前提示卡 + 列出当前 pending timer(\n"
-            "  含 id)，模型从列表中选 reuse 或新建 until 到第二次真睡。\n"
+            "## 静眠(不设闹钟)\n"
+            "  rest() → 第一次返睡前提示卡。\n"
+            "  再次 rest()（或 rest(confirm=true)）→ 真睡，**不设闹钟**：\n"
+            "  有新消息、任务指派或日程闹钟时会自然唤醒。\n"
+            "  无事可等、或唯一阻塞是等别人回复时选这个——不必每次硬给\n"
+            "  自己设一个时间，没事的时候可以不设闹钟。\n"
             "\n"
             "## mental_context\n"
             "  给未来自己的留言(做到哪/下一步/卡点)。reuse 时会追加到原备注后。\n"
             "\n"
             "## 醒来\n"
-            "  精力恢复后系统自动叫醒(可能比 until 早)。until 设真正想被叫醒的时间。"
+            "  设了 until 的：精力恢复后系统自动叫醒(可能比 until 早)。\n"
+            "  静眠的：外部事件(消息/任务/闹钟)到来即醒。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "until": {
                     "type": "string",
-                    "description": "ISO8601 唤醒时间。和 reuse 至少填一个。",
+                    "description": "ISO8601 唤醒时间。不填且不填 reuse = 静眠（不设闹钟，等外部事件唤醒）。",
                 },
                 "reuse": {
                     "type": "integer",
-                    "description": "复用现有 timer 闹钟的 id（从 sense_schedule / 重复报错提示获得）。和 until 至少填一个。",
+                    "description": "复用现有 timer 闹钟的 id（从 sense_schedule / 重复报错提示获得）。和 until 二选一；都不填则静眠。",
                 },
                 "hours": {"type": "number", "description": "（兼容）睡多少小时，until 优先"},
                 "mental_context": {"type": "string", "description": "给未来自己的留言"},

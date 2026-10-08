@@ -46,9 +46,10 @@ def customer_env(tmp_path, monkeypatch):
 
 
 class _FakeRequest:
-    def __init__(self, body=None, match_info=None):
+    def __init__(self, body=None, match_info=None, query=None):
         self._body = body or {}
         self.match_info = match_info or {}
+        self.query = query or {}
 
     async def json(self):
         return self._body
@@ -118,3 +119,32 @@ def test_get_messages_unknown_session(customer_env):
 
     status, _ = _get_messages("cust-none")
     assert status == 404
+
+
+def test_get_messages_archived_project_replay(customer_env):
+    """归档会话也能回放（客户点历史咨询记录右侧不空白）。
+
+    回归：handle_get_messages 旧实现只认 active 项目且无视 ?project_id=，
+    客户批量结束后点任何历史记录都 404 → 右侧空白。
+    """
+    d = _start({"customer_name": "钱总", "text": "启动", "template": "demo"})
+    cid = d["customer_id"]
+    pid = d["project_id"]
+
+    from business.consulting.governance import close_project
+
+    assert close_project(pid, reason="customer_closed")["ok"]
+
+    from business.consulting import api_customer as cr
+
+    resp = asyncio.run(cr.handle_get_messages(_FakeRequest(
+        match_info={"customer_id": cid}, query={"project_id": pid})))
+    data = json.loads(resp.text)
+    assert resp.status == 200 and data["ok"]
+    texts = [(m["from"], m["text"]) for m in data["messages"]]
+    assert ("customer", "启动") in texts
+
+    # 不带 project_id 也回退到最近一个项目（看历史）
+    resp2 = asyncio.run(cr.handle_get_messages(_FakeRequest(
+        match_info={"customer_id": cid})))
+    assert resp2.status == 200 and json.loads(resp2.text)["ok"]

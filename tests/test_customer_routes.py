@@ -181,3 +181,21 @@ def test_files_root_shares_and_personal_zones(customer_env):
     resp3 = _aio.run(cr.handle_files(_FakeRequest(
         match_info={"customer_id": cid}, query={"path": "../../etc"})))
     assert resp3.status == 403
+
+
+def test_suspended_customer_message_resumes_not_duplicates(customer_env):
+    """挂起项目的客户回来 → 落回原项目并自动复活，不误建新项目。"""
+    d = _start({"customer_name": "郑总", "text": "启动", "template": "demo"})
+    cid, pid = d["customer_id"], d["project_id"]
+
+    from business.consulting.governance import suspend_project
+
+    assert suspend_project(pid, reason="waiting_customer")["ok"]
+
+    d2 = _start({"customer_name": "郑总", "customer_id": cid, "text": "我回来了"})
+    assert d2["created"] is False and d2["project_id"] == pid
+
+    from business.consulting import projects_registry as pr
+
+    assert pr.lookup_project(pid)["status"] == "active"  # 自动复活
+    assert len([p for p in pr.list_projects() if p.get("customer_id") == cid]) == 1

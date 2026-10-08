@@ -256,6 +256,18 @@ async def _handle_system_budget_series(request: web.Request) -> web.Response:
         return web.json_response({"error": str(exc)}, status=500)
 
 
+def _services_summary_safe() -> dict:
+    """服务型 agent 摘要（def/服务实例/运行统计）。失败降级为空结构。"""
+    try:
+        from application.api.services_admin_routes import collect_services_overview
+
+        return collect_services_overview()
+    except Exception:
+        logger.exception("services summary failed")
+        return {"defs": [], "def_count": 0, "services": [], "service_count": 0,
+                "open_events_total": 0, "last_activity": None}
+
+
 async def _handle_overview(request: web.Request) -> web.Response:
     """Return aggregated status across all instances.
 
@@ -265,6 +277,7 @@ async def _handle_overview(request: web.Request) -> web.Response:
     try:
         instances = _instances_summary()
         projects = _list_projects_summary()
+        services = _services_summary_safe()
         return web.json_response(
             {
                 "instances": instances,
@@ -272,6 +285,7 @@ async def _handle_overview(request: web.Request) -> web.Response:
                 "active_count": sum(1 for i in instances if i["active"]),
                 "projects": projects,
                 "project_count": len(projects),
+                "services": services,
             }
         )
     except Exception as exc:

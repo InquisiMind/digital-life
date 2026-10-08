@@ -449,3 +449,81 @@ def add_services_admin_routes(app: web.Application) -> None:
     app.add_subapp("/api/admin/", _ROUTER)
     app.router.add_get("/services", _serve_page)
     logger.info("Services admin routes registered: /services + /api/admin/*")
+
+
+def collect_services_overview() -> dict:
+    """服务型 agent 总览摘要（供 system overview 聚合）。
+
+    三层结构：def 清单（含服务实例计数）→ active 服务行（含运行统计）
+    → 计数汇总。def 目录扫描与 services_registry 均为只读，失败返回
+    空摘要而非抛错——不拖垮 overview 主数据。
+    """
+    from infrastructure.persistence import services_registry
+
+    # def 清单（与 handle_list_defs 同源逻辑）
+    def_rows: list[dict] = []
+    try:
+        import yaml as _yaml
+
+        from infrastructure.config import get_project_root
+
+        apps = get_project_root() / "apps"
+        if apps.is_dir():
+            for d in sorted(apps.iterdir()):
+                cfg = d / "config" / "app.yaml"
+                if not cfg.exists():
+                    continue
+                try:
+                    data = _yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+                except Exception:
+                    continue
+                if str(data.get("runtime_kind") or "") == "definition":
+                    def_rows.append(
+                        {"def_id": d.name, "display_name": data.get("display_name") or d.name}
+                    )
+    except Exception:
+        logger.exception("services overview: scan defs failed")
+
+    # 服务实例（含运行统计）
+    svc_rows: list[dict] = []
+    try:
+        for svc in services_registry.list_services():
+            pid = svc.get("project_id") or ""
+            project = services_registry.lookup_project(pid) if pid else None
+            svc_rows.append(
+                {
+                    "service_id": svc["service_id"],
+                    "agent_def_id": svc["agent_def_id"],
+                    "role": svc.get("display_name") or "",
+                    "project_id": pid,
+                    "project_name": (project or {}).get("name", ""),
+                    "status": svc["status"],
+                    **_service_stats(svc["service_id"]),
+                }
+            )
+    except Exception:
+        logger.exception("services overview: list services failed")
+
+    by_def: dict[str, dict] = {}
+    for s in svc_rows:
+        g = by_def.setdefault(
+            s["agent_def_id"], {"service_count": 0, "active_count": 0}
+        )
+        g["service_count"] += 1
+        if s["status"] == "active":
+            g["active_count"] += 1
+    for d in def_rows:
+        d.update(by_def.get(d["def_id"], {"service_count": 0, "active_count": 0}))
+
+    active = [s for s in svc_rows if s["status"] == "active"]
+    last_wake = max(
+        (s["last_wake_at"] for s in svc_rows if s.get("last_wake_at")), default=None
+    )
+    return {
+        "defs": def_rows,
+        "def_count": len(def_rows),
+        "services": active,
+        "service_count": len(active),
+        "open_events_total": sum(s.get("open_events") or 0 for s in active),
+        "last_activity": last_wake,
+    }

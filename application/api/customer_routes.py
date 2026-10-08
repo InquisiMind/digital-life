@@ -141,8 +141,10 @@ async def handle_get_messages(request: web.Request) -> web.Response:
                 "text": text or "",
             })
 
-    # 项目进展：团队 + 待办（角色名映射，供客户侧展示）
+    # 项目进展：团队 + 待办（角色名映射，供客户侧展示）+ 成员实时状态
+    todos_for_status = services_registry.list_project_todos(project["project_id"])
     from domain.service.overlay import read_agent_meta
+    from domain.service.status import service_runtime_status
 
     sid_to_role = {}
     team = []
@@ -150,11 +152,20 @@ async def handle_get_messages(request: web.Request) -> web.Response:
         project["project_id"], status="active"
     ):
         sid_to_role[svc["service_id"]] = svc.get("display_name") or ""
+        _st = service_runtime_status(svc["service_id"])
+        _open_mine = sum(
+            1 for t in todos_for_status
+            if t.get("assignee_id") == svc["service_id"] and t.get("status") in ("open", "in_progress")
+        )
+        if _open_mine and _st["state"] in ("idle", "resting"):
+            _st["detail"] = (f"有 {_open_mine} 项待办未动 · " + _st["detail"]).strip()
         team.append({
             "role": svc.get("display_name") or "",
             "sid": svc["service_id"],
             "is_pm": svc["service_id"] == project.get("pm_id"),
             "avatar": read_agent_meta(svc["service_id"]).get("avatar") or "",
+            "state": _st["state"],
+            "state_detail": _st["detail"],
         })
     todos = [
         {

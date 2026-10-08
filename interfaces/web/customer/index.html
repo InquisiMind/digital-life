@@ -143,6 +143,21 @@ button{font-family:var(--font)}
 .seg button.on svg{opacity:1;color:var(--pri)}
 .seg .dot{position:absolute;top:5px;right:7px;width:6px;height:6px;border-radius:50%;background:#e5484d}
 .pill{margin-left:10px;flex:none;display:inline-flex;padding:5px 12px;border-radius:999px;font-size:12px;font-weight:600;background:var(--pri-weak);color:var(--pri-deep)}
+/* ══ 团队实时状态条 ══ */
+.statusbar{flex:none;display:flex;align-items:center;gap:8px;padding:7px 20px;border-bottom:1px solid var(--bd);background:var(--bg-subtle);overflow-x:auto}
+.statusbar::-webkit-scrollbar{height:0}
+.st-cap{font-size:11px;color:var(--tx-3);letter-spacing:1px;font-weight:600;flex:none}
+.st-chip{flex:none;display:inline-flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--bd);border-radius:999px;padding:4px 11px 4px 8px;font-size:12px;cursor:pointer;transition:border-color .12s}
+.st-chip:hover{border-color:var(--pri)}
+.st-chip b{font-weight:600}
+.st-chip .d{font-size:10.5px;color:var(--tx-3);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.st-dot{flex:none;width:8px;height:8px;border-radius:50%}
+.st-working{background:var(--ok);animation:pulse 1.6s ease infinite}
+.st-resting{background:var(--tx-3)}
+.st-idle{background:var(--pri)}
+.st-queued{background:var(--warn);animation:pulse 1.6s ease infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(14,159,110,.35)}50%{box-shadow:0 0 0 5px rgba(14,159,110,0)}}
+.tb-cap .st-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
 
 /* ══ 主区 panes ══ */
 .pane{flex:1;min-height:0;display:none;flex-direction:column}
@@ -417,6 +432,8 @@ button{font-family:var(--font)}
       <span class="pill" id="stage" style="display:none"></span>
     </header>
 
+    <div class="statusbar" id="statusbar" style="display:none"><span class="st-cap">团队</span></div>
+
     <div class="pane on" id="p-chat">
       <div class="scroll"><div class="col" id="chat"></div></div>
       <div class="comp-wrap" id="comp-wrap" style="display:none">
@@ -598,6 +615,17 @@ document.querySelectorAll('#seg button').forEach(b=>b.onclick=()=>{
  if(b.dataset.p==='comm')pollComm(true);
  if(b.dataset.p==='tasks')pollTeam(true);
  if(b.dataset.p==='files')pollFiles(true);});
+const ST_TXT={working:'工作中',resting:'休息中',idle:'待命',queued:'排队处理'};
+function renderStatusbar(team){
+ const bar=$('statusbar');if(!bar)return;
+ if(!team.length){bar.style.display='none';return;}
+ bar.style.display='flex';
+ bar.innerHTML='<span class="st-cap">团队</span>'+team.map(t=>{
+  const st=t.state||'idle';
+  return `<span class="st-chip" onclick="openMember('${esc(t.role)}')" title="${esc(t.state_detail||ST_TXT[st]||st)}">
+   <span class="st-dot st-${st}"></span><b>${esc(t.role)}</b>
+   <span class="d">${esc(t.state_detail||ST_TXT[st]||'')}</span></span>`;}).join('');
+}
 function toggleRail(){$('rail-el').classList.toggle('open');$('veil').classList.toggle('on');}
 
 async function jget(u){
@@ -668,6 +696,7 @@ async function poll(){
    $('stage').style.display='inline-flex';$('stage').textContent=d.stage;
    teamCache=d.team;todosCache=d.todos||[];evCache=d.todo_events||[];
    (d.team||[]).forEach(t=>{memberSid[t.role]=t.sid;memberAvatar[t.role]=t.avatar||'';})}
+  renderStatusbar(d.team||[]);
   const s=JSON.stringify(d.messages);
   if(s!==sig.chat){sig.chat=s;chatEl.innerHTML='';
    if(!d.messages.length){welcome();}
@@ -712,9 +741,12 @@ function renderTasks(){
  todosCache.forEach(t=>{const a=t.assignee||'未分派';(by[a]=by[a]||[]).push(t);});
  const total=todosCache.length,done=todosCache.filter(t=>t.status==='done').length;
  $('steps').innerHTML=`<div class="tb-head">任务看板 · ${done}/${total} 已完成</div><div class="tb">`+
-  Object.entries(by).map(([a,ts])=>`<div class="tb-col"><div class="tb-cap">${esc(a)}<span>${ts.filter(t=>t.status==='done').length}/${ts.length}</span></div>
+  Object.entries(by).map(([a,ts])=>{
+   const tm=(teamCache||[]).find(x=>x.role===a);
+   const st=tm?(tm.state||'idle'):null;
+   return `<div class="tb-col"><div class="tb-cap">${st?`<span class="st-dot st-${st}"></span>`:''}${esc(a)}<span>${ts.filter(t=>t.status==='done').length}/${ts.length}</span></div>
    ${ts.map(t=>`<div class="tb-card ${t.status}"><span class="bx"></span><div><b>${t.kind==='milestone'?'🚩 ':''}${esc(t.title)}</b><div class="cfg-mono" style="margin-top:2px">${t.kind==='milestone'?'里程碑 · ':''}${t.status==='done'?'已完成':t.status==='blocked'?'🔒 待解锁（前置未完成）':'进行中'} · 建 ${esc((t.created_at||'').slice(5,10))}</div></div></div>`).join('')}
-  </div>`).join('')+`</div>`||'<div class="cfg-note">尚无任务</div>';
+  </div>`;}).join('')+`</div>`||'<div class="cfg-note">尚无任务</div>';
  // 任务时间线：todo 变更事件流（引擎审计：创建/更新/完成/重启/改派）
  const KTXT={created:'创建任务',updated:'更新任务',completed:'完成任务',reopened:'重启任务',reassigned:'改派任务'};
  $('tl').innerHTML=`<div class="tl-head"><span class="h">任务动态 · 变更记录</span></div>`+

@@ -31,7 +31,7 @@ def _status(service_id: str) -> Optional[dict]:
     d = resolve_runtime_dir(service_id) / "data"
     now = _now_ts()
 
-    # 1) 最近一次 wake 是否仍在进行
+    # 1) 最近一次 wake 是否仍在进行 → 结合最后 turn 还原"正在干什么"
     rdb = d / "runtime_log.db"
     if rdb.exists():
         conn = sqlite3.connect(str(rdb), timeout=3.0)
@@ -40,22 +40,38 @@ def _status(service_id: str) -> Optional[dict]:
                 "SELECT started_at, ended_at, meta_json FROM wake"
                 " ORDER BY wake_seq DESC LIMIT 1"
             ).fetchone()
+            turn = conn.execute(
+                "SELECT role, tool_name, tool_calls, timestamp FROM turn"
+                " ORDER BY id DESC LIMIT 1"
+            ).fetchone()
         finally:
             conn.close()
-        if row:
-            started, ended, meta = row
-            if not ended:
-                try:
-                    mins = max(0, int((now - float(started)) / 60))
-                except (TypeError, ValueError):
-                    mins = 0
-                reason = ""
-                try:
-                    reason = (json.loads(meta or "{}").get("trigger_type") or "")[:20]
-                except ValueError:
-                    pass
-                return {"state": "working",
-                        "detail": f"{'· ' + reason if reason else ''}已进行 {mins} 分钟"}
+        if row and not row[1]:  # wake 进行中
+            action, act_at = "处理中", None
+            if turn:
+                role, tool_name, tool_calls, ts = turn
+                act_at = ts
+                if role == "assistant":
+                    try:
+                        calls = json.loads(tool_calls or "[]")
+                        nm = calls[0].get("function", {}).get("name", "") if calls else ""
+                        action = f"调用 {nm}" if nm else "组织回复"
+                    except (ValueError, IndexError):
+                        action = "组织回复"
+                elif role == "tool":
+                    action = f"消化 {tool_name} 的结果、思考中" if tool_name else "思考中"
+                else:
+                    action = "思考中"
+            try:
+                elapsed = max(0, now - (act_at or float(row[0])))
+            except (TypeError, ValueError):
+                elapsed = 0
+            mm, ss = int(elapsed // 60), int(elapsed % 60)
+            if elapsed > 120:  # 单环节卡住超 2 分钟 → 阻塞
+                return {"state": "stuck",
+                        "detail": f"{action} 已 {mm}:{ss:02d}，疑似卡住"}
+            return {"state": "working",
+                        "detail": f"{action} · {mm}:{ss:02d}"}
 
     # 2) 未到期的 timer（rest 闹钟）→ 休息中
     sdb = d / "state.db"
@@ -89,6 +105,6 @@ def _status(service_id: str) -> Optional[dict]:
             except ValueError:
                 pass
         if open_ev:
-            return {"state": "queued", "detail": f"{open_ev} 个事件待处理（调度中）"}
+            return {"state": "idle", "detail": f"待命（{open_ev} 个事件排队）"}
 
     return {"state": "idle", "detail": "待命"}

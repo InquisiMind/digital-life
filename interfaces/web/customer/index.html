@@ -147,15 +147,26 @@ button{font-family:var(--font)}
 .statusbar{flex:none;display:flex;align-items:center;gap:8px;padding:7px 20px;border-bottom:1px solid var(--bd);background:var(--bg-subtle);overflow-x:auto}
 .statusbar::-webkit-scrollbar{height:0}
 .st-cap{font-size:11px;color:var(--tx-3);letter-spacing:1px;font-weight:600;flex:none}
-.st-chip{flex:none;display:inline-flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--bd);border-radius:999px;padding:4px 11px 4px 8px;font-size:12px;cursor:pointer;transition:border-color .12s}
+.st-chip{flex:none;display:inline-flex;align-items:center;gap:7px;background:var(--bg);border:1px solid var(--bd);border-radius:999px;padding:4px 12px 4px 5px;font-size:12px;cursor:pointer;transition:border-color .12s}
 .st-chip:hover{border-color:var(--pri)}
 .st-chip b{font-weight:600}
-.st-chip .d{font-size:10.5px;color:var(--tx-3);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.st-chip .d{font-size:10.5px;color:var(--tx-3);max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .st-dot{flex:none;width:8px;height:8px;border-radius:50%}
-.st-working{background:var(--ok);animation:pulse 1.6s ease infinite}
+.st-working{background:var(--ok)}
 .st-resting{background:var(--tx-3)}
 .st-idle{background:var(--pri)}
-.st-queued{background:var(--warn);animation:pulse 1.6s ease infinite}
+.st-stuck{background:#e5484d;animation:pulse-red 1.2s ease infinite}
+@keyframes pulse-red{0%,100%{box-shadow:0 0 0 0 rgba(229,72,77,.4)}50%{box-shadow:0 0 0 5px rgba(229,72,77,0)}}
+/* 头像 + 活动律动边框（工作中=转圈渐变环；阻塞=红环闪烁） */
+.st-ava{position:relative;width:24px;height:24px;flex:none}
+.st-ava .core{position:relative;z-index:1;width:24px;height:24px;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:650;overflow:hidden}
+.st-ava .core img{width:100%;height:100%;object-fit:cover}
+.st-ava.live::before{content:'';position:absolute;inset:-3px;border-radius:50%;z-index:0;
+ background:conic-gradient(from 0deg,#2f6bff,#0e9f6e,#f5b642,#2f6bff);animation:spin 1.8s linear infinite}
+.st-ava.stucklive::before{content:'';position:absolute;inset:-3px;border-radius:50%;z-index:0;
+ background:conic-gradient(from 0deg,#e5484d,#e5484d88,#e5484d);animation:spin-red 1s ease infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes spin-red{0%,100%{transform:rotate(0)}50%{transform:rotate(180deg)}}
 @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(14,159,110,.35)}50%{box-shadow:0 0 0 5px rgba(14,159,110,0)}}
 .tb-cap .st-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
 
@@ -615,15 +626,18 @@ document.querySelectorAll('#seg button').forEach(b=>b.onclick=()=>{
  if(b.dataset.p==='comm')pollComm(true);
  if(b.dataset.p==='tasks')pollTeam(true);
  if(b.dataset.p==='files')pollFiles(true);});
-const ST_TXT={working:'工作中',resting:'休息中',idle:'待命',queued:'排队处理'};
+const ST_TXT={working:'工作中',resting:'休息中',idle:'待命',stuck:'任务阻塞中'};
 function renderStatusbar(team){
  const bar=$('statusbar');if(!bar)return;
  if(!team.length){bar.style.display='none';return;}
  bar.style.display='flex';
  bar.innerHTML='<span class="st-cap">团队</span>'+team.map(t=>{
   const st=t.state||'idle';
+  const av=avaOf(t.role);
+  const live=st==='working'?' live':st==='stuck'?' stucklive':'';
   return `<span class="st-chip" onclick="openMember('${esc(t.role)}')" title="${esc(t.state_detail||ST_TXT[st]||st)}">
-   <span class="st-dot st-${st}"></span><b>${esc(t.role)}</b>
+   <span class="st-ava${live}"><span class="core" style="background:${av.bg}">${av.img?`<img src="${av.img}" alt="">`:av.txt}</span></span>
+   <b>${esc(t.role)}</b>
    <span class="d">${esc(t.state_detail||ST_TXT[st]||'')}</span></span>`;}).join('');
 }
 function toggleRail(){$('rail-el').classList.toggle('open');$('veil').classList.toggle('on');}

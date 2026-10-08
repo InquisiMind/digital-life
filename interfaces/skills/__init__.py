@@ -132,13 +132,15 @@ def get_instance_registered_skills(instance_id: str | None = None) -> list[str]:
     overlay 追加）——定义层 app.yaml 不动，保持同 def 共享语义。
     """
     from infrastructure.config import (
-        get_instance_app_config_path,
+        get_instance_config_path,
         get_app_instance_id,
         get_global_config_dir,
     )
 
     uuid = get_app_instance_id(instance_id)
-    app_yaml = get_instance_app_config_path(uuid)
+    # 用带定义层二跳的 config path（服务注册表里的 skills 在 def 层 app.yaml，
+    # D1=B 共享语义）——get_instance_app_config_path 不二跳，服务会拿到空清单
+    app_yaml = get_instance_config_path(uuid)
 
     names: list[str] = []
     if app_yaml.exists():

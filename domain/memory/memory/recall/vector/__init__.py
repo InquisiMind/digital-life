@@ -134,26 +134,24 @@ _MMR_LAMBDA = 0.7  # 相关性 vs 多样性的权重 (1.0=纯相关性)
 # ──────────────────── Embedding API ────────────────────
 
 def _get_api_key() -> Optional[str]:
-    # EMBEDDING_API_KEY: embedding 专用 key（最高优先）。
-    # 场景：主 LLM key 与 embedding key 分属不同智谱账户时，用它在
-    # secrets.env 单独指定 embedding 轨道用的 key，不影响主 LLM。
-    # 向后兼容：不设 EMBEDDING_API_KEY 时行为与原先完全一致。
-    key = (os.environ.get("EMBEDDING_API_KEY")
-           or os.environ.get("LLM_API_KEY")
-           or os.environ.get("GLM_API_KEY"))
+    """embedding 专用 key——独立计费账户，**不沿用主 LLM Key 兜底**。
+
+    优先级：EMBEDDING_API_KEY 环境变量 → secrets.env 的 EMBEDDING_API_KEY 行
+    → 模型配置页「向量 Key」（model.embeddings_api_key，local.yaml）。
+    都没有 → None（向量召回降级为全文检索）。
+    主 Key（CodingPlan 套餐）不再兜底：embedding 按量计费走开放平台账户，
+    套餐 key 能否调用取决于平台政策，随时可能失效（2026-10-09 zhp 决定）。
+    """
+    key = os.environ.get("EMBEDDING_API_KEY")
     if key:
         return key
     env_path = get_runtime_env_path()
     if env_path.exists():
-        lines = [l.strip() for l in env_path.read_text().splitlines()]
-        # 两遍扫描：EMBEDDING_API_KEY 优先于行序（GLM 行可能在文件更前面）
-        for line in lines:
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
             if line.startswith("EMBEDDING_API_KEY="):
                 return line.split("=", 1)[1].strip()
-        for line in lines:
-            if line.startswith("LLM_API_KEY=") or line.startswith("GLM_API_KEY="):
-                return line.split("=", 1)[1].strip()
-    # 配置层回退：模型配置页写的 model.embeddings_api_key（local.yaml）
+    # 配置层：模型配置页写的 model.embeddings_api_key（local.yaml）
     try:
         from infrastructure.ai.config import load_runtime_config
 

@@ -74,6 +74,8 @@ async def handle_def_profile_get(request: web.Request) -> web.Response:
     except Exception:  # noqa: BLE001
         _L4 = ""
     l4 = overlay.read_def_file(def_id, "L4_PROMPT.md")
+    dm = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+    key = str(dm.get("api_key") or "")
     return _json({
         "ok": True,
         "def_id": def_id,
@@ -83,6 +85,13 @@ async def handle_def_profile_get(request: web.Request) -> web.Response:
         "extra_prompt": (overlay.read_def_file(def_id, "EXTRA_PROMPT.md") or "").strip(),
         "l4": {"content": l4 if l4 is not None else _L4,
                "source": "overlay" if l4 is not None else "engine"},
+        "model": {
+            "provider": dm.get("provider") or "",
+            "base_url": dm.get("base_url") or "",
+            "name": dm.get("name") or "",
+            "api_mode": dm.get("api_mode") or "",
+            "api_key_masked": (key[:4] + "****" + key[-4:]) if len(key) > 8 else ("****" if key else ""),
+        },
     })
 
 
@@ -118,6 +127,22 @@ async def handle_def_profile_put(request: web.Request) -> web.Response:
     if "l4" in body:
         overlay.write_def_file(def_id, "L4_PROMPT.md", str(body["l4"] or ""))
         touched.append("l4")
+    if isinstance(body.get("model"), dict):
+        m = body["model"]
+        cur = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+        for k in ("provider", "base_url", "name", "api_mode"):
+            if k in m:
+                v = str(m.get(k) or "").strip()
+                if v:
+                    cur[k] = v
+                else:
+                    cur.pop(k, None)  # 清空 = 恢复沿用全局
+        key = str(m.get("api_key") or "").strip()
+        if key:
+            cur["api_key"] = key  # 只写不改：置空保存视为保持不变
+        cfg["model"] = cur
+        _save_def_cfg(def_id, cfg)
+        touched.append("model")
     if "name" in body:
         _save_def_cfg(def_id, cfg)
     if not touched:
@@ -645,6 +670,78 @@ async def handle_def_create(request: web.Request) -> web.Response:
 # ── 项目模版：列表 / 读取 / 保存（raw + structured） ─────────────────────
 
 
+# ── 全局模型配置（config/default.yaml model 段；密钥只入 local.yaml） ──
+
+
+def _read_yaml_dict(path):
+    try:
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+async def handle_model_config_get(request: web.Request) -> web.Response:
+    from infrastructure.ai.config import load_runtime_config, resolve_runtime_provider
+    from infrastructure.config import get_project_root
+
+    root = get_project_root()
+    g = _read_yaml_dict(root / "config" / "default.yaml").get("model") or {}
+    local = _read_yaml_dict(root / "config" / "local.yaml").get("model") or {}
+    eff = resolve_runtime_provider(config=load_runtime_config())
+    key = str(local.get("api_key") or g.get("api_key") or eff.get("api_key") or "")
+    masked = (key[:4] + "****" + key[-4:]) if len(key) > 8 else ("****" if key else "")
+    return _json({
+        "ok": True,
+        "global": {k: str(g.get(k) or "") for k in ("provider", "base_url", "name", "api_mode")},
+        "summary": str(g.get("summary") or ""),
+        "api_key_masked": masked,
+        "has_key": bool(key),
+        "effective": {k: str(eff.get(k) or "") for k in ("provider", "base_url", "model", "api_mode")},
+    })
+
+
+async def handle_model_config_put(request: web.Request) -> web.Response:
+    from infrastructure.config import get_project_root
+
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    if not isinstance(body, dict):
+        return _json({"ok": False, "error": "bad body"}, 400)
+    root = get_project_root()
+
+    # 模型段 → config/default.yaml（入库安全：密钥不写这里）
+    default_p = root / "config" / "default.yaml"
+    doc = _read_yaml_dict(default_p)
+    model = doc.get("model") if isinstance(doc.get("model"), dict) else {}
+    for k in ("provider", "base_url", "name", "api_mode", "summary"):
+        if k in body:
+            v = str(body.get(k) or "").strip()
+            if v:
+                model[k] = v
+            else:
+                model.pop(k, None)
+    doc["model"] = model
+    default_p.parent.mkdir(parents=True, exist_ok=True)
+    default_p.write_text(yaml.safe_dump(doc, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+    # 密钥 → config/local.yaml（gitignore，机器级）
+    key = str(body.get("api_key") or "").strip()
+    if key:
+        local_p = root / "config" / "local.yaml"
+        ldoc = _read_yaml_dict(local_p)
+        lmodel = ldoc.get("model") if isinstance(ldoc.get("model"), dict) else {}
+        lmodel["api_key"] = key
+        ldoc["model"] = lmodel
+        local_p.parent.mkdir(parents=True, exist_ok=True)
+        local_p.write_text(yaml.safe_dump(ldoc, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+    logger.info("MODEL_CONFIG_UPDATED keys=%s has_key=%s",
+                [k for k in ("provider", "base_url", "name", "summary") if k in body], bool(key))
+    return _json({"ok": True})
+
+
 def register_into(router: web.Application) -> None:
     """并进 services_admin 的 /api/admin/ 子应用（须在 add_subapp freeze 之前）。"""
     router.router.add_get("/agent-defs/{def_id}/profile", handle_def_profile_get)
@@ -657,6 +754,8 @@ def register_into(router: web.Application) -> None:
     router.router.add_post("/agent-defs/{def_id}/skills/upload", handle_def_skill_upload)
     router.router.add_get("/agent-defs/{def_id}/tools", handle_def_tools_get)
     router.router.add_put("/agent-defs/{def_id}/tools", handle_def_tools_put)
+    router.router.add_get("/model-config", handle_model_config_get)
+    router.router.add_put("/model-config", handle_model_config_put)
     router.router.add_delete("/agent-defs/{def_id}", handle_def_delete)
     router.router.add_post("/agent-defs/{def_id}/avatar", handle_def_avatar_post)
     router.router.add_get("/agent-defs/{def_id}/avatar", handle_def_avatar_get)

@@ -26,6 +26,13 @@ def call_llm(
     config = load_runtime_config()
     runtime = resolve_runtime_provider(provider, config=config)
     model_name = model or runtime.get("model") or ""
+    # 摘要类调用（无显式 model 的场景）可用 model.summary 指定更便宜的模型
+    # ——只换名字，同 provider / endpoint / key
+    if not model:
+        model_cfg = config.get("model") if isinstance(config.get("model"), dict) else {}
+        summary_name = str(model_cfg.get("summary") or "").strip()
+        if summary_name:
+            model_name = summary_name
     resolved_base_url = (base_url or runtime.get("base_url") or "https://api.openai.com/v1").rstrip("/")
     resolved_api_key = api_key or runtime.get("api_key") or ""
     if not model_name:

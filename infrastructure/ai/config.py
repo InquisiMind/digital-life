@@ -126,8 +126,9 @@ def load_runtime_config(path: Path | None = None) -> dict[str, Any]:
     """加载合并的运行时配置。
 
     层级（后者覆盖前者）：
-      1. config/default.yaml          — 系统级
-      2. apps/<id>/config/app.yaml    — 实例级（deep_merge 覆盖）
+      1. config/default.yaml          — 系统级（入库；模型全局默认在此）
+      2. config/local.yaml            — 机器级/密钥（不入 git；model.api_key 在此）
+      3. apps/<id>/config/app.yaml    — 实例级（deep_merge 覆盖）
 
     path 参数用于测试覆盖。正常流程不传——自动解析到当前实例。
     """
@@ -139,7 +140,12 @@ def load_runtime_config(path: Path | None = None) -> dict[str, Any]:
     if global_default.exists():
         result = _load_yaml_file(global_default)
 
-    # 2. Instance layer: apps/<id>/config/app.yaml（新版统一位置）
+    # 2. Machine layer: config/local.yaml（不入 git——密钥/机器偏好写这里）
+    local_path = get_project_root() / "config" / "local.yaml"
+    if local_path.exists():
+        result = deep_merge(result, _load_yaml_file(local_path))
+
+    # 3. Instance layer: apps/<id>/config/app.yaml（新版统一位置）
     instance_config = path or _get_instance_config_path()
     if instance_config.exists():
         instance_cfg = _load_yaml_file(instance_config)

@@ -44,7 +44,22 @@ def _get_vision_model() -> str:
 
 
 def _get_llm_base_url() -> str:
-    """复用主模型的 base_url（vision + 主模型同平台、同账号体系）。"""
+    """vision 端点：默认开放平台 paas/v4（glm-4.6v 在此，coding 端点无视觉模型）。
+
+    可用 model.vision_base_url 显式覆盖（如第三方视觉服务）；
+    注意不要沿用主模型的 coding 端点——400 实测（2026-10-09）。
+    """
+    try:
+        from infrastructure.ai.config import load_runtime_config
+
+        cfg = load_runtime_config()
+        model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+        explicit = str(model_cfg.get("vision_base_url") or "").strip()
+        if explicit:
+            return explicit.rstrip("/")
+    except Exception:
+        pass
+    # 旧路径兜底：实例 app.yaml 的 model.base_url
     try:
         iid = get_app_instance_id() or ""
         if iid:
@@ -63,14 +78,22 @@ def _get_llm_base_url() -> str:
 
 
 def _get_llm_api_key() -> str:
-    """复用主模型的 API key。"""
-    import os
-    # 从 secrets.env 读（和主模型一致）
+    """复用主模型的 API key——走主模型同一条解析链（含服务→定义层二跳）。"""
+    try:
+        from infrastructure.ai.config import load_runtime_config, resolve_runtime_provider
+
+        rt = resolve_runtime_provider(config=load_runtime_config())
+        if rt.get("api_key"):
+            return str(rt["api_key"])
+    except Exception:
+        pass
+    # 旧路径兜底：实例 secrets.env（get_instance_env_path 含服务→def 层二跳）
     try:
         iid = get_app_instance_id() or ""
         if iid:
-            from infrastructure.config import get_project_root
-            secrets_path = get_project_root() / "apps" / iid / "config" / "secrets.env"
+            from infrastructure.config import get_instance_env_path
+
+            secrets_path = get_instance_env_path(iid)
             if secrets_path.exists():
                 for line in secrets_path.read_text(encoding="utf-8").splitlines():
                     line = line.strip()

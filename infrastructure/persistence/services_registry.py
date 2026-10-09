@@ -25,6 +25,7 @@ lease。服务自己的事件/会话/记忆在服务私有的 state.db
 """
 
 from __future__ import annotations
+from contextlib import closing
 
 import json
 import logging
@@ -102,7 +103,7 @@ def _ensure_schema() -> None:
     global _SCHEMA_READY
     if _SCHEMA_READY:
         return
-    with _connect() as conn:
+    with closing(_connect()) as conn, conn:
         conn.executescript(_SCHEMA_SQL)
         for table, cols in _MIGRATION_COLUMNS.items():
             existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -173,7 +174,7 @@ def create_service(
     _ensure_schema()
     sid = service_id or new_service_id()
     now = _now_iso()
-    with _connect() as conn:
+    with closing(_connect()) as conn, conn:
         conn.execute(
             "INSERT INTO services (service_id, agent_def_id, project_id, display_name,"
             " status, capabilities_json, subscriptions_json, tools_json, created_at, updated_at)"
@@ -201,7 +202,7 @@ def create_service(
 
 def lookup_service(service_id: str) -> Optional[dict]:
     _ensure_schema()
-    with _connect() as conn:
+    with closing(_connect()) as conn, conn:
         row = conn.execute(
             "SELECT * FROM services WHERE service_id = ?", (service_id,)
         ).fetchone()
@@ -211,13 +212,13 @@ def lookup_service(service_id: str) -> Optional[dict]:
 def list_services(status: str | None = None) -> list[dict]:
     _ensure_schema()
     if status:
-        with _connect() as conn:
+        with closing(_connect()) as conn, conn:
             rows = conn.execute(
                 "SELECT * FROM services WHERE status = ? ORDER BY created_at",
                 (status,),
             ).fetchall()
     else:
-        with _connect() as conn:
+        with closing(_connect()) as conn, conn:
             rows = conn.execute(
                 "SELECT * FROM services ORDER BY created_at"
             ).fetchall()
@@ -229,7 +230,7 @@ def set_service_status(service_id: str, status: str) -> bool:
     if status not in (SERVICE_STATUS_ACTIVE, SERVICE_STATUS_ARCHIVED):
         raise ValueError(f"unknown service status: {status!r}")
     _ensure_schema()
-    with _connect() as conn:
+    with closing(_connect()) as conn, conn:
         cur = conn.execute(
             "UPDATE services SET status = ?, updated_at = ? WHERE service_id = ?",
             (status, _now_iso(), service_id),
@@ -262,7 +263,7 @@ def update_service_fields(service_id: str, *, project_id: str | None = None,
         sets.append("tools_json = ?")
         params.append(json.dumps(tools, ensure_ascii=False))
     params.append(service_id)
-    with _connect() as conn:
+    with closing(_connect()) as conn, conn:
         cur = conn.execute(
             f"UPDATE services SET {', '.join(sets)} WHERE service_id = ?", params
         )
@@ -313,7 +314,7 @@ def resolve_service_def(service_id: str) -> Optional[str]:
         pass
     try:
         _ensure_schema()
-        with _connect() as conn:
+        with closing(_connect()) as conn, conn:
             row = conn.execute(
                 "SELECT agent_def_id FROM services WHERE service_id = ?",
                 (service_id,),
@@ -353,7 +354,7 @@ def try_acquire_lease(service_id: str, holder: str, stale_seconds: float) -> boo
     """
     _ensure_schema()
     now = time.time()
-    with _connect() as conn:
+    with closing(_connect()) as conn, conn:
         cur = conn.execute(
             "INSERT INTO service_leases (service_id, holder, acquired_at)"
             " VALUES (?, ?, ?)"
@@ -369,7 +370,7 @@ def try_acquire_lease(service_id: str, holder: str, stale_seconds: float) -> boo
 def release_lease(service_id: str, holder: str) -> bool:
     """释放租约（只释放自己持有的）。"""
     _ensure_schema()
-    with _connect() as conn:
+    with closing(_connect()) as conn, conn:
         cur = conn.execute(
             "DELETE FROM service_leases WHERE service_id = ? AND holder = ?",
             (service_id, holder),
@@ -379,7 +380,7 @@ def release_lease(service_id: str, holder: str) -> bool:
 
 def get_lease(service_id: str) -> Optional[dict]:
     _ensure_schema()
-    with _connect() as conn:
+    with closing(_connect()) as conn, conn:
         row = conn.execute(
             "SELECT * FROM service_leases WHERE service_id = ?", (service_id,)
         ).fetchone()

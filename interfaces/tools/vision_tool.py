@@ -28,21 +28,19 @@ logger = logging.getLogger(__name__)
 
 
 def _get_vision_model() -> str:
-    """读取配置的 vision 模型，default glm-4.6v。"""
+    """读取配置的 vision 模型，default glm-4.6v。
+
+    三层合并（全局 default.yaml → local.yaml → 实例 app.yaml）——
+    模型配置页的全局「多模态模型」写 model.vision，实例可按需覆盖。
+    """
     try:
-        iid = get_app_instance_id() or ""
-        if not iid:
-            return "glm-4.6v"
-        from infrastructure.config import get_project_root
-        import yaml as _yaml
-        cfg_path = get_project_root() / "apps" / iid / "config" / "app.yaml"
-        if cfg_path.exists():
-            cfg = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-            model_cfg = cfg.get("model") or {}
-            return (model_cfg.get("vision") or "").strip() or "glm-4.6v"
+        from infrastructure.ai.config import load_runtime_config
+
+        cfg = load_runtime_config()
+        model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+        return str(model_cfg.get("vision") or "").strip() or "glm-4.6v"
     except Exception:
-        pass
-    return "glm-4.6v"
+        return "glm-4.6v"
 
 
 def _get_llm_base_url() -> str:

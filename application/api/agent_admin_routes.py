@@ -694,6 +694,7 @@ async def handle_model_config_get(request: web.Request) -> web.Response:
         "ok": True,
         "global": {k: str(g.get(k) or "") for k in ("provider", "base_url", "name", "api_mode")},
         "summary": str(g.get("summary") or ""),
+        "vision": str(g.get("vision") or ""),
         "api_key_masked": masked,
         "has_key": bool(key),
         "effective": {k: str(eff.get(k) or "") for k in ("provider", "base_url", "model", "api_mode")},
@@ -715,7 +716,7 @@ async def handle_model_config_put(request: web.Request) -> web.Response:
     default_p = root / "config" / "default.yaml"
     doc = _read_yaml_dict(default_p)
     model = doc.get("model") if isinstance(doc.get("model"), dict) else {}
-    for k in ("provider", "base_url", "name", "api_mode", "summary"):
+    for k in ("provider", "base_url", "name", "api_mode", "summary", "vision"):
         if k in body:
             v = str(body.get(k) or "").strip()
             if v:

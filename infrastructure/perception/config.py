@@ -125,7 +125,15 @@ def load_config(instance_id: str | None = None) -> PerceptionConfig:
             iid = ""
 
     app_cfg = _read_app_yaml(iid)
-    model_cfg = app_cfg.get("model") or {}
+    # 模型段三层合并（全局 default.yaml → local.yaml → 实例 app.yaml）：
+    # 全局模型配置页的 model.vision / model.base_url 由此生效，实例段可覆盖
+    try:
+        from infrastructure.ai.config import load_runtime_config
+
+        merged_model = load_runtime_config().get("model") or {}
+    except Exception:
+        merged_model = {}
+    model_cfg = {**merged_model, **(app_cfg.get("model") or {})}
     perc_cfg = app_cfg.get("perception") or {}
 
     base_url = (

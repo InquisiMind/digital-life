@@ -78,6 +78,24 @@ FIELDS: tuple[ConfigField, ...] = (
                     "用在收到图片消息时的图片描述，默认 glm-4.6v。",
     ),
     ConfigField(
+        "model.summary", "摘要模型", "model", "yaml", path="model.summary",
+        description="记忆固化等辅助调用的模型名（只换名字，同端点同 Key）。留空 = 与主模型一致。",
+    ),
+    ConfigField(
+        "model.embeddings", "向量模型", "model", "yaml", path="model.embeddings",
+        default="embedding-3",
+        description="记忆语义召回的 embedding 模型（独立计费）。切换后需删实例 memories/memory_vectors.db 重新索引。",
+    ),
+    ConfigField(
+        "model.embeddings_base_url", "向量端点", "model", "yaml", path="model.embeddings_base_url",
+        default="https://open.bigmodel.cn/api/paas/v4/embeddings",
+        description="embedding API endpoint（开放平台独立计费）。",
+    ),
+    ConfigField(
+        "EMBEDDING_API_KEY", "向量 API Key", "model", "env", secret=True,
+        description="embedding 专用 Key（独立计费账户，不沿用主 Key）。留空保存 = 保留当前值。",
+    ),
+    ConfigField(
         "LLM_API_KEY", "API Key", "model", "env", secret=True,
         description="LLM API Key（敏感）。留空保存 = 保留当前值。",
     ),

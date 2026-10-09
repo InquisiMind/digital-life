@@ -48,10 +48,30 @@ def _get_db_path() -> Path:
 # Backward-compatible module-level aliases — resolve lazily.
 # Internal code uses _get_mem_dir() / _get_db_path() to ensure instance isolation.
 
-# 智谱 Embedding API（CodingPlan 不支持 embedding，失败时静默跳过）
+# 智谱 Embedding API（默认值——可在模型配置页覆盖 model.embeddings /
+# model.embeddings_base_url / model.embeddings_api_key）
 _EMBEDDING_MODEL = "embedding-3"
 _EMBEDDING_DIM = 2048
 _EMBEDDING_API = "https://open.bigmodel.cn/api/paas/v4/embeddings"
+
+
+def _embed_cfg() -> tuple[str, str]:
+    """embedding 模型与端点——三层合并（全局 default.yaml → local.yaml → 实例）。
+
+    注意：切换 embedding 模型后向量维度/语义空间会变，需删除实例
+    memories/memory_vectors.db 重新索引。
+    """
+    try:
+        from infrastructure.ai.config import load_runtime_config
+
+        cfg = load_runtime_config()
+        m = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+        return (
+            str(m.get("embeddings") or "").strip() or _EMBEDDING_MODEL,
+            str(m.get("embeddings_base_url") or "").strip() or _EMBEDDING_API,
+        )
+    except Exception:
+        return _EMBEDDING_MODEL, _EMBEDDING_API
 
 # 文件源配置（从 memories 目录读取的静态文件）
 # 阈值基于 GLM embedding-3 实测评测集:
@@ -133,6 +153,17 @@ def _get_api_key() -> Optional[str]:
         for line in lines:
             if line.startswith("LLM_API_KEY=") or line.startswith("GLM_API_KEY="):
                 return line.split("=", 1)[1].strip()
+    # 配置层回退：模型配置页写的 model.embeddings_api_key（local.yaml）
+    try:
+        from infrastructure.ai.config import load_runtime_config
+
+        cfg = load_runtime_config()
+        m = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+        key = str(m.get("embeddings_api_key") or "").strip()
+        if key:
+            return key
+    except Exception:
+        pass
     return None
 
 
@@ -149,15 +180,16 @@ def _embed_texts(texts: List[str]) -> Optional[List[List[float]]]:
     if not api_key:
         logger.warning("LLM API Key not found, skipping embedding")
         return None
+    embed_model, embed_api = _embed_cfg()
     try:
         import urllib.request
         import urllib.error
         payload = json.dumps({
-            "model": _EMBEDDING_MODEL,
+            "model": embed_model,
             "input": texts,
         }).encode("utf-8")
         req = urllib.request.Request(
-            _EMBEDDING_API,
+            embed_api,
             data=payload,
             headers={
                 "Authorization": f"Bearer {api_key}",

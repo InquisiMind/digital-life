@@ -695,6 +695,10 @@ async def handle_model_config_get(request: web.Request) -> web.Response:
         "global": {k: str(g.get(k) or "") for k in ("provider", "base_url", "name", "api_mode")},
         "summary": str(g.get("summary") or ""),
         "vision": str(g.get("vision") or ""),
+        "embeddings": str(g.get("embeddings") or ""),
+        "embeddings_base_url": str(g.get("embeddings_base_url") or ""),
+        "embeddings_key_masked": (lambda k: (k[:4] + "****" + k[-4:]) if len(k) > 8 else ("****" if k else ""))(
+            str(local.get("model", {}).get("embeddings_api_key") if isinstance(local.get("model"), dict) else "") or ""),
         "api_key_masked": masked,
         "has_key": bool(key),
         "effective": {k: str(eff.get(k) or "") for k in ("provider", "base_url", "model", "api_mode")},
@@ -716,7 +720,8 @@ async def handle_model_config_put(request: web.Request) -> web.Response:
     default_p = root / "config" / "default.yaml"
     doc = _read_yaml_dict(default_p)
     model = doc.get("model") if isinstance(doc.get("model"), dict) else {}
-    for k in ("provider", "base_url", "name", "api_mode", "summary", "vision"):
+    for k in ("provider", "base_url", "name", "api_mode", "summary", "vision",
+              "embeddings", "embeddings_base_url"):
         if k in body:
             v = str(body.get(k) or "").strip()
             if v:
@@ -734,6 +739,17 @@ async def handle_model_config_put(request: web.Request) -> web.Response:
         ldoc = _read_yaml_dict(local_p)
         lmodel = ldoc.get("model") if isinstance(ldoc.get("model"), dict) else {}
         lmodel["api_key"] = key
+        ldoc["model"] = lmodel
+        local_p.parent.mkdir(parents=True, exist_ok=True)
+        local_p.write_text(yaml.safe_dump(ldoc, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+    # 向量召回专用密钥 → local.yaml（可选；缺省沿用主 Key 链）
+    ekey = str(body.get("embeddings_api_key") or "").strip()
+    if ekey:
+        local_p = root / "config" / "local.yaml"
+        ldoc = _read_yaml_dict(local_p)
+        lmodel = ldoc.get("model") if isinstance(ldoc.get("model"), dict) else {}
+        lmodel["embeddings_api_key"] = ekey
         ldoc["model"] = lmodel
         local_p.parent.mkdir(parents=True, exist_ok=True)
         local_p.write_text(yaml.safe_dump(ldoc, allow_unicode=True, sort_keys=False), encoding="utf-8")

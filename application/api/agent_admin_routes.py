@@ -698,7 +698,7 @@ async def handle_model_config_get(request: web.Request) -> web.Response:
         "embeddings": str(g.get("embeddings") or ""),
         "embeddings_base_url": str(g.get("embeddings_base_url") or ""),
         "embeddings_key_masked": (lambda k: (k[:4] + "****" + k[-4:]) if len(k) > 8 else ("****" if k else ""))(
-            str(local.get("model", {}).get("embeddings_api_key") if isinstance(local.get("model"), dict) else "") or ""),
+            str(local.get("embeddings_api_key") or "")),
         "api_key_masked": masked,
         "has_key": bool(key),
         "effective": {k: str(eff.get(k) or "") for k in ("provider", "base_url", "model", "api_mode")},

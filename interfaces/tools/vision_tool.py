@@ -31,24 +31,34 @@ def _get_vision_model() -> str:
     """读取配置的 vision 模型，default glm-4.6v。
 
     三层合并（全局 default.yaml → local.yaml → 实例 app.yaml）——
-    模型配置页的全局「多模态模型」写 model.vision，实例可按需覆盖。
+    默认 glm-5.3-flash（与对话模型同端点同 Key，实测具备视觉能力）；
+    模型配置页的「视觉模型」可覆盖。
     """
     try:
         from infrastructure.ai.config import load_runtime_config
 
         cfg = load_runtime_config()
         model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
-        return str(model_cfg.get("vision") or "").strip() or "glm-4.6v"
+        return str(model_cfg.get("vision") or "").strip() or "glm-5.3-flash"
     except Exception:
-        return "glm-4.6v"
+        return "glm-5.3-flash"
 
 
 def _get_llm_base_url() -> str:
-    """vision 端点：默认开放平台 paas/v4（glm-4.6v 在此，coding 端点无视觉模型）。
+    """vision 端点：跟随对话模型（glm-5.3-flash 在 coding 端点，实测有视觉）。
 
-    可用 model.vision_base_url 显式覆盖（如第三方视觉服务）；
-    注意不要沿用主模型的 coding 端点——400 实测（2026-10-09）。
+    model.vision_base_url 可显式覆盖（第三方视觉服务用）。
+    历史：曾默认开放平台 paas/v4（glm-4.6v 时代），2026-10-09 视觉模型
+    切 glm-5.3-flash 后改为跟随主模型端点。
     """
+    try:
+        from infrastructure.ai.config import load_runtime_config, resolve_runtime_provider
+
+        rt = resolve_runtime_provider(config=load_runtime_config())
+        if rt.get("base_url"):
+            return str(rt["base_url"]).rstrip("/")
+    except Exception:
+        pass
     try:
         from infrastructure.ai.config import load_runtime_config
 

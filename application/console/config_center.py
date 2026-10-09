@@ -73,9 +73,9 @@ FIELDS: tuple[ConfigField, ...] = (
     ),
     ConfigField(
         "model.vision", "Vision 模型", "model", "yaml", path="model.vision",
-        default="glm-4.6v",
-        description="sense_image 工具使用的视觉模型（智谱 glm-4.6v / glm-5v-turbo / glm-4.5v）。"
-                    "用在收到图片消息时的图片描述，默认 glm-4.6v。",
+        default="glm-5.3-flash",
+        description="sense_image 工具使用的视觉模型。glm-5.3-flash 本身具备视觉能力"
+                    "（与对话模型同端点同 Key）；也可换 glm-4.6v / glm-5v-turbo 等专用视觉模型。",
     ),
     ConfigField(
         "model.summary", "摘要模型", "model", "yaml", path="model.summary",

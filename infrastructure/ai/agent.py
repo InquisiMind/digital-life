@@ -702,14 +702,15 @@ class AIAgent:
         # 都给 5 分钟,导致一次 GLM 推理卡死会阻塞整个 wake 几十分钟。现拆细:
         # - connect/pool: 5s(GLM TLS 握手本身 50ms,5s 足够发现网络断裂)
         # - write: 10s(payload 上传不会超过几 MB,够用)
-        # - read: 180s(GLM reasoning_model 长推理可达数分钟;此前 90s 在长链场景
-        #   几乎必触发 read timeout 重试,3 次重试 + 退避≈340s,又正好撞 cron 的
-        #   stale-RUNNING 回退阈值,制造"wake 还在跑却被判 stale"的连锁误判。
-        #   提到 180s 给长推理足够余量,把"时间太少"这条根因从源头切断。)
+        # - read: 360s(非流式 POST——GLM 生成完才回第一个字节。S07/S08 类长文档
+        #   阶段单次响应要写数千字产物,晚高峰实测 >180s 必超时,且重试=从头再
+        #   生成→再超时→3 次耗尽 worker exit 1(2026-10-08 沈总 case 实测)。
+        #   360s 覆盖 5K+ token 生成,仍远低于 stale(1800s)/zombie(600s) 状态机阈值。
+        #   结构性修法是改流式(超时只管 chunk 间隔),待做。)
         os_env = __import__("os").getenv
         http_timeout = httpx.Timeout(
             connect=float(os_env("DIGITAL_LIFE_API_CONNECT_TIMEOUT", "5")),
-            read=float(os_env("DIGITAL_LIFE_API_READ_TIMEOUT", "180")),
+            read=float(os_env("DIGITAL_LIFE_API_READ_TIMEOUT", "360")),
             write=float(os_env("DIGITAL_LIFE_API_WRITE_TIMEOUT", "10")),
             pool=float(os_env("DIGITAL_LIFE_API_POOL_TIMEOUT", "5")),
         )
@@ -730,10 +731,10 @@ class AIAgent:
         MAX_NET_RETRIES = int(os_env("DIGITAL_LIFE_LLM_MAX_NET_RETRIES", "3"))
         MAX_429_RETRIES = int(os_env("DIGITAL_LIFE_LLM_MAX_429_RETRIES", "3"))
         # 单次 _chat(含全部重试)的 wall-clock 总预算。
-        # 默认 240s:远高于单次 read(180s),又远低于 cron stale(1800s)/zombie(600s),
-        # 让重试链先于状态机兜底自我终结。GLM 健康 9 成 < 60s 返回,这只拦截灾难性
-        # 网络/限流场景,正常推理不受影响。
-        LLM_CALL_MAX_DURATION_S = float(os_env("DIGITAL_LIFE_LLM_CALL_MAX_DURATION", "240"))
+        # 默认 480s:容纳一次 read=360 的长文档生成 + 一轮退避重试,又远低于
+        # cron stale(1800s)/zombie(600s),让重试链先于状态机兜底自我终结。
+        # GLM 健康 9 成 < 60s 返回,这只拦截灾难性网络/限流场景,正常推理不受影响。
+        LLM_CALL_MAX_DURATION_S = float(os_env("DIGITAL_LIFE_LLM_CALL_MAX_DURATION", "480"))
         net_attempts = 0
         retry_429_attempts = 0
         _call_start = _time.time()

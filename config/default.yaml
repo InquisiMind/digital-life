@@ -1,35 +1,24 @@
-# ============================================================
-# 数字生命 系统级配置（全局，不区分实例）
-# 实例级配置在 apps/<uuid>/config/app.yaml
-# ============================================================
-
-# ── API Server ──
 api_server:
-  port: 8642                               # HTTP 端口（默认 8642）
-
-# ── 生命周期 ──
+  port: 8642
 lifecycle:
-  tick_interval: 60                         # cron tick 周期（秒）
-
-# ── Token 预算（暂全局，后续可分实例）──
+  tick_interval: 60
 budget:
-  daily_limit: 50000000                     # 每天每实例 token 上限
-  hourly_limit: 50000000                    # 每小时（暂同 daily，不拦）
-
-# ── 精力参数（全局行为模型）──
+  daily_limit: 50000000
+  hourly_limit: 50000000
 vitals:
-  energy_recovery_per_hour: 100             # 休息时每小时恢复
-  cost_per_ktoken_input: 0.005              # 每 1k input token 消耗精力
-  cost_per_ktoken_output: 0.05              # 每 1k output token 消耗精力
-  initiative_energy_threshold: 50           # 主动探索的精力阈值
-  initiative_idle_hours: 2.0                # 主动探索的空闲阈值
-
-# ── 事件 ──
+  energy_recovery_per_hour: 100
+  cost_per_ktoken_input: 0.005
+  cost_per_ktoken_output: 0.05
+  initiative_energy_threshold: 50
+  initiative_idle_hours: 2.0
 events:
   packages_dir: event-packages
-
-# ── 工作空间（workspace浅层配置设计_v0.2）──
 workspace:
-  mode: shallow                                    # shallow=工作区/<实例名> | legacy=apps/<iid>/workspace
-  root_template: ~/Documents/探索项目/工作区/{instance_name}   # {instance_name} 渲染 display_name（无则 uuid 前 8 位）
-  unregistered_fallback: warn_repo_root            # 未注册 id 降级：warn_repo_root | tmp | reject
+  mode: shallow
+  root_template: ~/Documents/探索项目/工作区/{instance_name}
+  unregistered_fallback: warn_repo_root
+model:
+  provider: glm
+  base_url: https://open.bigmodel.cn/api/coding/paas/v4
+  name: glm-5.3-flash
+  vision: glm-5.3-flash

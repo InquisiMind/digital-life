@@ -19,7 +19,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # ── 默认值（与 vision_tool.py 对齐）─────────────────────────────────────────
-DEFAULT_VISION_MODEL = "glm-4.6v"
+DEFAULT_VISION_MODEL = "glm-5.3-flash"
 DEFAULT_ASR_MODEL = "glm-asr-2512"
 DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 # 录屏抽帧：画面变化慢，1-2fps 足够还原操作流

@@ -85,6 +85,7 @@ DEDUP_STRATEGY: dict[str, str] = {
     "task_skill": "latest",
     "my_context": "latest",
     "task_board": "latest",
+    "todo_board": "latest",
     "schedule": "latest",
     "wake_signal": "latest",
     "chat_stream": "append",

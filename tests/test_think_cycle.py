@@ -1,7 +1,7 @@
 """effort 状态机 v3 测试（think_cycle）。
 
 语义验证（对应 think_effort_design.md 三层入口）：
-  A 入口 - 人类消息快答：wake/mid-session 注入后第一次调用 minimal（关 think），后续恢复 config 档
+  A 入口 - 人类消息快答：wake/mid-session 注入后第一次调用 low（全端点通吃的最低档），后续恢复 config 档
   B 入口 - think 工具：模型主动升档，TTL 轮数耗尽自动回落；新人类消息打断后 fast_pending 保留
   C 入口 - stuck 兜底：连续 2 轮基础设施异常（工具异常/超时信号词）→ 强制 high；
           业务错误（工具正常返回失败语义）不算 stuck；通信类工具豁免
@@ -21,7 +21,7 @@ def test_a1_wake_first_call_fast():
     st = _new()
     tc.init_for_wake(st, human_message=True)
     effort, why = tc.decide(st, config_effort="medium")
-    assert effort == "minimal" and why == "fast_first_reply"
+    assert effort == "low" and why == "fast_first_reply"
 
 
 def test_a2_second_call_back_to_config():
@@ -38,7 +38,7 @@ def test_a3_mid_session_inject_fast():
     tc.init_for_wake(st, human_message=False)  # timer 唤醒，无人类消息
     tc.on_human_message(st)
     effort, why = tc.decide(st, config_effort="medium")
-    assert effort == "minimal" and why == "fast_first_reply"
+    assert effort == "low" and why == "fast_first_reply"
 
 
 def test_a4_non_human_wake_untouched():
@@ -90,7 +90,7 @@ def test_b4_human_interrupt_keeps_override_then_fast_pending():
     effort, why = tc.decide(st, config_effort="medium")
     assert effort == "high" and why == "think_override"  # override 优先于快答
     effort, why = tc.decide(st, config_effort="medium")  # TTL 耗尽
-    assert effort == "minimal" and why == "fast_first_reply"  # fast_pending 兜底
+    assert effort == "low" and why == "fast_first_reply"  # fast_pending 兜底
 
 
 # ── C 入口：stuck 兜底 ────────────────────────────
@@ -131,7 +131,7 @@ def test_c4_human_message_resets_stuck_counter():
     tc.on_human_message(st)  # 打断: 重置 stuck + 挂起 fast
     tc.on_tool_result(st, "terminal", {"ok": False, "error": "timeout"})
     e1, _ = tc.decide(st, config_effort="medium")
-    assert e1 == "minimal"  # A 入口: 人类消息后第一次调用 = 快答
+    assert e1 == "low"  # A 入口: 人类消息后第一次调用 = 快答
     e2, why2 = tc.decide(st, config_effort="medium")
     assert e2 == "medium" and why2 == "config"  # stuck 已被重置, 只 1 轮异常不够升级
 

@@ -17,7 +17,7 @@
   python3 scripts/service_create.py list [--all]
 
   # 5. 项目（刀 4）：按模版建项目——批量创建一组服务 + 共享工作区
-  python3 scripts/service_create.py project-create --name 某某咨询 --template strategic_consulting
+  python3 scripts/service_create.py project-create --name 某某咨询 --template ai_strategy
   python3 scripts/service_create.py project-list
 
 验收剧本（刀 1）：bootstrap-echo → create → send（master 在跑时 ~10s 内
@@ -134,6 +134,7 @@ def _cmd_bootstrap_echo(_args: argparse.Namespace) -> int:
 
 def _cmd_create(args: argparse.Namespace) -> int:
     from domain.service import create_service as domain_create
+    from business.consulting.tool_face import apply_role_face
 
     svc = domain_create(
         args.def_id,
@@ -141,6 +142,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
         project_id=args.project or "",
         display_name=args.name or "",
     )
+    apply_role_face(svc["service_id"], None)  # 未显式收紧 → 按定义层回退/全量发放
     print(f"✅ 服务已创建: {svc['service_id']}  (def={svc['agent_def_id']}, status={svc['status']})")
     return 0
 
@@ -186,7 +188,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_project_create(args: argparse.Namespace) -> int:
-    from domain.project.customer import create_project_from_template
+    from business.consulting.projects import create_project_from_template
 
     result = create_project_from_template(args.name, args.template)
     p = result["project"]
@@ -199,8 +201,8 @@ def _cmd_project_create(args: argparse.Namespace) -> int:
 
 def _cmd_project_start(args: argparse.Namespace) -> int:
     """S00：客户发言 → 自动建项目 → 首条消息投给 PM（web 入口的同一 domain API）。"""
-    from domain.project.customer import create_project_from_template
-    from domain.service.social import customer_message_to_pm
+    from business.consulting.projects import create_project_from_template
+    from business.consulting.social import customer_message_to_pm
 
     result = create_project_from_template(
         args.name,

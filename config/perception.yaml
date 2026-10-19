@@ -1,0 +1,11 @@
+# 感知热键单守护路由表（2026-10-13 收敛，zhp 拍板"单守护+按键路由"）。
+# 一个进程（master 内的 HotkeyRouterDaemon）持有全部全局热键监听，
+# 按键路由到对应实例：录音落盘、事件上报、ASR 配置都用被路由实例自己的。
+# 历史形态（per-instance launchd 守护 × N、worker 内置守护）已退役；
+# KWS 语音唤醒（AudioSenseService）是独立通道，见 config/voice_sense.yaml（暂关）。
+daemon:
+  enabled: true
+routes:
+  cmd+shift+p: 4b75b663-3f06-4547-9414-9dcbf5dbd943   # zero
+  cmd+shift+h: c8b845cc-9009-4430-94e8-13836cf2f2f8   # alpha
+  cmd+shift+r: b709ba4d-d70b-48f6-ab2d-a44a02fb85bf   # 小张

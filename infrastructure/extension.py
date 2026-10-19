@@ -25,7 +25,6 @@ _API_ROUTERS: list[str] = []          # "pkg.mod:add_routes"
 _SCHEDULER_JOBS: list[str] = []       # "pkg.mod:job"（worker loop 每轮调用，业务自节流）
 _EVENT_TYPE_FILES: list[str] = []     # 额外事件类型 yaml（并入事件注册表）
 _EVENT_GATES: list[str] = []          # "pkg.mod:gate(svc, kind) -> (ok, reason)"
-_TOOL_FACE_FILTERS: list[str] = []    # "pkg.mod:filter(names) -> names"
 _WORKSPACE_PROVIDERS: list[str] = []  # "pkg.mod:dir(service_id) -> Path|None"
 _REST_CARD_SECTIONS: list[str] = []   # "pkg.mod:section(runtime_id) -> str"
 _REST_SILENT_NOTES: list[str] = []    # "pkg.mod:note(runtime_id) -> str|None"
@@ -56,20 +55,93 @@ def register_event_gate(ref: str) -> None:
     _EVENT_GATES.append(ref)
 
 
-def register_tool_face_filter(ref: str) -> None:
-    _TOOL_FACE_FILTERS.append(ref)
-
-
 def register_workspace_provider(ref: str) -> None:
     _WORKSPACE_PROVIDERS.append(ref)
 
 
+_WAKE_CONTEXT_PROVIDERS: list[str] = []  # "pkg.mod:board(instance_id, reason) -> dict|list|None"
+
+
+def register_wake_context_provider(ref: str) -> None:
+    """唤醒上下文 provider：业务层为特定实例族补 sys 注入块（如项目待办看板）。
+
+    provider 签名 ``fn(instance_id, reason) -> {sys_tool, content} | [同] | None``，
+    每次 wake 组装 slow_ctx 时调用；返回 None/空 = 该实例本 wake 无此块。
+    注入语义不变：仍是"本次唤醒的快照"，按 wake_seq 记账供查看器回放。
+    """
+    _WAKE_CONTEXT_PROVIDERS.append(ref)
+
+
+_MODEL_PROFILE_RESOLVERS: list[str] = []  # "pkg.mod:resolve(profile_id) -> dict|None"
+
+
+def register_model_profile_resolver(ref: str) -> None:
+    """席位/用户模型配置解析器：业务层提供 profile_id → {api_key, base_url, model}。
+
+    基座配置链不认识业务存储（用户自助配置在业务库里），经此钩子取——
+    层次不破：基座只认钩子签名，业务自己决定存哪。
+    """
+    _MODEL_PROFILE_RESOLVERS.append(ref)
+
+
+def resolve_model_profile(profile_id: str) -> dict | None:
+    load_extensions()
+    for ref in _MODEL_PROFILE_RESOLVERS:
+        try:
+            out = _resolve(ref)(profile_id)
+        except Exception:
+            logger.warning("model profile resolver failed: %s", ref, exc_info=True)
+            continue
+        if isinstance(out, dict) and out.get("api_key"):
+            return out
+    return None
+
+
+_SPEECH_TOOL_RESOLVERS: list[str] = []  # "pkg.mod:speech_tool(instance_id) -> str|None"
+
+
+def register_speech_tool_resolver(ref: str) -> None:
+    """发言工具解析器：业务层按运行体返回其发言工具名。
+
+    基座 L4 提示词的「你的嘴」一句按此渲染——提示词与工具面同一事实源
+    （2026-10-13 事故：服务 PM 工具清单里没有 express_to_human，但 L4 硬
+    编码它"是你的嘴"，模型照文盲调→未送达）。返回 None/空 = 用基座默认
+    express_to_human（实例/飞书线）。
+    """
+    _SPEECH_TOOL_RESOLVERS.append(ref)
+
+
+def resolve_speech_tool(instance_id: str, default: str = "express_to_human") -> str:
+    load_extensions()
+    for ref in _SPEECH_TOOL_RESOLVERS:
+        try:
+            out = _resolve(ref)(instance_id)
+        except Exception:
+            logger.warning("speech tool resolver failed: %s", ref, exc_info=True)
+            continue
+        if isinstance(out, str) and out.strip():
+            return out.strip()
+    return default
+
+
+def run_wake_context_providers(instance_id: str, reason: str = "") -> list[dict]:
+    load_extensions()
+    blocks: list[dict] = []
+    for ref in _WAKE_CONTEXT_PROVIDERS:
+        try:
+            out = _resolve(ref)(instance_id, reason)
+        except Exception:
+            logger.warning("wake context provider failed: %s", ref, exc_info=True)
+            continue
+        if not out:
+            continue
+        blocks.extend(out if isinstance(out, list) else [out])
+    return [b for b in blocks
+            if isinstance(b, dict) and b.get("sys_tool") and b.get("content")]
+
+
 def register_rest_card_section(ref: str) -> None:
     _REST_CARD_SECTIONS.append(ref)
-
-
-def register_rest_silent_note(ref: str) -> None:
-    _REST_SILENT_NOTES.append(ref)
 
 
 def register_admin_router(ref: str) -> None:
@@ -172,17 +244,6 @@ def check_event_gates(svc: dict, kind: str) -> tuple[bool, str]:
     return True, ""
 
 
-def apply_tool_face_filters(names: list[str]) -> list[str]:
-    load_extensions()
-    out = names
-    for ref in _TOOL_FACE_FILTERS:
-        try:
-            out = _resolve(ref)(out)
-        except Exception:
-            logger.warning("extension tool face filter failed: %s（跳过）", ref, exc_info=True)
-    return out
-
-
 def service_workspace_dir(service_id: str) -> Optional[Path]:
     """业务提供的挂项目服务工作区（None=基座默认私有 workspace）。"""
     load_extensions()
@@ -207,19 +268,6 @@ def rest_card_sections(runtime_id: str) -> list[str]:
         except Exception:
             logger.warning("extension rest card section failed: %s", ref, exc_info=True)
     return sections
-
-
-def rest_silent_notes(runtime_id: str) -> Optional[str]:
-    """业务判定该运行体应无闹钟静眠时的提示（首个非空即中）。"""
-    load_extensions()
-    for ref in _REST_SILENT_NOTES:
-        try:
-            note = _resolve(ref)(runtime_id)
-            if note:
-                return note
-        except Exception:
-            logger.warning("extension rest silent note failed: %s", ref, exc_info=True)
-    return None
 
 
 def mount_admin_routers(router) -> None:

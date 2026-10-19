@@ -58,14 +58,54 @@ def _looks_like_uuid(value: str) -> bool:
 
 # ── Registry ──────────────────────────────────────────────────────────
 
+# 注册表指纹缓存：apps/*/config/app.yaml 的 (mtime_ns, size) 指纹命中则直接
+# 返回上次结果。文件系统仍是唯一事实源（新建/删除/改写 app.yaml 都会改变
+# 指纹→重建），但热路径不再每次全量解析 YAML——2026-10-13 实测：社交圈
+# 引导一次连调上百次实例路径解析，每次全量扫 56+ 个 app.yaml ≈ 39ms，
+# 是新建咨询 POST 同步段 15s 的大头；指纹本身只需 56 次 stat（亚毫秒）。
+_REGISTRY_CACHE: dict[str, dict] | None = None
+_REGISTRY_CACHE_FP: tuple | None = None
+
+
+def _registry_fingerprint() -> tuple | None:
+    """apps/ 下所有 config/app.yaml 的 (mtime_ns, size) 指纹；apps/ 不存在返回 None。
+
+    用 os.scandir + 裸 os.stat：本仓 apps/ 有数百目录（测试残留），pathlib
+    逐对象 stat 的 Python 开销实测 13ms/次， scandir 版 ~1-2ms。
+    """
+    apps_dir = get_project_root() / "apps"
+    try:
+        with os.scandir(apps_dir) as it:
+            entries = list(it)
+        fps: list[tuple] = []
+        for e in sorted(entries, key=lambda x: x.name):
+            try:
+                if not e.is_dir():
+                    continue
+                st = os.stat(f"{e.path}/config/app.yaml")
+                fps.append((e.name, st.st_mtime_ns, st.st_size))
+            except OSError:
+                fps.append((e.name, None))
+        return tuple(fps)
+    except OSError:
+        return None
+
 
 def _load_registry() -> dict[str, dict]:
     """Scan apps/*/config/app.yaml to build {uuid: {display_name, ...}}.
 
     实例发现的唯一事实源是 apps/<uuid>/config/app.yaml 存在 + 含 display_name。
-    每次调用都动态扫描，不写盘也不缓存到文件。
+    指纹缓存见上：文件一变即重建，热路径免重复 YAML 解析。
     """
-    return _rebuild_registry_from_apps()
+    global _REGISTRY_CACHE, _REGISTRY_CACHE_FP
+    fp = _registry_fingerprint()
+    if _REGISTRY_CACHE is not None and fp is not None and fp == _REGISTRY_CACHE_FP:
+        return _REGISTRY_CACHE
+    registry = _rebuild_registry_from_apps()
+    if fp is not None:
+        _REGISTRY_CACHE = registry
+        _REGISTRY_CACHE_FP = fp
+    return registry
 
 
 def _rebuild_registry_from_apps() -> dict[str, dict]:
@@ -218,14 +258,16 @@ def resolve_instance_id(raw: str) -> str:
 
     raw = raw.strip("/")
 
+    # 注册表只加载一次（旧版 uuid 检查与 display_name 查找各加载一遍——
+    # 每次全量指纹/扫描，热路径上翻倍）
+    registry = _load_registry()
+
     # 1. UUID already in registry
     if _looks_like_uuid(raw):
-        registry = _load_registry()
         if raw in registry:
             return raw
 
     # 2. Look up by display_name
-    registry = _load_registry()
     for uuid_key, meta in registry.items():
         if meta.get("display_name") == raw:
             return uuid_key

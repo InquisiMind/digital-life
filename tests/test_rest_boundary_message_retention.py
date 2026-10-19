@@ -176,6 +176,7 @@ def test_rest_until_sentinel_has_revoke_fields():
             "until": "2026-07-15T15:00:00+08:00",
             "reason": "test",
             "mental_context": "",
+            "confirm": True,  # 两步休息设计（提示卡→真睡）：守卫测真睡路径需显式确认
         })
 
     data = json.loads(result)

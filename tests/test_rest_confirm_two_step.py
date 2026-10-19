@@ -351,19 +351,32 @@ def test_instance_pm_gets_team_card_and_energy(isolated_instance, monkeypatch):
 
 
 def test_suspended_project_silent_sleep_via_seam(isolated_instance, monkeypatch):
-    """团队静默接缝：项目挂起 → rest() 一步静眠（无闹钟），判定在
-    team_context，rest 只消费结论。"""
+    """项目挂起 → rest 两步式与其余壳子完全一致：无参先出预览卡，确认后
+    静眠（不设闹钟）。接缝已删（静眠判定归 suspend_project 状态与模型
+    自制，rest 不读业务状态），此用例守住"rest 行为不因挂起而特殊"。"""
     _patch_team_world(monkeypatch, project_status="suspended", todos=[])
     set_alarm_calls = []
     monkeypatch.setattr("domain.lifecycle.alarms.set_alarm",
                         lambda *a, **kw: set_alarm_calls.append((a, kw)))
+    monkeypatch.setattr("domain.lifecycle.alarms.list_pending_alarms", lambda *a, **kw: [])
+    # 个人世界（实例段）置空：团队世界的运行体大多没有个人数据
+    monkeypatch.setattr("domain.todos.crud.list_tasks", lambda **kw: [], raising=False)
+    monkeypatch.setattr("domain.project.loader.load_all_projects", lambda: {}, raising=False)
+    monkeypatch.setattr("domain.memory.memory.consciousness.runtime.read_insights", lambda **kw: "", raising=False)
     monkeypatch.setattr("domain.lifecycle.runtime_context.get_current_affair", lambda: "aff-SS")
+    monkeypatch.setattr("domain.lifecycle.affairs.runtime.get_affair", lambda aid: MagicMock())
     monkeypatch.setattr("domain.lifecycle.affairs.runtime.update_affair", lambda *a, **kw: None)
+    monkeypatch.setattr("domain.lifecycle.affairs.runtime.set_wait_intent", lambda aid, intent: None)
 
     out = _at._handle_rest({}, session_id="sess-SS1")
     data = json.loads(out) if isinstance(out, str) else out
-    assert data.get("resting") is True and data.get("silent") is True
-    assert "挂起" in data.get("note", "")
+    assert data.get("preview") is True, "挂起也不例外：第一步是预览卡"
+    assert not set_alarm_calls
+
+    out2 = _at._handle_rest({"confirm": True}, session_id="sess-SS1")
+    data2 = json.loads(out2) if isinstance(out2, str) else out2
+    assert data2.get("silent") is True and data2.get("__l4_block__") is True
+    assert data2.get("wake_at") is None
     assert not set_alarm_calls
 
 

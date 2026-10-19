@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
-"""实例级工具白名单（B 方案）行为锁定。
+"""实例级工具白名单行为锁定。
 
 机制：apps/<iid>/config/app.yaml → tools.whitelist → AIAgent.tool_whitelist
-  AND 叠加在 reason 层 toolset 过滤之上——白名单只会收紧。
+  默认名单层（domain.tool_visibility.assemble ②）——白名单只会收紧。
   条目语义与 enabled_toolsets 对齐：toolset 名（整组）或工具名（单点）混合。
-  条件暴露工具（rest preview 等躯体机制）不受白名单限制。
+  通行证（rest preview 等 wake 级授予）不受白名单限制——授予优先。
 """
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -62,99 +62,80 @@ def test_broken_yaml_returns_none(app_dir):
     assert get_tool_whitelist() is None
 
 
-# ── AIAgent AND 层 ────────────────────────────────────────────
+# ── AIAgent 白名单层（经引擎）──────────────────────────────────
 
-def _make_agent(monkeypatch, whitelist):
-    """轻量构造 AIAgent（不发起请求），只测 _enabled_tool_names。"""
+def _make_agent(monkeypatch, whitelist, toolsets=None, metadata=None):
+    """轻量构造 AIAgent（不发起请求），只测 _enabled_tool_names。
+
+    引擎在 interfaces.tools.registry 模块上取注册表（agent 模块属性不再
+    被读），fake 打点换到那里；get_app_instance_id 钉死保证运行体确定。
+    """
     from infrastructure.ai.agent import AIAgent
 
+    metadata = metadata or {}
     agent = AIAgent.__new__(AIAgent)
-    agent.enabled_toolsets = None
+    agent.enabled_toolsets = toolsets
     agent.tool_whitelist = whitelist
-    agent._conditionally_revealed_tools = []
+    agent.instance_id = "test-inst"
+    reg = type(
+        "R",
+        (),
+        {
+            "get_all_tool_names": staticmethod(
+                lambda include_retired=False: list(_FAKE_TOOLS)
+            ),
+            "get_toolset_for_tool": staticmethod(lambda n: _FAKE_TOOLSETS.get(n)),
+            "get_tool_metadata": staticmethod(lambda n: metadata.get(n, {})),
+        },
+    )
+    # 引擎在注册表模块上取单例；agent 模块还持有自己的顶层绑定——两处都要打
+    mod = importlib.import_module("interfaces.tools.registry")
+    monkeypatch.setattr(mod, "registry", reg)
+    import infrastructure.ai.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "registry", reg)
+    monkeypatch.setattr(
+        "infrastructure.config.get_app_instance_id", lambda _iid=None: "test-inst"
+    )
     return agent
 
 
-def test_whitelist_none_keeps_all(monkeypatch):
-    from infrastructure.ai import agent as agent_mod
+_FAKE_TOOLS = ["app_a", "app_b", "app_c"]
+_FAKE_TOOLSETS = {"app_a": "s1", "app_b": "s2", "app_c": "s9"}
 
+
+def test_whitelist_none_keeps_all(monkeypatch):
     agent = _make_agent(monkeypatch, None)
-    fake_all = ["app_a", "app_b", "app_c"]
-    fake_registry = type(
-        "R",
-        (),
-        {
-            "get_all_tool_names": staticmethod(lambda schema_visible=None: fake_all),
-            "get_toolset_for_tool": staticmethod(lambda n: {"app_a": "s1", "app_b": "s2", "app_c": "s1"}[n]),
-        },
-    )
-    monkeypatch.setattr(agent_mod, "registry", fake_registry)
-    assert agent._enabled_tool_names() == fake_all
+    assert agent._enabled_tool_names() == _FAKE_TOOLS
 
 
 def test_whitelist_toolset_name_passes_group(monkeypatch):
-    from infrastructure.ai import agent as agent_mod
-
     agent = _make_agent(monkeypatch, ["s1"])
-    fake_registry = type(
-        "R",
-        (),
-        {
-            "get_all_tool_names": staticmethod(lambda schema_visible=None: ["app_a", "app_b"]),
-            "get_toolset_for_tool": staticmethod(lambda n: {"app_a": "s1", "app_b": "s2"}[n]),
-        },
-    )
-    monkeypatch.setattr(agent_mod, "registry", fake_registry)
     assert agent._enabled_tool_names() == ["app_a"]
 
 
 def test_whitelist_single_tool_name(monkeypatch):
-    from infrastructure.ai import agent as agent_mod
-
     agent = _make_agent(monkeypatch, ["app_b"])
-    fake_registry = type(
-        "R",
-        (),
-        {
-            "get_all_tool_names": staticmethod(lambda schema_visible=None: ["app_a", "app_b"]),
-            "get_toolset_for_tool": staticmethod(lambda n: "s1"),
-        },
-    )
-    monkeypatch.setattr(agent_mod, "registry", fake_registry)
     assert agent._enabled_tool_names() == ["app_b"]
 
 
 def test_whitelist_mix_toolset_and_tool(monkeypatch):
-    from infrastructure.ai import agent as agent_mod
-
     agent = _make_agent(monkeypatch, ["s1", "app_c"])
-    fake_all = ["app_a", "app_b", "app_c"]
-    fake_registry = type(
-        "R",
-        (),
-        {
-            "get_all_tool_names": staticmethod(lambda schema_visible=None: fake_all),
-            "get_toolset_for_tool": staticmethod(lambda n: {"app_a": "s1", "app_b": "s2", "app_c": "s9"}[n]),
-        },
-    )
-    monkeypatch.setattr(agent_mod, "registry", fake_registry)
     assert agent._enabled_tool_names() == ["app_a", "app_c"]
 
 
-def test_conditionally_revealed_tools_bypass_whitelist(monkeypatch):
-    """躯体机制工具（rest preview 等）不受业务白名单限制。"""
-    from infrastructure.ai import agent as agent_mod
+def test_wake_grant_bypasses_whitelist(monkeypatch, tmp_path):
+    """通行证优先：白名单外的工具经本轮授予即可见（rest preview 等躯体机制）。"""
+    from domain import tool_visibility as tv
+    from infrastructure.persistence import tool_visibility as store
 
-    agent = _make_agent(monkeypatch, ["app_a"])
-    agent._conditionally_revealed_tools = ["rest", "process"]
-    fake_registry = type(
-        "R",
-        (),
-        {
-            "get_all_tool_names": staticmethod(lambda schema_visible=None: ["app_a", "app_b"]),
-            "get_toolset_for_tool": staticmethod(lambda n: "s1"),
-        },
-    )
-    monkeypatch.setattr(agent_mod, "registry", fake_registry)
-    names = agent._enabled_tool_names()
-    assert "rest" in names and "process" in names
+    monkeypatch.setenv("DIGITAL_LIFE_TOOL_VISIBILITY_DB", str(tmp_path / "tv.db"))
+    store.reset_for_test()
+    tv._wake_grants.clear()
+    try:
+        agent = _make_agent(monkeypatch, ["app_a"])
+        tv.grant_wake("test-inst", ["app_b"], source="preview:rest")
+        assert agent._enabled_tool_names() == ["app_a", "app_b"]
+    finally:
+        tv.clear_wake("test-inst")
+        store.reset_for_test()

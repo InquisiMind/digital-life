@@ -122,6 +122,52 @@ def test_receive_broadcast_writes_inbound_and_returns_ok(tmp_path, monkeypatch):
                for r in rows), f"广播消息没进 peer 库: {rows}"
 
 
+def test_receive_broadcast_logs_conversation_window(tmp_path, monkeypatch):
+    """广播接收须落 conversation_log（窗口账本），platform 归一为 feishu。
+
+    {recent_context}/同窗口上下文只认 conversation_log——广播不落账，peer
+    说过的话就从对方上下文窗口消失（2026-10-10 zhp：实例间对话不可见）。
+    订阅表把飞书记作 lark，落账必须归一到读侧口径 feishu。
+    """
+    from_iid, peer_iid = "conv-from-x", "conv-peer-x"
+    _setup_master_fake(tmp_path, monkeypatch, from_iid, peer_iid, chat="oc_win")
+    # fixture 的 data_dir fake 不认 ContextVar（None→tmp/apps//data）；而
+    # log_conversation 无参解析当前实例——补一层走真实 get_app_instance_id
+    # （读 receive_broadcast set_current_instance_id 设置的 peer 上下文）。
+    import infrastructure.config as cfg
+    monkeypatch.setattr(
+        cfg, "get_instance_data_dir",
+        lambda iid=None: tmp_path / "apps" / (cfg.get_app_instance_id(iid) or "") / "data",
+    )
+    result = B.receive_broadcast({
+        "from_instance_id": from_iid,
+        "from_display_name": "alpha",
+        "chat_id": "oc_win",
+        "text": "窗口里应能看到我",
+        "msg_ref": "om_conv_1",
+        "source_platform": "lark",
+    })
+    assert result["ok"] is True
+
+    import sqlite3
+    db = sqlite3.connect(tmp_path / "apps" / peer_iid / "data" / "state.db")
+    db.row_factory = sqlite3.Row
+    try:
+        rows = db.execute(
+            "SELECT platform, conversation_id, direction, sender_name, text "
+            "FROM conversation_log WHERE conversation_id='oc_win'"
+        ).fetchall()
+    finally:
+        db.close()
+    assert any(
+        r["platform"] == "feishu"
+        and r["direction"] == "in"
+        and r["sender_name"] == "alpha"
+        and "窗口里应能看到我" in r["text"]
+        for r in rows
+    ), f"广播没落 conversation_log 或平台口径不对: {rows}"
+
+
 def test_receive_broadcast_idempotent(tmp_path, monkeypatch):
     """同一 msg_ref 重复广播去重(UNIQUE 约束)——只入一次 peer 的 messages.db。"""
     from_iid, peer_iid = "from-iid-x", "peer-iid-x"

@@ -115,9 +115,24 @@ def handler(args: Dict[str, Any], **kwargs: Any) -> str:
 
     # Hot-load into runtime ToolRegistry
     tool_full_name = f"app_{name}"
-    hot_load_result = _hot_load_tool(full_path, tool_full_name, description, parameters, emoji)
+    hot_load_result = _hot_load_tool(full_path, tool_full_name, description, parameters, emoji, scope)
     if not hot_load_result["ok"]:
         return hot_load_result
+
+    # shared 工具的可见范围 = 显式授予（默认面排除，见 domain.tool_visibility）。
+    # 注册者天然该看见自己写的工具——注册时即授予；其他实例/服务要用须另行授予，
+    # 不再漫灌到全员（2026-10-16：zero/alpha 的 Bing 爬虫漫灌进咨询服务事故）。
+    note_tail = "名字加了 app_ 前缀以防和系统工具冲突。"
+    if scope == "shared" and instance_id:
+        try:
+            from domain import tool_visibility
+
+            tool_visibility.grant(
+                instance_id, [tool_full_name], source=f"shared_tool:{name}"
+            )
+            note_tail += "shared 工具已授予你自己；其他实例需显式启用才可见。"
+        except Exception:
+            logger.warning("register_tool: shared grant failed for %s", name, exc_info=True)
 
     return {
         "ok": True,
@@ -126,7 +141,7 @@ def handler(args: Dict[str, Any], **kwargs: Any) -> str:
         "scope": scope,
         "note": (
             f"已注册并热加载。下次 LLM call 就能调用 '{tool_full_name}'。"
-            f"名字加了 app_ 前缀以防和系统工具冲突。"
+            + note_tail
         ),
     }
 
@@ -137,8 +152,14 @@ def _hot_load_tool(
     description: str,
     parameters: dict[str, Any],
     emoji: str,
+    scope: str = "personal",
 ) -> dict[str, Any]:
-    """Import the module, extract handler(), register into ToolRegistry."""
+    """Import the module, extract handler(), register into ToolRegistry.
+
+    scope 以元数据 capability_scope 随注册写入：shared 工具由可见性引擎从
+    默认面排除、仅经授予可见；personal/project 由 manifest 文件布局天然限定
+    （只装进作者/项目成员自己的进程），不另设闸。
+    """
     from interfaces.tools.registry import registry
 
     try:
@@ -171,6 +192,7 @@ def _hot_load_tool(
             handler=handler_fn,
             check_fn=lambda: True,
             emoji=emoji,
+            capability_scope=scope,
         )
         return {"ok": True}
     except Exception as exc:
@@ -205,7 +227,8 @@ def load_registered_tools(instance_id: str = "") -> dict[str, int]:
         description = item.get("description", name)
         parameters = item.get("parameters") or {"type": "object", "properties": {}}
         emoji = item.get("emoji", "🔧")
-        result = _hot_load_tool(full_path, tool_full_name, description, parameters, emoji)
+        scope = str(item.get("scope") or "personal")
+        result = _hot_load_tool(full_path, tool_full_name, description, parameters, emoji, scope)
         if result.get("ok"):
             loaded += 1
         else:

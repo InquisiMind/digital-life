@@ -145,11 +145,43 @@ def load_runtime_config(path: Path | None = None) -> dict[str, Any]:
     if local_path.exists():
         result = deep_merge(result, _load_yaml_file(local_path))
 
-    # 3. Instance layer: apps/<id>/config/app.yaml（新版统一位置）
+    # 3. Instance layer: apps/<id>/config/app.yaml（新版统一位置；
+    #    服务型二跳到定义层——模型/提示词配置共享自 agent 定义）
     instance_config = path or _get_instance_config_path()
     if instance_config.exists():
         instance_cfg = _load_yaml_file(instance_config)
         result = deep_merge(result, instance_cfg)
+    # 4. Service-own layer: apps/{def}/services/{sid}/config/app.yaml（存在才生效）
+    #    服务实例的自有覆盖（如测试席位盖章的 model 段）——盖在定义层之上；
+    #    不存在时行为与现状完全一致（向后兼容）。
+    try:
+        from infrastructure.config import get_instance_dir, get_app_instance_id
+        own = get_instance_dir(get_app_instance_id()) / "config" / "app.yaml"
+        if own.exists() and own != instance_config:
+            own_cfg = _load_yaml_file(own)
+            result = deep_merge(result, own_cfg)
+            # 席位引用：model.profile → 用户配置（config/local.yaml 的 testers[码]）。
+            # 实例只存指针不存密钥——用户改 key 只改用户配置一处，
+            # 下一个 worker 进程（每次唤醒新拉起）自动生效，无需刷新实例。
+            prof = str((own_cfg.get("model") or {}).get("profile") or "").strip()
+            if prof:
+                entry = None
+                try:
+                    # 用户自助配置优先（业务存储，经扩展钩子取）
+                    from infrastructure import extension as _ext
+                    entry = _ext.resolve_model_profile(prof)
+                except Exception:
+                    entry = None
+                if not entry:
+                    entry = (result.get("testers") or {}).get(prof)  # 管理员预置兜底
+                if isinstance(entry, dict):
+                    m = result.setdefault("model", {})
+                    for k in ("api_key", "base_url", "name"):
+                        v = str(entry.get(k) or "").strip()
+                        if v:
+                            m[k] = v
+    except Exception:
+        pass
 
     return expand_env_vars(result) if isinstance(result, dict) else {}
 

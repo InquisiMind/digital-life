@@ -269,6 +269,22 @@ async def run_instance_gateway(instance_id: str) -> None:
         except NotImplementedError:
             pass
 
+    # SIGUSR1 = 停止本实例 TTS 播报（按键打断 / barge-in）。感知热键单守护
+    # 跑在 master 进程，worker 又不起 HTTP server——跨进程即时控制只能走
+    # 信号：master 按路由表查 supervisor pid 发 SIGUSR1，这里消费。
+    def _barge_in_handler():
+        try:
+            from infrastructure.perception.voice_output import stop_playback
+            stopped = stop_playback()
+            logger.info("TTS barge-in via SIGUSR1 (stopped=%s)", stopped)
+        except Exception as exc:
+            logger.warning("SIGUSR1 barge-in failed: %s", exc)
+
+    try:
+        loop.add_signal_handler(signal.SIGUSR1, _barge_in_handler)
+    except (NotImplementedError, ValueError) as exc:
+        logger.debug("SIGUSR1 handler not registered: %s", exc)
+
     # 启动所有通道 adapter
     started_adapters: list[Any] = []
     for adapter in adapters:
@@ -424,16 +440,10 @@ async def run_instance_gateway(instance_id: str) -> None:
     except Exception as exc:
         logger.debug("Instance %s social takeover not started: %s", instance_id[:8], exc)
 
-    # 启动感知 daemon（可选 — 需 app.yaml perception.enabled=true + macOS 权限）
-    # feature 003-perception：快捷键录屏录音 → 视觉理解 → 注入事件
-    perception_daemon = None
-    try:
-        from infrastructure.perception.daemon import start_perception_daemon
-        perception_daemon = start_perception_daemon(instance_id)
-        if perception_daemon:
-            logger.info("Instance %s perception daemon started", instance_id[:8])
-    except Exception as exc:
-        logger.debug("Instance %s perception not started: %s", instance_id[:8], exc)
+    # 感知热键监听已收敛为单守护（2026-10-13）：worker 不再各自启动
+    # PerceptionDaemon（否则 N 实例 = N 个全局热键监听）。全部热键由 master
+    # 进程的 HotkeyRouterDaemon 持有，按 config/perception.yaml 的路由表
+    # 按键路由到实例；KWS 语音唤醒（AudioSenseService）独立可配置。
 
     await stop_event.wait()
     logger.info("Instance %s shutting down...", instance_id[:8])
@@ -1043,6 +1053,29 @@ async def run_master_gateway() -> None:
         set_voice_sense_service(voice_sense_svc)
     except Exception as exc:
         logger.warning("AudioSenseService failed to start (non-fatal): %s", exc)
+
+    # 感知热键单守护（2026-10-13 收敛）：master 唯一持有全部全局热键监听，
+    # 按 config/perception.yaml 的路由表按键路由到实例（route → instance）。
+    # daemon.enabled=false 或无路由时不启动；KWS 语音唤醒走上方
+    # AudioSenseService（独立开关，暂关）。
+    # barge-in：TTS 播在 worker 进程里，master 通过 supervisor 发 SIGUSR1
+    # （worker 的事件循环处理器调 stop_playback——见 run_instance_gateway）。
+    def _barge_in_worker(instance_id: str) -> bool:
+        try:
+            ok = supervisor.signal_process(instance_id, signal.SIGUSR1)
+            if not ok:
+                logger.debug("barge-in: instance %s not running", instance_id[:8])
+            return ok
+        except Exception as exc:
+            logger.debug("barge-in signal failed for %s: %s", instance_id[:8], exc)
+            return False
+
+    hotkey_router = None
+    try:
+        from infrastructure.perception.daemon import start_hotkey_router_daemon
+        hotkey_router = start_hotkey_router_daemon(barge_in_fn=_barge_in_worker)
+    except Exception as exc:
+        logger.warning("HotkeyRouterDaemon failed to start (non-fatal): %s", exc)
 
     # restart 物理触发：POST /api/system/gateway/restart 写 var/run/.restart_requested，
     # 本 watcher 检测到后 spawn 一个独立的 `digital-life restart` 进程完成

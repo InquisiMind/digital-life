@@ -1,19 +1,21 @@
-"""窗口上下文注入测试（2026-09-20, todo 9ba5191f）。
+"""窗口上下文注入测试（2026-09-20, todo 9ba5191f；2026-10-10 统一读口重构）。
 
-mid-session _consume_human_events 渲染 message/group_message 时，
-从 conversation_log 拉同窗口最近 5 条（排除当前消息原文）附在
-wake_signal 内容后——解决 RUNNING 中收到"重启呗，那就"这类指代
-没有会话上文可解的问题。本测试锁定：
-  1. message/group_message → 附带上下文段
+窗口上下文（{recent_context}）由 heartbeat._resolve_event_prompt 统一填充——
+wake 与 mid-session 注入共用 conversation_log 这一份窗口账本，模板裸占位、
+头部由 _window_context_block 负责，空则整段不出现。本测试锁定：
+  1. message/group_message → 附带上下文段（含头部）
   2. 其他 kind（timer 等）→ 不附带
   3. read_window_context 异常 → 静默降级，注入不炸
   4. exclude_text/platform 参数正确传递
+  5. 空上下文 → 头部也不出现（不再有空标题）
 """
 from __future__ import annotations
 
 import pytest
 
 import infrastructure.ai.agent as agent_mod
+
+_HEADER = "本窗口最近对话"
 
 
 class _FakeAgent:
@@ -60,7 +62,7 @@ def test_message_event_includes_window_context(capture_ctx):
     agent = _FakeAgent()
     messages = []
     agent_mod.AIAgent._consume_human_events(agent, [_msg_event()], messages)
-    assert "[同窗口最近对话（注入前）]" in agent.captured_content
+    assert _HEADER in agent.captured_content
     assert "之前的方案聊到哪了" in agent.captured_content
     # 参数透传
     assert capture_ctx == [dict(conversation_id="oc_test", platform="feishu",
@@ -70,7 +72,7 @@ def test_message_event_includes_window_context(capture_ctx):
 def test_group_message_includes_window_context(capture_ctx):
     agent = _FakeAgent()
     agent_mod.AIAgent._consume_human_events(agent, [_msg_event(kind="group_message")], [])
-    assert "[同窗口最近对话（注入前）]" in agent.captured_content
+    assert _HEADER in agent.captured_content
 
 
 def test_non_message_kind_has_no_window_context(capture_ctx):
@@ -78,7 +80,7 @@ def test_non_message_kind_has_no_window_context(capture_ctx):
     ev = _msg_event(kind="timer")
     ev["payload"] = {}
     agent_mod.AIAgent._consume_human_events(agent, [ev], [])
-    assert "[同窗口最近对话（注入前）]" not in agent.captured_content
+    assert _HEADER not in agent.captured_content
     assert capture_ctx == []
 
 
@@ -92,7 +94,7 @@ def test_read_window_context_failure_degrades_silently(monkeypatch):
     agent = _FakeAgent()
     agent_mod.AIAgent._consume_human_events(agent, [_msg_event()], [])
     # 未崩、未附加
-    assert "[同窗口最近对话（注入前）]" not in agent.captured_content
+    assert _HEADER not in agent.captured_content
     assert "重启呗" in agent.captured_content  # 原始渲染仍在
 
 
@@ -103,4 +105,4 @@ def test_empty_context_no_section(capture_ctx, monkeypatch):
     )
     agent = _FakeAgent()
     agent_mod.AIAgent._consume_human_events(agent, [_msg_event()], [])
-    assert "[同窗口最近对话（注入前）]" not in agent.captured_content
+    assert _HEADER not in agent.captured_content

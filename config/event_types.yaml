@@ -29,6 +29,8 @@ event_types:
       {sender_notes_block}
 
 
+      {recent_context}
+
       —— 回复：chat_id 留空 = 回到本窗口。@ 他时用他的 OU（{sender_id}）。
 
       如果上文中出现 `[图片 xxx]` / `[文件 xxx]`，可调 `sense_image(attachment_id)` 看图。
@@ -89,14 +91,12 @@ event_types:
 
       {sender_notes_block}
 
-      📋 你沉默期间该窗口的最近对话（旧→新，供上下文参考，不必逐条回复）：
-
       {recent_context}
 
 
       —— 回复：chat_id 留空 = 回到本群。@ 人时用对方的 OU。
 
-      当多条消息被合并（_merged_count > 1）时，可读后决定是否一并发声，沉默也合理。
+      多条消息合并送达时，可读后决定是否一并发声，沉默也合理。
 
       如果上文中出现 `[图片 xxx]` / `[文件 xxx]`，可调 `sense_image(attachment_id)` 看图。
 

@@ -51,9 +51,10 @@ class ToolEntry:
     通用机制, 不是定制通信:
       1. 工具注册方在这里声明 reveals_tools_on=["tool_a", "tool_b"]
       2. 工具 handler 在需要交互时返回 {"preview": True, ...}
-      3. agent.dispatch 后自动检测: preview=True + 有声明 → 加入条件暴露池
-      4. 下一轮 _enabled_tool_names 自动合并
-      5. confirm/执行后 (preview 消失) 自动清空
+      3. agent.dispatch 后自动检测: preview=True + 有声明 → 发引擎 wake 级
+         授予（domain.tool_visibility 的"通行证池"）
+      4. 下一轮 _enabled_tool_names 自动合并（授予优先，越过白名单/主体旗标）
+      5. confirm/执行后 (preview 消失) 按来源收回；每 wake 新建 AIAgent 清零
 
     典型场景:
       rest(reveals_tools_on=["record_thought"]) — 睡前提示卡后暴露"写思绪"
@@ -212,6 +213,11 @@ class ToolRegistry:
     def get_schema(self, name: str) -> dict[str, Any] | None:
         entry = self._tools.get(name)
         return dict(entry.schema) if entry else None
+
+    def get_tool_metadata(self, name: str) -> dict[str, Any]:
+        """注册期声明的元数据（如 service_only / host_only 主体旗标）。"""
+        entry = self._tools.get(name)
+        return entry.metadata if entry else {}
 
     def get_toolset_for_tool(self, name: str) -> str | None:
         entry = self._tools.get(name)

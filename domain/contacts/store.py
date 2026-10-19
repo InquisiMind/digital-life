@@ -28,6 +28,13 @@ def _state_db_path() -> Path:
     return get_runtime_state_db_path()
 
 
+# 进程级 schema 记忆：同一库路径全套 DDL/迁移只跑一遍。
+# 社交圈引导一次会连调上百次 store 操作，此前每次操作都全量过 ensure_schema
+# （连接+DDL+PRAGMA+dupes 扫描+commit ≈ 15ms/次），是新建咨询 POST 同步段
+# 15s 的大头（2026-10-13 实测定位）。库文件按路径幂等，进程内 schema 不会回退。
+_SCHEMA_READY: set[str] = set()
+
+
 def ensure_schema() -> None:
     """建表（幂等）。在 instance ContextVar 已设置后调用。
 
@@ -36,6 +43,9 @@ def ensure_schema() -> None:
       - v2: 用户为单位的多平台 ID。检测旧表自动 migrate。
     """
     db_path = _state_db_path()
+    _key = str(db_path)
+    if _key in _SCHEMA_READY:
+        return
     if not db_path.exists():
         db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
@@ -145,6 +155,7 @@ def ensure_schema() -> None:
         except sqlite3.Error:
             pass
         conn.commit()
+        _SCHEMA_READY.add(_key)
     finally:
         conn.close()
 
@@ -594,12 +605,14 @@ def set_blocked(contact_id: str, blocked: bool, reason: str = "") -> bool:
 # ── chats 窗口档案（OC → name/type；自动建档，模型只读）──────────────────────
 
 
-def upsert_chat(chat_id: str, name: str = "", chat_type: str = "") -> None:
+def upsert_chat(chat_id: str, name: str = "", chat_type: str = "",
+                notes: str | None = None) -> None:
     """窗口档案 upsert（ingress 每条入站消息调用）。
 
     chat_type 只接受 'dm' | 'group'——必须来自 ingress 的 is_group 真值，
     永不从 OC 前缀推断（私聊窗口也是 oc_ 开头，前缀推断是历史 bug 源头）。
     name：群窗口为群名；私聊窗口为对方人名（展示用）。空值不覆盖已有。
+    notes：窗口备注（如群收发规则）。None=不动；非 None 按字面覆盖。
     """
     cid = (chat_id or "").strip()
     if not cid:
@@ -608,18 +621,21 @@ def upsert_chat(chat_id: str, name: str = "", chat_type: str = "") -> None:
     _type = (chat_type or "").strip().lower()
     if _type not in ("dm", "group"):
         _type = ""  # 未知类型留空（中性），绝不猜
+    _notes = "" if notes is None else notes.strip()
     ensure_schema()
     conn = sqlite3.connect(str(_state_db_path()))
     try:
         conn.execute(
             """
-            INSERT INTO chats (chat_id, name, type, updated_at) VALUES (?, ?, ?, ?)
+            INSERT INTO chats (chat_id, name, type, notes, updated_at)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(chat_id) DO UPDATE SET
                 name = CASE WHEN excluded.name != '' THEN excluded.name ELSE chats.name END,
                 type = CASE WHEN excluded.type != '' THEN excluded.type ELSE chats.type END,
+                notes = CASE WHEN excluded.notes != '' THEN excluded.notes ELSE chats.notes END,
                 updated_at = excluded.updated_at
             """,
-            (cid, _name, _type, _now_iso()),
+            (cid, _name, _type, _notes, _now_iso()),
         )
         conn.commit()
     finally:
@@ -683,6 +699,29 @@ def update_chat_notes(chat_id: str, notes: str) -> bool:
         return cur.rowcount > 0
     finally:
         conn.close()
+
+
+def get_chat(chat_id: str) -> dict | None:
+    """单窗口档案查询（通道→信箱路由用）。未登记返回 None。"""
+    cid = (chat_id or "").strip()
+    if not cid:
+        return None
+    ensure_schema()
+    try:
+        conn = sqlite3.connect(str(_state_db_path()))
+        try:
+            row = conn.execute(
+                "SELECT chat_id, name, type, notes, updated_at FROM chats WHERE chat_id = ?",
+                (cid,),
+            ).fetchone()
+            if row is None:
+                return None
+            return {"chat_id": row[0], "name": row[1] or "", "type": row[2] or "",
+                    "notes": row[3] or "", "updated_at": row[4] or ""}
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
 
 
 def list_chats(*, limit: int = 50) -> list[dict]:

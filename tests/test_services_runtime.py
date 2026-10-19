@@ -41,15 +41,25 @@ def service_env(tmp_path, monkeypatch):
     db_path = tmp_path / "data" / "services.db"
     monkeypatch.setenv("DIGITAL_LIFE_SERVICES_DB", str(db_path))
     monkeypatch.setenv("DIGITAL_LIFE_PROJECTS_DB", str(tmp_path / "data" / "projects.db"))
+    monkeypatch.setenv(
+        "DIGITAL_LIFE_TOOL_VISIBILITY_DB", str(tmp_path / "data" / "tool_visibility.db")
+    )
     monkeypatch.setattr("infrastructure.config.get_project_root", lambda: tmp_path)
     _restore_default_runtime_hooks()
     services_registry.reset_for_test()
     projects_registry.reset_for_test()
+    from domain import tool_visibility as _tv
+    from infrastructure.persistence import tool_visibility as _tvs
+
+    _tvs.reset_for_test()
+    _tv._wake_grants.clear()
     yield tmp_path
     # worker 会写 DIGITAL_LIFE_INSTANCE_ID，清掉避免泄漏给后续测试
     os.environ.pop("DIGITAL_LIFE_INSTANCE_ID", None)
     services_registry.reset_for_test()
     projects_registry.reset_for_test()
+    _tvs.reset_for_test()
+    _tv._wake_grants.clear()
     _restore_default_runtime_hooks()
 
 
@@ -675,7 +685,8 @@ def test_workspace_personal_shared_deliver(service_env, project_template):
 
 
 def test_todo_tools_and_tool_face(service_env, project_template):
-    from business.consulting.tool_face import project_tools_allowed, service_only_tools_hidden
+    from business.consulting.tool_face import SERVICE_PROJECT_TOOLS, service_only_tools_hidden
+    from domain import tool_visibility as tv
 
     import business.consulting.collab_tools as collab  # noqa: F401 注册
 
@@ -683,12 +694,13 @@ def test_todo_tools_and_tool_face(service_env, project_template):
     a, b = result["services"]
     pid = result["project"]["project_id"]
 
-    # 工具面：PM 按模版收紧、研究员默认全量、实例整组隐藏
-    assert project_tools_allowed(a["service_id"]) == {
+    # 岗位面=授予：PM 按模版收紧、乙未配置→全量协作工具集、实例无授予
+    assert set(tv.durable_grants(a["service_id"]).get("role", [])) == {
         "sense_project_peers", "send_chat_message", "project_file_write",
         "deliver_to_shared", "project_todo_create",
     }
-    assert project_tools_allowed(b["service_id"]) is None
+    assert set(tv.durable_grants(b["service_id"]).get("role", [])) == set(SERVICE_PROJECT_TOOLS)
+    assert tv.durable_grants("11111111-1111-1111-1111-111111111111") == {}
     assert service_only_tools_hidden("11111111-1111-1111-1111-111111111111") is True
 
     # 待办工具实调
@@ -815,6 +827,35 @@ def test_stall_watchdog(service_env, project_template):
     assert sr.try_acquire_lease(result["services"][1]["service_id"], "worker:x", stale_seconds=3600)
     assert run_stall_watchdog() == []
     sr.release_lease(result["services"][1]["service_id"], "worker:x")
+
+
+
+def test_stall_watchdog_idle_all_standby(service_env, project_template):
+    """无待办 + 全员不活跃 → 同样催 PM（此前只有 quiet 2h 兜底，不够及时）。"""
+    from infrastructure.persistence import services_registry as sr
+    from business.consulting.governance import run_stall_watchdog
+
+    result = _create_duo(service_env, customer={"id": "cust-idle", "name": "客户"})
+    pid = result["project"]["project_id"]
+    projects_registry.update_project_fields(pid, watchdog_enabled=True)
+    # 清空待办：全员待命
+    for t in projects_registry.list_project_todos(pid):
+        projects_registry.update_project_todo(t["todo_id"], status="done")
+
+    assert run_stall_watchdog() == [pid]
+    pm = sr.lookup_service(result["pm_service_id"])
+    assert "project_stall" in (pm.get("subscriptions") or [])
+    db = sqlite3.connect(str(service_env / "apps" / "echo-def" / "services" / result["pm_service_id"] / "data" / "state.db"))
+    try:
+        payload = json.loads(db.execute(
+            "SELECT payload FROM events WHERE kind='project_stall' ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()[0])
+    finally:
+        db.close()
+    assert "全员待命" in payload.get("situation", "")
+
+    # 冷却同样适用
+    assert run_stall_watchdog() == []
 
 
 def test_quiet_signaler(service_env, project_template):

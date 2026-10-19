@@ -291,6 +291,25 @@ class InstanceSupervisor:
             except asyncio.TimeoutError:
                 continue
 
+    def signal_process(self, instance_id: str, signum: int) -> bool:
+        """向实例 worker 进程发信号（同步、即时）。
+
+        用途：感知热键单守护的按键打断（master 发 SIGUSR1，worker 的
+        事件循环处理器里调 voice_output.stop_playback()）。
+        返回 False = 实例不在跑 / 信号发送失败。
+        """
+        proc_info = self._procs.get(instance_id)
+        proc = proc_info.process if proc_info else None
+        if proc is None or proc.poll() is not None:
+            return False
+        try:
+            proc.send_signal(signum)
+            return True
+        except Exception as exc:
+            logger.warning("signal %s → instance %s failed: %s",
+                           signum, instance_id[:8], exc)
+            return False
+
     async def stop_instance(self, instance_id: str) -> bool:
         """Stop one specific instance (graceful SIGTERM → SIGKILL after 10s)."""
         proc_info = self._procs.get(instance_id)

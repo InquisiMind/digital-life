@@ -1555,6 +1555,7 @@ registry.register(
     handler=_handle_express_to_human,
     check_fn=lambda: True,
     emoji="💬",
+    host_only=True,  # 服务没有"对人的嘴"：web 部署无飞书凭据必败诱发重试（2026-10-13 事故）
 )
 
 
@@ -3211,31 +3212,6 @@ def _handle_rest(args: Dict[str, Any], **kwargs) -> str:
             target_dt = now + timedelta(hours=float(hours))
         except Exception:
             return registry.tool_error("hours must be a number")
-
-    # ─── 路径 C：都没传 → 先看业务静默接缝，再走 preview→静眠 两步 ───
-    # 业务状态（如项目挂起/待办全清）要求无闹钟静眠时一步真睡。判定经
-    # extension 注册——rest 只消费结论，不关心是什么业务状态。
-    if not until and not reuse_id and not hours:
-        try:
-            from infrastructure import extension
-            from infrastructure.config import get_app_instance_id
-
-            _team_note = extension.rest_silent_notes(get_app_instance_id() or "")
-            if _team_note:
-                _affair = get_current_affair()
-                if _affair:
-                    try:
-                        from domain.lifecycle.affairs.runtime import update_affair as _ua
-                        from domain.lifecycle.state_machine import AffairStatus as _AS
-
-                        _ua(_affair.get("affair_id") or _affair.get("id"),
-                            status=_AS.BLOCKED,
-                            note="团队静眠——" + _team_note)
-                    except Exception:
-                        pass
-                return _j({"resting": True, "silent": True, "note": _team_note})
-        except Exception:
-            pass  # 判定失败走原有预览流程
 
     # 设计: 第一次 rest() 无参 = 看"睡前提示卡", 模型拿到后处理再决定怎么睡。
     # 之前这里永远只返 preview（把模型往 reuse/until 上逼——没事也得硬编个时间）；

@@ -219,8 +219,14 @@ async def handle_service_config(request: web.Request) -> web.Response:
         kw["capabilities"] = caps
     if not kw:
         return _json({"ok": False, "error": "无可更新字段"}, 400)
+    if "tools" in kw:
+        # 岗位工具面的唯一写口：落账 + 重新发放授予（运行时只认授予库）
+        from business.consulting.tool_face import apply_role_face
+
+        apply_role_face(sid, kw["tools"])
+        kw.pop("tools")
     services_registry.update_service_fields(sid, **kw)
-    logger.info("SERVICE_CONFIG_UPDATED %s fields=%s", sid[:12], list(kw))
+    logger.info("SERVICE_CONFIG_UPDATED %s fields=%s", sid[:12], list(kw or ["tools"]))
     return _json({"ok": True, "service": services_registry.lookup_service(sid)})
 
 
@@ -229,6 +235,216 @@ _ROUTER.router.add_get("/services/{service_id}", handle_service_detail)
 _ROUTER.router.add_post("/services/{service_id}/status", handle_service_status)
 _ROUTER.router.add_get("/defs", handle_list_defs)
 _ROUTER.router.add_patch("/services/{service_id}/config", handle_service_config)
+
+
+# ── L3 详情页签数据（alpha 前端契约 10/8 12:21）：会话/待办/日程 + def 配置 ──
+
+def _open_ro(db_path):
+    """只读打开 SQLite（mode=ro：活库有 WAL 也不产生写锁）。"""
+    if not db_path or not db_path.exists():
+        return None
+    return sqlite3.connect(f"file:{db_path}?mode=ro", timeout=3.0, uri=True)
+
+
+def _ts_fmt(t, with_sec: bool = False) -> str:
+    from datetime import datetime
+
+    try:
+        fmt = "%m-%d %H:%M:%S" if with_sec else "%m-%d %H:%M"
+        return datetime.fromtimestamp(float(t)).strftime(fmt)
+    except (TypeError, ValueError):
+        return str(t)[:16] if t else ""
+
+
+async def handle_service_sessions(request: web.Request) -> web.Response:
+    """GET /api/admin/services/{sid}/sessions — 会话页签。"""
+    sid = request.match_info["service_id"]
+    try:
+        limit = min(int(request.query.get("limit", 50) or 50), 200)
+    except ValueError:
+        limit = 50
+    conn = _open_ro(_svc_db(sid, "state.db"))
+    if conn is None:
+        return _json({"ok": True, "items": []})
+    try:
+        rows = conn.execute(
+            "SELECT id, source, model, title, message_count, tool_call_count,"
+            " input_tokens, output_tokens, started_at, ended_at, end_reason"
+            " FROM sessions ORDER BY started_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    finally:
+        conn.close()
+    items = [
+        {
+            "id": r[0],
+            "source": r[1] or "",
+            "model": r[2] or "",
+            "title": r[3] or "",
+            "message_count": r[4] or 0,
+            "tool_call_count": r[5] or 0,
+            "tokens": (r[6] or 0) + (r[7] or 0),
+            "started_at": _ts_fmt(r[8], with_sec=True),
+            "ended_at": _ts_fmt(r[9], with_sec=True),
+            "end_reason": r[10] or "",
+        }
+        for r in rows
+    ]
+    return _json({"ok": True, "items": items})
+
+
+async def handle_service_todos(request: web.Request) -> web.Response:
+    """GET /api/admin/services/{sid}/todos — 待办页签（affairs 表）。"""
+    sid = request.match_info["service_id"]
+    try:
+        limit = min(int(request.query.get("limit", 100) or 100), 300)
+    except ValueError:
+        limit = 100
+    conn = _open_ro(_svc_db(sid, "state.db"))
+    if conn is None:
+        return _json({"ok": True, "items": []})
+    try:
+        rows = conn.execute(
+            "SELECT affair_id, goal, status, priority, deadline,"
+            " created_at, updated_at, completed_at"
+            " FROM affairs ORDER BY updated_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    finally:
+        conn.close()
+    items = [
+        {
+            "id": r[0],
+            "goal": r[1] or "",
+            "status": r[2] or "",
+            "priority": r[3] or 0,
+            "deadline": (r[4] or "")[:16],
+            "created_at": (r[5] or "")[:16],
+            "updated_at": (r[6] or "")[:16],
+            "completed_at": (r[7] or "")[:16],
+        }
+        for r in rows
+    ]
+    return _json({"ok": True, "items": items})
+
+
+async def handle_service_schedules(request: web.Request) -> web.Response:
+    """GET /api/admin/services/{sid}/schedules — 日程页签（timers 表）。"""
+    sid = request.match_info["service_id"]
+    try:
+        limit = min(int(request.query.get("limit", 100) or 100), 300)
+    except ValueError:
+        limit = 100
+    conn = _open_ro(_svc_db(sid, "state.db"))
+    if conn is None:
+        return _json({"ok": True, "items": []})
+    try:
+        rows = conn.execute(
+            "SELECT id, event_kind, fire_at, created_at, fired_at, payload_json"
+            " FROM timers ORDER BY fire_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    finally:
+        conn.close()
+    items = []
+    for r in rows:
+        try:
+            payload = json.loads(r[5]) if r[5] else {}
+        except ValueError:
+            payload = {}
+        items.append(
+            {
+                "id": r[0],
+                "kind": r[1] or "",
+                "fire_at": (r[2] or "")[:16],
+                "created_at": (r[3] or "")[:16],
+                "fired": bool(r[4]),
+                "label": (payload.get("label") or payload.get("title") or "")[:60],
+            }
+        )
+    return _json({"ok": True, "items": items})
+
+
+_SECRET_KEY_RE = None  # 延迟编译
+
+
+def _mask_secrets(node):
+    """递归抹除 dict 里的密钥类字段（值换 ***）。"""
+    global _SECRET_KEY_RE
+    if _SECRET_KEY_RE is None:
+        import re as _re
+
+        _SECRET_KEY_RE = _re.compile(
+            r"(api_key|secret|token|password|credential|webhook|dsn)", _re.I
+        )
+    if isinstance(node, dict):
+        return {
+            k: ("***" if _SECRET_KEY_RE.search(k) else _mask_secrets(v))
+            for k, v in node.items()
+        }
+    if isinstance(node, list):
+        return [_mask_secrets(x) for x in node]
+    return node
+
+
+async def handle_def_config(request: web.Request) -> web.Response:
+    """GET /api/admin/defs/{def_id}/config — agent 定义配置查看（zhp 12:12）。
+
+    返回 def 目录的 app.yaml（密钥抹除）+ persona 文本；只读。
+    """
+    import re as _re
+
+    def_id = request.match_info["def_id"]
+    if not _re.fullmatch(r"[a-z0-9][a-z0-9-]{1,63}", def_id):
+        return _json({"ok": False, "error": "非法 def_id"}, 400)
+    from infrastructure.config import get_project_root
+
+    root = get_project_root()
+    d = root / "apps" / def_id  # 真相源：apps/{xxx}-def/（10/8 修正）
+    if not (d / "config" / "app.yaml").is_dir() and not d.is_dir():
+        d = root / "config" / "agent_defs" / def_id  # 旧快照兜底
+    if not d.is_dir():
+        return _json({"ok": False, "error": "def 不存在"}, 404)
+    cfg = {}
+    yaml_p = d / "app.yaml"
+    if yaml_p.exists():
+        import yaml
+
+        try:
+            cfg = yaml.safe_load(yaml_p.read_text()) or {}
+        except Exception:
+            cfg = {"_parse_error": "app.yaml 解析失败"}
+    persona = ""
+    pd = d / "persona"
+    if pd.is_dir():  # 新布局：apps/{def}/persona/LIFE_PERSONA.md
+        parts = [
+            f.read_text(errors="replace")
+            for f in sorted(pd.glob("*.md"))
+            if f.is_file()
+        ]
+        persona = "\n\n".join(parts)[:20000]
+    else:  # 旧布局：单文件
+        for name in ("LIFE_PERSONA.md", "PERSONA.md", "persona.md"):
+            p2 = d / name
+            if p2.exists():
+                persona = p2.read_text(errors="replace")[:20000]
+                break
+    return _json(
+        {"ok": True, "def_id": def_id, "config": _mask_secrets(cfg), "persona": persona}
+    )
+
+
+_ROUTER.router.add_get("/services/{service_id}/sessions", handle_service_sessions)
+_ROUTER.router.add_get("/services/{service_id}/todos", handle_service_todos)
+_ROUTER.router.add_get("/services/{service_id}/schedules", handle_service_schedules)
+_ROUTER.router.add_get("/defs/{def_id}/config", handle_def_config)
+
 
 
 def add_services_admin_routes(app: web.Application) -> None:

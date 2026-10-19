@@ -172,4 +172,8 @@ export const adminApi = {
   defs:          () => api.get('/api/admin/defs'),
   services:      (p = {}) => api.get('/api/admin/services', { agent_def_id: p.agent_def_id, status: p.status, limit: p.limit, offset: p.offset }),
   serviceDetail: (sid) => api.get(`/api/admin/services/${sid}`),
+  serviceSessions:(sid) => api.get(`/api/admin/services/${sid}/sessions`),
+  serviceTodos:   (sid) => api.get(`/api/admin/services/${sid}/todos`),
+  serviceSchedules:(sid) => api.get(`/api/admin/services/${sid}/schedules`),
+  defConfig:      (defId) => api.get(`/api/admin/defs/${defId}/config`),
 }

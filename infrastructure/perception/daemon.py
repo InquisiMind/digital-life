@@ -366,6 +366,35 @@ def _write_state(instance_id: str, **fields: Any) -> None:
 
 # ── PerceptionDaemon ─────────────────────────────────────────────────────────
 
+_HELPER_BINARY = Path(__file__).resolve().parents[2] / "scripts" / "hotkey_helper"
+
+
+def _spawn_hotkey_helper(combo: str):
+    """spawn Carbon helper 注册单个全局热键；返回 Popen，失败返回 None。
+
+    helper 输出 READY（注册成功）/ TRIGGERED（热键按下）到 stdout。
+    一个 combo 一个 helper 子进程（同一编译产物）；单守护路由（HotkeyRouterDaemon）
+    会为路由表里每个 combo 各 spawn 一个，仍只有一个守护进程持有全部监听。
+    """
+    if not _HELPER_BINARY.exists():
+        logger.warning("hotkey helper 不存在: %s（需要 swiftc 编译）", _HELPER_BINARY)
+        return None
+    # 解析 hotkey: "cmd+shift+z" → key="z" mods="cmd+shift"
+    parts = combo.split("+")
+    key_part = parts[-1].strip()
+    mod_part = "+".join(p.strip() for p in parts[:-1]) or "cmd"
+    try:
+        import subprocess
+
+        return subprocess.Popen(
+            [str(_HELPER_BINARY), key_part, mod_part],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, bufsize=1,
+        )
+    except Exception as exc:
+        logger.warning("hotkey helper 启动失败: %s", exc)
+        return None
+
 
 class PerceptionDaemon:
     """一个实例的感知 daemon：监听快捷键 → 录制 → 上报。
@@ -373,10 +402,15 @@ class PerceptionDaemon:
     生命周期由 :func:`start_perception_daemon` 管理，随 instance 进程启停。
     """
 
-    def __init__(self, instance_id: str, config: PerceptionConfig, *, endpoint: str = DEFAULT_ENDPOINT):
+    def __init__(self, instance_id: str, config: PerceptionConfig, *, endpoint: str = DEFAULT_ENDPOINT,
+                 barge_in: Callable[[], bool] | None = None):
         self.instance_id = instance_id
         self.config = config
         self.endpoint = endpoint
+        # 按键打断 TTS 播报的实现。None = 进程内 stop_playback（daemon 与 TTS
+        # 同进程的历史形态）；单守护路由下 TTS 播在 worker 进程里，由
+        # HotkeyRouterDaemon 注入跨进程实现（master → SIGUSR1 → worker）。
+        self._barge_in = barge_in
         self._recorder = _Recorder(
             fps=config.frame_fps,
             max_seconds=config.max_capture_seconds,
@@ -387,9 +421,22 @@ class PerceptionDaemon:
         self._helper_reader: threading.Thread | None = None
         self._started_at = time.time()
 
+    def _do_barge_in(self) -> None:
+        """按快捷键 = 用户要说话，先停 TTS 播报（否则麦克风录进回声）。"""
+        try:
+            if self._barge_in is not None:
+                if self._barge_in():
+                    logger.info("TTS interrupted by hotkey (barge-in)")
+                return
+            from infrastructure.perception.voice_output import stop_playback
+            if stop_playback():
+                logger.info("TTS interrupted by hotkey (barge-in)")
+        except Exception:
+            pass
+
     def _helper_path(self) -> Path:
         """Swift hotkey helper 的路径（scripts/hotkey_helper）。"""
-        return Path(__file__).resolve().parents[2] / "scripts" / "hotkey_helper"
+        return _HELPER_BINARY
 
     def start(self) -> None:
         """启动快捷键监听（用 Carbon Swift helper，不依赖辅助功能权限）。
@@ -399,26 +446,10 @@ class PerceptionDaemon:
         daemon spawn 它并读 stdout。
         """
         combo = self.config.hotkey
-        helper = self._helper_path()
-        if not helper.exists():
-            logger.warning("hotkey helper 不存在: %s（需要 swiftc 编译）", helper)
+        proc = _spawn_hotkey_helper(combo)
+        if proc is None:
             return
-
-        # 解析 hotkey: "cmd+shift+z" → key="z" mods="cmd+shift"
-        parts = combo.split("+")
-        key_part = parts[-1].strip()
-        mod_part = "+".join(p.strip() for p in parts[:-1]) or "cmd"
-        try:
-            import subprocess
-
-            self._helper_proc = subprocess.Popen(
-                [str(helper), key_part, mod_part],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, bufsize=1,
-            )
-        except Exception as exc:
-            logger.warning("hotkey helper 启动失败: %s", exc)
-            return
+        self._helper_proc = proc
 
         # 读 stdout 的线程：等 READY / TRIGGERED
         def _read_loop():
@@ -475,14 +506,9 @@ class PerceptionDaemon:
             self._busy = True
             threading.Thread(target=self._finish_with_unlock, args=(False,), daemon=True).start()
         else:
-            # barge-in：按快捷键 = 用户要说话，立即停 zero 的播报
-            #（否则麦克风会把 zero 自己的 TTS 录进去，ASR 产生回声）
-            try:
-                from infrastructure.perception.voice_output import stop_playback
-                if stop_playback():
-                    logger.info("TTS interrupted by hotkey (barge-in)")
-            except Exception:
-                pass
+            # barge-in：按快捷键 = 用户要说话，先停 TTS 播报
+            #（否则麦克风把实例自己的播报录进去，ASR 产生回声）
+            self._do_barge_in()
             self._recorder.start()
             self._maybe_start_live()
             _feedback("start")
@@ -742,3 +768,156 @@ def start_perception_daemon(instance_id: str, *, endpoint: str = DEFAULT_ENDPOIN
     daemon = PerceptionDaemon(instance_id, cfg, endpoint=endpoint)
     daemon.start()
     return daemon
+
+
+# ── HotkeyRouterDaemon（单守护多热键路由，2026-10-13 收敛）───────────────────
+
+ROUTE_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "perception.yaml"
+
+
+def load_hotkey_routes(config_path: str | Path | None = None) -> dict[str, str]:
+    """读 config/perception.yaml 的 ``routes: {hotkey: instance_id}``。
+
+    文件缺失/解析失败 → 空表（调用方按"无路由"处理，不抛）。
+    """
+    import yaml
+
+    p = Path(config_path) if config_path else ROUTE_CONFIG_PATH
+    if not p.is_file():
+        return {}
+    try:
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        logger.warning("perception.yaml parse failed: %s", exc)
+        return {}
+    routes: dict[str, str] = {}
+    for combo, iid in (data.get("routes") or {}).items():
+        combo_s, iid_s = str(combo).strip().lower(), str(iid).strip()
+        if combo_s and iid_s:
+            routes[combo_s] = iid_s
+    return routes
+
+
+class HotkeyRouterDaemon:
+    """单守护多热键路由：一个进程持有全部全局热键监听，按热键路由到实例。
+
+    2026-10-13 收敛（zhp 拍板"单守护+按键路由"）：退役 per-instance 守护
+    （Gen1 launchd 双守护、Gen2 worker 内置守护）。每个 combo 一个 Carbon
+    helper 子进程（同一编译产物），但持有监听的守护进程只有一个。
+
+    - 同一时刻只有一路采集（单麦克风语义）：录制中收到其它实例的热键 → 忽略；
+    - 录音落盘/事件上报/ASR 配置全部用被路由实例自己的上下文（media_dir、
+      app.yaml perception 段按实例取）；
+    - KWS 语音唤醒（AudioSenseService）是独立可配置通道，与本守护无关。
+    """
+
+    def __init__(self, routes: dict[str, str], *, endpoint: str = DEFAULT_ENDPOINT,
+                 barge_in_fn: Callable[[str], bool] | None = None):
+        self._routes = {c: i for c, i in routes.items() if c and i}
+        # delegate 复用 PerceptionDaemon 的整条采集→转写→上报链路（含各自的
+        # instance_id/config），router 只管 helper 编排、防抖与单采集闸门。
+        self._delegates: dict[str, PerceptionDaemon] = {
+            combo: PerceptionDaemon(iid, load_config(iid), endpoint=endpoint)
+            for combo, iid in self._routes.items()
+        }
+        # 按键打断 TTS：TTS 播在 worker 进程里，master 注入跨进程实现
+        # （barge_in_fn(instance_id)，server.py 里走 supervisor 发 SIGUSR1）。
+        if barge_in_fn is not None:
+            for combo, delegate in self._delegates.items():
+                iid = self._routes[combo]
+                delegate._barge_in = (lambda fn=barge_in_fn, _iid=iid: fn(_iid))
+        self._helper_procs: list[tuple[str, Any]] = []  # (combo, Popen)
+        self._last_trigger_ts = 0.0
+        self._started_at = time.time()
+
+    def start(self) -> None:
+        for combo, delegate in self._delegates.items():
+            proc = _spawn_hotkey_helper(combo)
+            if proc is None:
+                continue
+            self._helper_procs.append((combo, proc))
+            threading.Thread(target=self._read_helper, args=(combo, proc),
+                             daemon=True).start()
+            _write_state(delegate.instance_id, running=True, pid=_pid(),
+                         started_at=self._started_at, hotkey=combo, routed=True)
+        if self._helper_procs:
+            routes_desc = ",".join(f"{c}->{iid[:8]}"
+                                   for c, iid in self._routes.items())
+            logger.info("hotkey router started: %d route(s) [%s]",
+                        len(self._helper_procs), routes_desc)
+        else:
+            logger.warning("hotkey router: no helper started (helper missing?)")
+
+    def _read_helper(self, combo: str, proc: Any) -> None:
+        try:
+            for line in proc.stdout:
+                line = line.strip()
+                if line == "TRIGGERED":
+                    logger.info("hotkey TRIGGERED: %s → instance=%s",
+                                combo, self._routes.get(combo, "?")[:8])
+                    self._on_triggered(combo)
+                elif line.startswith("READY"):
+                    logger.info("hotkey route ready: %s", combo)
+        except Exception as exc:
+            logger.warning("hotkey helper reader exit (%s): %s", combo, exc)
+
+    def _on_triggered(self, combo: str) -> None:
+        """热键触发入口：跨路由防抖 + 单采集闸门，然后转发给对应 delegate。"""
+        delegate = self._delegates.get(combo)
+        if delegate is None:
+            return
+        now = time.time()
+        if now - self._last_trigger_ts < 0.3:
+            logger.debug("router debounced (%.2fs since last)", now - self._last_trigger_ts)
+            return
+        self._last_trigger_ts = now
+        active = [d for d in self._delegates.values() if d._recorder.is_recording]
+        if active and delegate not in active:
+            # 正在为别的实例采集：忽略（单麦）。再按一次同一热键 = 结束那次采集。
+            logger.info("capture busy for %s — hotkey %s ignored",
+                        active[0].instance_id[:8], combo)
+            return
+        delegate._toggle()
+
+    def stop(self) -> None:
+        for combo, proc in self._helper_procs:
+            try:
+                proc.terminate()
+                proc.wait(timeout=3)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        self._helper_procs.clear()
+        for delegate in self._delegates.values():
+            delegate.stop()  # 未在录制则只落 state；在录制则强制收尾
+        logger.info("hotkey router stopped")
+
+
+def start_hotkey_router_daemon(*, endpoint: str = DEFAULT_ENDPOINT,
+                               config_path: str | Path | None = None,
+                               barge_in_fn: Callable[[str], bool] | None = None,
+                               _routes: dict[str, str] | None = None) -> HotkeyRouterDaemon | None:
+    """master 启动时调用。config/perception.yaml ``daemon.enabled=false`` 或
+    无路由 → 返回 None（不监听任何热键）。``_routes`` 仅供测试注入。"""
+    import yaml
+
+    p = Path(config_path) if config_path else ROUTE_CONFIG_PATH
+    enabled = False
+    if p.is_file():
+        try:
+            data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+            enabled = bool((data.get("daemon") or {}).get("enabled", False))
+        except Exception as exc:
+            logger.warning("perception.yaml parse failed: %s", exc)
+    if not enabled:
+        logger.info("hotkey router disabled (config/perception.yaml daemon.enabled=false)")
+        return None
+    routes = _routes if _routes is not None else load_hotkey_routes(p)
+    if not routes:
+        logger.info("hotkey router: no routes configured, skipping")
+        return None
+    router = HotkeyRouterDaemon(routes, endpoint=endpoint, barge_in_fn=barge_in_fn)
+    router.start()
+    return router

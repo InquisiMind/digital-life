@@ -43,16 +43,17 @@ class PromptConsoleWorkflow:
         except Exception:
             pass
         try:
-            from domain.identity.system_prompts import L4_LIFECYCLE_PROMPT
+            from domain.identity.system_prompts import render_l4_lifecycle
 
+            _l4_view = render_l4_lifecycle()  # 预览按实例默认渲染；服务型注入时按工具面替换嘴工具名
             prompts.append({
                 "name": "L4 生命周期 (全局只读)",
                 "key": "L4_LIFECYCLE_PROMPT",
                 "layer": "全局 Prompt",
-                "trigger": "始终注入 system prompt",
+                "trigger": "始终注入 system prompt（发言工具名按运行体工具面渲染）",
                 "file": "domain/identity/system_prompts/__init__.py",
-                "content": L4_LIFECYCLE_PROMPT,
-                "original": L4_LIFECYCLE_PROMPT,
+                "content": _l4_view,
+                "original": _l4_view,
                 "overridden": False,
                 "read_only": True,
             })

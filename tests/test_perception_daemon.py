@@ -83,7 +83,9 @@ def test_start_daemon_enabled_returns_object(monkeypatch, tmp_path):
         enabled=True, hotkey="cmd+shift+q", api_key="fake"))
     # media_dir 写 state.json 需要 tmp
     monkeypatch.setattr(dm, "media_dir", lambda iid: tmp_path)
-    # pynput.GlobalHotKeys 在无权限环境会 warn 但不抛；start 内部已 try/except
+    # 不 spawn 真 Swift helper——否则测试期间注册真全局热键 cmd+shift+q，
+    # 套件运行期间误按会真开麦（本测试只验证工厂返回值，不验证 listener）。
+    monkeypatch.setattr(dm.PerceptionDaemon, "start", lambda self: None)
     daemon = dm.start_perception_daemon("test-enabled-iid")
     assert daemon is not None
     assert daemon.instance_id == "test-enabled-iid"
@@ -92,17 +94,54 @@ def test_start_daemon_enabled_returns_object(monkeypatch, tmp_path):
     daemon.stop()
 
 
+class _FakeRecorder:
+    """替身采集器：接口对齐 _Recorder，绝不碰麦克风/文件系统。
+
+    历史事故：test_daemon_toggle_idempotent 曾用真 _Recorder 跑 _toggle()，
+    每次 pytest 批量运行都真开麦录 ~3 秒 + 发系统通知（9/21-10/9 用户听到
+    的"没按键也录音/叮声"），并在 apps/test-toggle-iid/ 落盘真实 wav。
+    """
+
+    def __init__(self, *, fps, max_seconds, out_dir, on_auto_stop=None):
+        self.fps = fps
+        self.max_seconds = max_seconds
+        self.out_dir = out_dir
+        self.on_auto_stop = on_auto_stop
+        self._recording = False
+
+    @property
+    def is_recording(self) -> bool:
+        return self._recording
+
+    @property
+    def audio_path(self):
+        return None
+
+    def start(self) -> None:
+        self._recording = True
+
+    def stop(self) -> dict:
+        self._recording = False
+        return {"frames": [], "audio": None, "duration": 0.0}
+
+
 def test_daemon_toggle_idempotent(monkeypatch, tmp_path):
     """_toggle 在非录制状态调 _recorder.start，录制状态调 _finish。不抛。"""
     import infrastructure.perception.daemon as dm
+
+    # 采集器必须 mock：真 _Recorder 会 spawn /usr/bin/python3 麦克风子进程
+    # 并把 wav 落到真实 media_dir（test-toggle-iid 目录就是这么来的）。
+    monkeypatch.setattr(dm, "_Recorder", _FakeRecorder)
+    # _feedback 会发 macOS 通知 + 叮声，测试期一并静音。
+    monkeypatch.setattr(dm, "_feedback", lambda *a, **kw: None)
 
     daemon = dm.PerceptionDaemon(
         "test-toggle-iid",
         PerceptionConfig(enabled=True, hotkey="cmd+shift+t"),
     )
     # _toggle 不依赖 listener，可直接调
-    daemon._toggle()  # 开始（recorder.start，无 mss 则只 log）
-    daemon._toggle()  # 结束（_finish_recording → 异步上报，无 endpoint 会失败但不抛）
+    daemon._toggle()  # 开始（fake recorder）
+    daemon._toggle()  # 结束（_finish_recording → 无音频不上报，不抛）
     daemon.stop()
 
 

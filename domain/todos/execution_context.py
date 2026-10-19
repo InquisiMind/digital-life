@@ -130,7 +130,7 @@ def _execution_hints(task: dict, plans: list[dict], notes: list[dict], speckit: 
     if not notes:
         hints.append("此任务还没有笔记。从现在开始每次执行都要记录——这是你跨越 session 的记忆")
 
-    hints.append("所有步骤做完后验证产出，然后 express_to_human 汇报 + task done 标记完成")
-    hints.append("遇到阻塞不要硬撑：task_note 记录阻塞原因，尝试替代方案，仍不行就 express_to_human 请求协助")
+    hints.append("所有步骤做完后验证产出，然后用发言工具汇报 + task done 标记完成")
+    hints.append("遇到阻塞不要硬撑：task_note 记录阻塞原因，尝试替代方案，仍不行就用发言工具（你的嘴，见系统提示词）请求协助")
 
     return hints

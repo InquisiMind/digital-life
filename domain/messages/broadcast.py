@@ -389,6 +389,11 @@ def receive_broadcast(payload: dict) -> dict:
     delivered = 0
     duplicates = 0
     errors: list[str] = []
+    # 窗口账本平台口径：订阅表里飞书记作 "lark"，ingress/conversation_log/
+    # 窗口读侧统一 "feishu"——落账与事件 payload 必须同口径，否则 peer 的
+    # 话落了账也查不进 {recent_context}。
+    _src_pf = (payload.get("source_platform") or "feishu").strip()
+    ledger_platform = "feishu" if _src_pf in ("", "lark", "feishu") else _src_pf
     for peer_iid in targets:
         # 切到 peer 实例上下文(record + emit 都会按此隔离)
         iid_token = set_current_instance_id(peer_iid)
@@ -428,7 +433,26 @@ def receive_broadcast(payload: dict) -> dict:
                     )
                     continue
 
-            # 2. emit 一个 group_message 事件(走和飞书入站完全一致的 urgency 分类)
+            # 2. 落 conversation_log（窗口账本）。{recent_context}/同窗口上下文只认
+            #    这张表——广播不落账，peer 说过的话就从对方上下文窗口里消失
+            #    （2026-10-10 zhp：实例间对话在"最近对话"里不可见，对错行）。
+            try:
+                from domain.lifecycle.conversation_log import log_conversation
+                log_conversation(
+                    platform=ledger_platform,
+                    conversation_id=chat_id,
+                    chat_type="group",
+                    direction="in",
+                    text=text,
+                    sender_name=from_display_name or from_instance_id[:8],
+                )
+            except Exception:
+                logger.debug(
+                    "receive_broadcast: conversation_log write failed peer=%s",
+                    peer_iid[:8], exc_info=True,
+                )
+
+            # 3. emit 一个 group_message 事件(走和飞书入站完全一致的 urgency 分类)
             # 由 peer 自己的 cron + handler 决定立即 wake / 30s 累积。
             # 9/21 修复: bot 互发时飞书侧 mentions 结构不解析(纯文本 @名字),
             # 这里按接收方显示名补 mentions_bot,否则 rest 中的实例被唤醒分级
@@ -454,6 +478,7 @@ def receive_broadcast(payload: dict) -> dict:
                         "mentions_bot": bool(mentioned_name),  # 文本 @名字 → 强制 immediate
                         "mention_names": mentioned_name,
                         "source": "broadcast",
+                        "platform": ledger_platform,  # 与账本同口径，{recent_context} 读口直接命中
                         "_bypass_chat_stream_write": True,  # 已写过 messages.db
                     },
                     channel="internal:broadcast",

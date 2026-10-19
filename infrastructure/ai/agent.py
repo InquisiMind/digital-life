@@ -95,14 +95,18 @@ class AIAgent:
         self._recall_injection_indices: list[int] = []
         # Mid-session event injection tracking
         self._injected_signal_event_ids: set[int] = set()
-        # V6: 条件暴露工具 — rest preview 后动态暴露 record_thought
-        self._conditionally_revealed_tools: set[str] = set()
+        # 通行证池：wake 级授予每轮清零（AIAgent 每 wake/每请求新建；rest
+        # preview 的授予随本轮结束自然作废，防跨轮残留）
+        try:
+            from domain import tool_visibility as _tv
+            from infrastructure.config import get_app_instance_id as _gid
+
+            _tv.clear_wake(_gid() or self.instance_id or "")
+        except Exception:
+            pass
         # Counter for synthetic tool_call IDs (system context injection)
         self._sys_tool_counter: int = 0
         # 模型在本 session 没 pending 事件仍不调任何工具(空转) 的次数。
-        # 用于"rest 兜底"——首次空转注入 user 提示让模型告别空想直接 rest；
-        # 仍空转则放行不再纠缠(强行 rest 会破坏模型自主性)。
-        self._noop_warn_count: int = 0
         # Audit dual-write bookkeeping (populated when audit_ctx attached)
         self._audit_pending_tool_count: int = 0
         self._audit_assistant_had_calls: bool = False
@@ -135,7 +139,7 @@ class AIAgent:
         """
         session_id = self.session_id or task_id or "adhoc"
         # think effort 状态机（2026-09-18 事件触发化）: 一次 wake 一个状态。
-        # 人类消息类 wake → 首轮 minimal 快答; 其余 wake → 配置档起手。
+        # 人类消息类 wake → 首轮 fast(low) 快答; 其余 wake → 配置档起手。
         # 判据用 scheduler 传入的 wake_reason（"message"/"group_message"）——
         # 554b7a6 原版此处引用了不存在的局部变量 wake_signal，运行期 NameError，
         # 三个实例连续 3 次 wake 失败（9/20 10:0x 全量 offline 事故）。
@@ -171,6 +175,9 @@ class AIAgent:
             # 无 tag 的 user（如 continuation 中拉回的旧 action_prompt 裸 user）保留原样。
             # 不再区分"新 session / 续用 session"路径，行为一致。
             messages.extend(self._convert_user_to_tool(conversation_history))
+            # 悬空 tool_calls 修复（wake 首装一次性，纯增量；见函数 docstring
+            # 的安全边界——绝不删改已有消息，GLM reasoning 载体行原样保留）。
+            _repair_unanswered_tool_calls(messages)
             # 记忆去重状态跟可见性走（2026-09-21 小张案例：接续唤醒重置
             # _injected_memory_ids，同一条记忆在活跃会话里被反复注入 6 次）。
             self._harvest_injected_memory_ids(messages)
@@ -245,6 +252,9 @@ class AIAgent:
         }
         MAX_SENSE_ONLY_ROUNDS = 10
         sense_only_streak = 0
+        # 纯文本提醒每次醒重新起算（进程级计数会让额度被第一次空转耗尽，
+        # 之后所有醒的独白静默放行——2026-10-15 事件重投事故的成因之一）
+        self._noop_warn_count = 0
         max_iters = max(1, int(self.max_iterations or 90))
         HARD_LIMIT_AFTER_SOFT = 20  # 软提示后还能再跑 20 轮
 
@@ -287,10 +297,13 @@ class AIAgent:
                 msg_dict["reasoning_content"] = reasoning
             messages.append(msg_dict)
             # Layer 1 落库：reasoning 透传到 messages 表的 reasoning 列（schema 已经有，之前没填）
+            # token_count=本次响应 completion tokens（_record_token_usage 已从 usage 提取），
+            # 随 turn 落审计库——成员负载视图的"输出 token"指标从这里来。
             self._append_message(
                 session_id, "assistant", content,
                 tool_calls=tool_calls or None,
                 reasoning=reasoning or None,
+                token_count=getattr(self, "_last_completion_tokens", 0) or None,
             )
             # 维护最近 N 轮 reasoning 历史给下一轮注入用
             # ← 已废弃：reasoning_content 现在直接写进 messages 列表的 assistant msg 里，
@@ -330,25 +343,32 @@ class AIAgent:
                     messages.append({"role": "assistant", "content": final})
                     self._write_log(messages)
                     logger.info("Hard cutoff: budget exhausted after soft warning (max_iters=%d, hard=%d)", max_iters, HARD_LIMIT_AFTER_SOFT)
+                    # 截断即休息（无条件）：状态推导认"未到期 timer → resting"，
+                    # PM 侧立刻看到"他没在干活"；到点闹钟自动续跑，看门狗与群
+                    # 消息是两条既有的恢复路径（2026-10-19 车车事故复盘）。
+                    try:
+                        from datetime import timedelta
+                        from domain.lifecycle.alarms import set_alarm
+                        from domain.lifecycle import clock as _clock
+
+                        wake_dt = _clock.beijing_now_dt() + timedelta(minutes=30)
+                        set_alarm("timer", _clock.to_storage_iso(wake_dt), payload={
+                            "reason": "轮数上限自动休息",
+                            "mental_context": "达到最大执行轮次自动休息；任务未完成，醒来先读已保存进度续跑",
+                        })
+                    except Exception:
+                        logger.debug("hard cutoff rest setup failed", exc_info=True)
                     try:
                         from domain.lifecycle.runtime_context import get_current_affair
                         from domain.lifecycle.affairs.runtime import update_affair, clear_wait_intent
-                        from domain.lifecycle.state_machine import AffairStatus, WaitType
-                        from domain.lifecycle.alarms import set_alarm
-                        from domain.lifecycle import clock as _clock
+                        from domain.lifecycle.state_machine import AffairStatus
+
                         aid = get_current_affair()
                         if aid:
                             update_affair(aid, status=AffairStatus.BLOCKED)
-                            from datetime import timedelta
-                            wake_dt = _clock.beijing_now_dt() + timedelta(minutes=30)
-                            wake_iso = _clock.to_storage_iso(wake_dt)
-                            set_alarm("timer", wake_iso, payload={
-                                "reason": "max_iterations auto-rest",
-                                "mental_context": "达到最大执行轮次自动休息",
-                            })
                             clear_wait_intent(aid)
                     except Exception:
-                        logger.debug("hard cutoff rest setup failed", exc_info=True)
+                        logger.debug("hard cutoff affair update failed", exc_info=True)
                     return {"final_response": final, "tool_calls": tool_calls_seen, "status": "blocked"}
 
             if not tool_calls:
@@ -391,20 +411,18 @@ class AIAgent:
                         pass
                     continue
 
-                # ── rest 兜底注入 (走 sys_tool_call 模式, 不污染 user message slot) ──
-                # 模型这一轮没调任何工具就打算结束 —— 不管它说了什么(休息话/空 content/
-                # 别的文案), 只要"没工具调用就想收尾", 都提示它: 要么 rest 要么继续做事。
-                # 第二次仍空转就放行(_noop_warn_count >= 1 时不再注入), 尊重模型判断。
+                # ── rest 兜底注入（每次醒一次；醒内重置见循环开头）──
+                # 模型这一轮没调任何工具就打算结束——独白谁都看不到，提醒它
+                # 必须调用工具或 rest。醒内只提醒一次：rest 成功后的空响应
+                # 不再回灌（否则 rest→空响应→提醒→rest 死循环，2026-10-15 事故）。
                 if self._noop_warn_count < 1:
                     self._noop_warn_count += 1
                     nudge = (
-                        "⚠️ 系统提示：你这一轮没有调用任何工具就打算结束。"
-                        "在 Digital Life 里，你的每一个反应都必须是工具调用——"
-                        "不调工具就结束等于什么都没做，躯壳不会进入休息，只会被判定为空转。\n\n"
-                        "请明确选择：\n"
-                        "- 如果本醒的工作告一段落 → 调用 `rest`（带 `mental_context` 给未来的自己留话）；\n"
-                        "- 如果还有事没做完 → 立刻调相应工具去做（不要只写文字）。\n\n"
-                        "下一轮如果还不调工具，系统将不再提醒，直接结束本次醒。"
+                        "⚠️ 你是打算休息了么？这一轮你没有调用任何工具——纯文本独白在"
+                        " Digital Life 里谁都看不到，等于什么都没做。必须二选一，现在就调用：\n"
+                        "- 要调用工具：对客户/团队说话用 send_chat_message（或 express_to_human），"
+                        "记录用 record_thought，有事就调对应的工具去做；\n"
+                        "- 或者调用 `rest` 工具休息（带 mental_context 给未来的自己留话）。"
                     )
                     # 走 _sys_tool_call 模式: 不占 user message 槽, 与 entity_recall /
                     # wake_signal 等系统提示同构(双写 audit 便于前端排查)。
@@ -491,23 +509,39 @@ class AIAgent:
                 function = call.get("function") or {}
                 name = function.get("name") or ""
                 arguments = self._parse_arguments(function.get("arguments"))
-                result = registry.dispatch(name, arguments, session_id=session_id)
-                # V6 通用条件暴露: dispatch 后检测 preview=True + 工具声明了 reveals_tools_on
-                # → 自动把声明的工具加入条件暴露池, 下一轮模型能看到
-                # → 如果结果不含 preview (confirm/执行完毕) → 自动清空
+                # 工具面即闸：面外工具不分派。只从清单里藏不够——模型仍可点名
+                # 调用且 dispatch 照样执行（2026-10-13 svc-657a5b078201：服务 PM
+                # 面外调 express_to_human 无 chat_id 被拦截→"未送达"）。面外调用
+                # 返回引导性错误，让模型下一轮改走工具面内的正道。
+                _face = getattr(self, "_payload_face", None)
+                if _face is not None and name and name not in _face:
+                    logger.warning("tool-face gate: refused out-of-face call %r", name)
+                    result = json.dumps(
+                        {"error": f"工具 {name} 当前不可用（不在工具面内），未执行。请从工具清单里选择可用工具完成任务。"},
+                        ensure_ascii=False,
+                    )
+                else:
+                    result = registry.dispatch(name, arguments, session_id=session_id)
+                # V6 通用条件暴露 → 引擎本轮通行证: dispatch 后检测 preview=True
+                # + 工具声明了 reveals_tools_on → 发 wake 级授予, 下一轮模型能看到;
+                # 结果不含 preview (confirm/执行完毕) → 按来源收回本轮授予
                 try:
                     result_json = json.loads(result) if isinstance(result, str) else result
                     entry = registry._tools.get(name)
                     if entry and getattr(entry, "reveals_tools_on", ()):
+                        from domain import tool_visibility as _tv
+                        from infrastructure.config import get_app_instance_id as _gid
+
+                        _rid = _gid() or self.instance_id or ""
                         if isinstance(result_json, dict) and result_json.get("preview"):
-                            self._conditionally_revealed_tools.update(entry.reveals_tools_on)
+                            _tv.grant_wake(_rid, entry.reveals_tools_on, source=f"preview:{name}")
                         elif isinstance(result_json, dict) and not result_json.get("preview"):
-                            # confirm/执行完毕, 清空条件暴露
-                            self._conditionally_revealed_tools.clear()
+                            # confirm/执行完毕, 收回本轮授予（按来源精确清）
+                            _tv.revoke(_rid, source=f"preview:{name}")
                 except Exception:
                     pass
                 # think_cycle: 工具结果喂给 effort 状态机——
-                # · 快答轮完成后结束 minimal (on_success)
+                # · 快答轮完成后结束 fast (on_success)
                 # · 基础设施异常 (Tool execution failed) 计 stuck, 连续 3 次兜底升 high
                 # 业务失败语义 (工具正常返回 {"error": ...}) 不算 stuck——那是模型
                 # 该自己想办法的事, 不该偷懒换档。
@@ -523,7 +557,10 @@ class AIAgent:
                 self._append_message(session_id, "tool", result, tool_name=name, tool_call_id=call.get("id"))
                 self._write_log(messages)
                 # rest() returns __l4_block__ — stop the loop immediately
-                if '"__l4_block__": true' in result or '"__l4_block__":true' in result:
+                # 静眠路径（项目挂起等）结果不带 __l4_block__：resting=true 同样终止，
+                # 否则 rest→空响应→提醒→rest 死循环（2026-10-15 事故）
+                if '"__l4_block__": true' in result or '"__l4_block__":true' in result \
+                        or '"resting": true' in result or '"resting":true' in result:
                     session_blocked = True
 
             # 关闭 recall 预查线程池
@@ -656,7 +693,7 @@ class AIAgent:
         # o1 会 400 Bad Request，对 Claude/DSt 不识别但被静默忽略。
         reasoning_config = self.reasoning_config
         # think effort 状态机（2026-09-18 事件触发化, 取代旧语音快答单点逻辑）:
-        #   A 人类消息事件→首轮 minimal 快答 | B think 工具升档(TTL) | C 卡住兜底 high
+        #   A 人类消息事件→首轮 fast(low) 快答 | B think 工具升档(TTL) | C 卡住兜底 high
         #   优先级 C > B > A > 配置档。旧 DIGITAL_LIFE_VOICE_FAST 开关保留为
         #   A 入口总闸（默认开）。decide() 内部推进 call_idx/override 计数。
         try:
@@ -681,12 +718,26 @@ class AIAgent:
                 logger.info("think_cycle: call#%d effort→%s (%s)", state["call_idx"], effort, why)
         except Exception:
             pass
+        # 端点值域学习（infrastructure/ai/effort_domain.py）：该端点曾因某档
+        # 400 被拒过 → 学得的邻档映射持久化，所有唤醒装配时直接用对档。
+        if reasoning_config and reasoning_config.get("effort"):
+            from infrastructure.ai import effort_domain as _ed
+
+            _mapped = _ed.get_fix(url, str(reasoning_config["effort"]))
+            if _mapped:
+                reasoning_config = {**reasoning_config, "effort": _mapped}
         payload = self._provider.customize_payload(
             payload,
             reasoning_config=reasoning_config,
         )
         if not payload["tools"]:
             payload.pop("tools")
+        # 工具面快照：分派闸用（见 wake 循环 dispatch 前的拦截）。
+        self._payload_face = {
+            t.get("function", {}).get("name")
+            for t in (payload.get("tools") or [])
+            if isinstance(t, dict)
+        }
         # ── 在 HTTP POST 之前 dump payload —— 这是"模型实际收到的"原始 input ──
         # 关键修正：旧 _dump_llm_input 在 agent.py L170 调用（_chat 之前），
         # 漏掉了 _chat 内部的两步——
@@ -738,6 +789,18 @@ class AIAgent:
         net_attempts = 0
         retry_429_attempts = 0
         _call_start = _time.time()
+        # 生成中标记：LLM 调用起止跨进程可见（status.py 据此区分"长生成"与"真卡住"）。
+        # 只写 start_ts、无需清理——start 晚于最后 turn 即在生成，早于即已完成。
+        try:
+            from infrastructure.config import get_app_instance_id, resolve_runtime_dir
+
+            _iid = get_app_instance_id()
+            _inflight_marker = (resolve_runtime_dir(_iid) / "data" / ".llm_inflight") if _iid else None
+            if _inflight_marker:
+                _inflight_marker.parent.mkdir(parents=True, exist_ok=True)
+                _inflight_marker.write_text(str(_time.time()))
+        except Exception:
+            _inflight_marker = None
         while True:
             try:
                 with httpx.Client(timeout=http_timeout) as client:
@@ -810,6 +873,29 @@ class AIAgent:
                         "LLM API 429 retry budget exhausted (%d/%d) — raising",
                         retry_429_attempts, MAX_429_RETRIES,
                     )
+                # 400 点名 reasoning_effort：端点值域比家族默认窄（newapi 只认
+                # low/high/max；config 档 medium 会 400）。按邻档归一后原地重试，
+                # 并持久化到 effort_domain 学习库——该端点此后所有唤醒装配时
+                # 直接用对档，只此一次付学费。
+                if (
+                    e.response.status_code == 400
+                    and isinstance(payload.get("reasoning_effort"), str)
+                    and "reasoning_effort" in e.response.text
+                ):
+                    from infrastructure.ai import effort_domain as _ed
+
+                    _cur = payload["reasoning_effort"]
+                    _new = _ed.NEAR.get(_cur)
+                    if _new:
+                        _ed.record_fix(url, _cur, _new)
+                        payload["reasoning_effort"] = _new
+                        logger.warning(
+                            "LLM API 400 names reasoning_effort=%s — endpoint value "
+                            "domain narrower than family default, remapping→%s "
+                            "(learned for this endpoint), retrying in place",
+                            _cur, _new,
+                        )
+                        continue
                 # 非 429 的 HTTPStatusError（5xx / 4xx）以前直接抛出，保持原行为。
                 raise
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as e:
@@ -896,7 +982,9 @@ class AIAgent:
         except (ValueError, TypeError):
             return
         if in_t <= 0 and out_t <= 0:
+            self._last_completion_tokens = 0
             return
+        self._last_completion_tokens = out_t
         self.session_input_tokens += in_t
         self.session_output_tokens += out_t
         # 写入持久化预算追踪器（不抛错——记录失败不能阻断 LLM 流程）
@@ -1013,78 +1101,25 @@ class AIAgent:
         )
 
     def _enabled_tool_names(self) -> list[str]:
-        all_names = registry.get_all_tool_names()
-        if not self.enabled_toolsets:
-            base = list(all_names)
-        else:
-            selected: list[str] = []
-            toolsets = set(self.enabled_toolsets)
-            for name in all_names:
-                if registry.get_toolset_for_tool(name) in toolsets or name in toolsets:
-                    selected.append(name)
-            base = selected
-        # 实例级白名单 AND 层：toolset 名或工具名命中才保留。
-        # 只会收紧；未配置(None)则跳过，零行为变化。
-        if self.tool_whitelist:
-            wl = set(self.tool_whitelist)
-            base = [
-                n
-                for n in base
-                if n in wl or registry.get_toolset_for_tool(n) in wl
-            ]
-        # capability 闸（设计文档 v1.1 特性 4）：服务型默认无精力/作息"躯体"，
-        # 对应感知工具不出现在 tools 数组——不靠提示词自觉，装配层就不给。
-        # 实例型 gated_tool_names() 恒空集，零行为变化。
-        try:
-            from domain.service.capabilities import gated_tool_names
+        # 可见 = 默认名单 ∪ 通行证池——装配唯一评估点收敛在引擎（2026-10-16）。
+        # 场景工具集/白名单/capability 闸/主体旗标的推导与授予合流都在
+        # domain.tool_visibility.assemble，这里只传入料。
+        from domain import tool_visibility
+        from infrastructure.config import get_app_instance_id
 
-            blocked = gated_tool_names()
-            if blocked:
-                base = [n for n in base if n not in blocked]
-        except Exception:
-            pass
-        # 业务工具面策略（协作工具装载/收紧）经扩展点过滤——基座不认识
-        # 哪些工具是"业务专属"，只把当前面交给注册的过滤器。
-        try:
-            from infrastructure import extension
-
-            base = extension.apply_tool_face_filters(base)
-        except Exception:
-            pass
-        # V6: 合并条件暴露工具 (rest preview 后动态加入)
-        # 在白名单之后——条件暴露是躯体机制(rest/preview)，不受业务白名单管。
-        base.extend(self._conditionally_revealed_tools)
-        return base
+        return tool_visibility.assemble(
+            base=registry.get_all_tool_names(),
+            toolsets=self.enabled_toolsets,
+            whitelist=self.tool_whitelist,
+            runtime_id=get_app_instance_id() or self.instance_id or "",
+        )
 
     def _ensure_tools_loaded(self) -> None:
-        for module_name in (
-            "interfaces.tools.sense_tools",
-            "interfaces.tools.action_tools",
-            "interfaces.tools.skills_tool",
-            "interfaces.tools.capability_tools",
-            "interfaces.tools.vision_tool",
-            "interfaces.tools.perception_tools",
-            "interfaces.tools.memory_cognition_tools",
-            "domain.todos.tools",
-            "domain.project.tools",
-            "interfaces.tools.terminal_tool",
-            "interfaces.tools.code_execution_tool",
-        ):
-            try:
-                __import__(module_name)
-            except Exception:
-                logger.warning("Tool module load failed: %s", module_name, exc_info=True)
-        # 业务工具模块（extension 注册；business/*/activate.py 声明）
-        try:
-            from infrastructure import extension
+        # 工具模块唯一清单在 interfaces/tools/__init__.py（TOOL_MODULES + ensure_loaded），
+        # agent worker 与服务台工具目录共用同一来源——新增工具模块只改清单一处。
+        from interfaces.tools import ensure_loaded
 
-            for module_name in extension.tool_modules():
-                try:
-                    __import__(module_name)
-                except Exception:
-                    logger.warning("Tool module load failed: %s", module_name, exc_info=True)
-        except Exception:
-            pass
+        ensure_loaded()
 
         # 加载 register_tool 注册的工具 (从 manifest 重建, 防重启丢失)
         try:
@@ -1146,6 +1181,7 @@ class AIAgent:
                 tool_calls=tc_list or None,
                 reasoning=kwargs.get("reasoning"),
                 finish_reason=kwargs.get("finish_reason"),
+                token_count=kwargs.get("token_count"),
             )
             # Track pending tool result count for this call.
             self._audit_pending_tool_count = len(tc_list)
@@ -2242,7 +2278,7 @@ class AIAgent:
         failed: list[dict] = []
 
         # think_cycle A 入口(mid-session): 人类消息打断当前任务 → 下一轮 LLM call
-        # 走 minimal 快答(用户在等), 快答后再恢复原 effort。新消息=新的快答意图,
+        # 走 fast 快答(用户在等), 快答后再恢复原 effort。新消息=新的快答意图,
         # 多条合并消费时 on_human_message 天然幂等(每次都重置 pending)。
         def _fire_think_cycle() -> None:
             try:
@@ -2277,27 +2313,9 @@ class AIAgent:
                     logger.debug("count_event_deliveries failed for %s", eid, exc_info=True)
 
             content = _render_signal_message(ev)
-
-            # mid-session 注入附带同窗口最近对话（指代消解用）：
-            # RUNNING 中收到"重启呗，那就"，模型不知道"重启"指什么——
-            # 会话上下文里这段讨论发生在几分钟前的注入前窗口。5 条封顶、
-            # 当前消息按原文精确排除。失败静默（观察通道不得成为新故障源）。
-            try:
-                kind = ev.get("kind", "")
-                if kind in ("message", "group_message"):
-                    pd = ev.get("payload") or {}
-                    cid = str(pd.get("chat_id") or "")
-                    if cid:
-                        from domain.lifecycle.conversation_log import read_window_context
-                        ctx = read_window_context(
-                            conversation_id=cid,
-                            platform=str(pd.get("platform") or ""),
-                            exclude_text=str(pd.get("text") or ""),
-                        )
-                        if ctx:
-                            content = content + "\n\n[同窗口最近对话（注入前）]\n" + ctx
-            except Exception:
-                logger.debug("window-context attach failed", exc_info=True)
+            # 同窗口上下文不再在此追加：_resolve_event_prompt 的 {recent_context}
+            # 模板块（heartbeat._window_context_block，2026-10-10 统一读口）已在
+            # 渲染体内附带；旧的双重追加已移除（见 test_midsession_window_context）。
 
             payload = ev.get("payload", {}) if isinstance(ev.get("payload"), dict) else {}
             chat_id = payload.get("chat_id", "") if isinstance(payload, dict) else ""
@@ -2767,6 +2785,63 @@ def _int_delay(seconds: float) -> str:
     return f"{s // 86400}天"
 
 
+def _repair_unanswered_tool_calls(messages: list[dict[str, Any]]) -> int:
+    """wake 首装修复：为悬空 tool_calls（有调用无结果）补合成结果行（就地、纯增量）。
+
+    上次唤醒若在 assistant(tool_calls) 落库后、tool 结果落库前中断，重建的
+    conversation_history 会留下无结果的 tool_calls —— OpenAI 兼容 API 直接
+    400，wake 退避循环。这里在 run_conversation 装配历史后一次性补齐。
+
+    安全边界（2026-10-13 系统性重复事故后重立）：
+      - **只插入合成 tool 行，绝不删除/改写任何已有消息**——GLM 常态的
+        assistant 行（reasoning_content 非空 + content 空）原样保留；上一版
+        全局过滤删了这类行导致模型失忆、全系统重复发消息。
+      - 只在 wake 首装跑一次，不进 _chat 的每调用路径。
+      - 幂等：补过的列表重跑零插入。
+
+    合成行内容如实告知"上次中断无结果"，模型自行决定是否重调。
+    与 _sanitize_payload_messages 的分工：那边删孤儿 tool 行（有果无因），
+    这边补悬空 tool_calls（有因无果）——两头凑齐配对不变式。
+    """
+    pending: dict[str, int] = {}   # tool_call_id -> 插入下标（assistant 后，随其真实结果行后移）
+    names: dict[str, str] = {}     # tool_call_id -> 工具名
+    for i, m in enumerate(messages):
+        role = m.get("role")
+        if role == "assistant":
+            for tc in (m.get("tool_calls") or []):
+                if isinstance(tc, dict) and tc.get("id"):
+                    tid = str(tc["id"])
+                    pending[tid] = i + 1
+                    fn = tc.get("function")
+                    names[tid] = str(fn.get("name") or "") if isinstance(fn, dict) else ""
+        elif role == "tool":
+            # 同 assistant 的连续结果行把补位插入点往后顶（保持时序：合成行在真实结果之后）
+            j = i
+            for tid, pos in list(pending.items()):
+                if pos == j:
+                    pending[tid] = j + 1
+            pending.pop(str(m.get("tool_call_id") or ""), None)
+    if not pending:
+        return 0
+    # 从后往前插（下标大的插入点先插），保证前面的插入点不漂移
+    inserts = sorted(pending.items(), key=lambda kv: kv[1], reverse=True)
+    for tid, pos in inserts:
+        messages.insert(
+            pos,
+            {
+                "role": "tool",
+                "tool_call_id": tid,
+                "name": names.get(tid) or "",
+                "content": "（上次唤醒中断，该工具调用未产生结果——占位补记；如工作未完成请重新调用）",
+            },
+        )
+    logger.warning(
+        "wake repair: synthesized %d placeholder tool result(s) for unanswered tool_calls: %s",
+        len(inserts), [t for t, _ in inserts],
+    )
+    return len(inserts)
+
+
 def _sanitize_payload_messages(messages: list[dict[str, Any]]) -> None:
     """最终 payload 消息清洗：消息头不变式 + 孤儿 tool 剔除（就地修改）。
 
@@ -2889,6 +2964,6 @@ def _render_signal_message(ev: dict[str, Any]) -> str:
         f"{_now_line}"
         f"{_spoken_line}"
         f"{rendered_body}\n"
-        f"> 注意：消息已自动标记为已读，稍后回复即可。"
+        f"> 注：消息已自动标记为已读，不强制即时回复。"
     )
 

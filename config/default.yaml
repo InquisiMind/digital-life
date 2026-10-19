@@ -20,5 +20,5 @@ workspace:
 model:
   provider: glm
   base_url: https://open.bigmodel.cn/api/coding/paas/v4
-  name: glm-5.3-flash
-  vision: glm-5.3-flash
+  name: glm-5.3
+  vision: glm-5-3-flash

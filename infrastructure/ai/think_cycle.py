@@ -2,14 +2,14 @@
 
 2026-09-18 v3（设计: zhp 提案 + alpha 整合 + zero 三补充）:
   三层入口决定每次模型调用的 reasoning effort:
-    A. 人类消息事件（wake 或 mid-session 注入）→ 首次调用 minimal 快答
+    A. 人类消息事件（wake 或 mid-session 注入）→ 首次调用 low 快答
     B. think 工具显式升档（模型自判复杂度）→ override, TTL 轮
     C. 卡住兜底（连续基础设施异常）→ 强制 high
   优先级 C > B > A > 默认配置档。
 
   zero 三条补充（已实装）:
     - 分页豁免: detect_anomaly 对"行数>0"的结果不算异常（行数>0 即成功语义）
-    - minimal 快答只做短确认: 首轮 minimal 的引导在 prompt 侧（agent._chat 注释）
+    - fast 快答只做短确认: 首轮 low 的引导在 prompt 侧（agent._chat 注释）
     - 通信/生命周期工具豁免卡住判定: express_to_human / rest 结果不参与 anomaly 计数
 
 状态生命周期 = agent 实例生命周期（一次 wake 一个 agent）。
@@ -27,7 +27,10 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # ── 常量 ─────────────────────────────────────────────────────────
-FAST_EFFORT = "minimal"
+# 快答档取 low 而非 minimal（2026-10-13）：minimal 仅官网直连 GLM 接受，
+# newapi 网关渠道（low/high/max）与 OpenAI o 系（low/medium/high）都不认，
+# 会 400。low 是全端点通吃的最低档，快答语义不变。
+FAST_EFFORT = "low"
 
 DEFAULT_OVERRIDE_TTL = 3          # B 入口 override 默认持续轮数
 STUCK_THRESHOLD = 2               # C 入口: 连续基础设施异常达到此数 → 强制 high

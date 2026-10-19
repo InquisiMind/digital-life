@@ -82,11 +82,15 @@ def _read_all_manifests_for_instance(
     # Personal
     p = root / resolve_manifest_path("personal", kind, instance_id=instance_id)
     for item in _read_manifest(p).get("items", []):
+        item = dict(item)
+        item.setdefault("scope", "personal")
         results.append(item)
 
-    # Shared
+    # Shared（可见性由授予决定——热加载按 scope 打旗标，默认面排除）
     s = root / resolve_manifest_path("shared", kind, instance_id=instance_id)
     for item in _read_manifest(s).get("items", []):
+        item = dict(item)
+        item.setdefault("scope", "shared")
         results.append(item)
 
     # Projects — scan all active projects the instance belongs to
@@ -100,6 +104,7 @@ def _read_all_manifests_for_instance(
             proj_p = root / resolve_manifest_path("project", kind, instance_id=instance_id, project_id=pid)
             for item in _read_manifest(proj_p).get("items", []):
                 item = dict(item)
+                item.setdefault("scope", "project")
                 item["project_id"] = pid
                 item["project_name"] = cfg.name
                 results.append(item)

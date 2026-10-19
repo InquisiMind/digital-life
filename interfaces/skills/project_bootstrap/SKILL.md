@@ -68,7 +68,7 @@ sense_projects
 ### Step 3：跟用户确认
 
 ```
-express_to_human("我生成的项目方案：
+send_chat_message("我生成的项目方案：
 
 📋 项目：{name}
 🎯 目标：{goal}
@@ -133,7 +133,7 @@ sense_projects("{project_id}")
 ### Step 8：群里宣布(骨架完成)
 
 ```
-express_to_human(
+send_chat_message(
   "@所有人 🆕 项目「{name}」已立项
 
    🎯 目标：{目标概述}
@@ -156,7 +156,7 @@ invoke_skill("task_breakdown")
 
 进入 task_breakdown skill 的流程——按岗位拆 3-5 条执行 todo+acceptance_criteria。
 
-**如果你不是项目经理** —— express_to_human 通知 manager 拉起 task_breakdown skill,然后 rest。
+**如果你不是项目经理** —— send_chat_message 通知 manager 拉起 task_breakdown skill,然后 rest。
 
 ### Step 10：沉淀
 

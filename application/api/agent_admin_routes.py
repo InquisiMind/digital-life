@@ -48,10 +48,14 @@ def _load_def_cfg(def_id: str) -> dict:
         return {}
 
 
-def _save_def_cfg(def_id: str, cfg: dict) -> None:
+def _save_def_cfg(def_id: str, cfg: dict, note: str = "") -> None:
     p = _def_app_yaml(def_id)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    from infrastructure.filesystem import versioned_io
+
+    versioned_io.write_versioned(
+        p, yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False),
+        note=note or "def 配置编辑")
 
 
 # ── profile（名称 / 头像 / 人设 / 附加指令 / L4）—— 作用域：定义层 ──────
@@ -70,7 +74,8 @@ async def handle_def_profile_get(request: web.Request) -> web.Response:
     except OSError:
         persona = ""
     try:
-        from domain.identity.system_prompts import L4_LIFECYCLE_PROMPT as _L4
+        from domain.identity.system_prompts import render_l4_lifecycle as _render_l4
+        _L4 = _render_l4()
     except Exception:  # noqa: BLE001
         _L4 = ""
     l4 = overlay.read_def_file(def_id, "L4_PROMPT.md")
@@ -118,13 +123,24 @@ async def handle_def_profile_put(request: web.Request) -> web.Response:
     if "persona" in body:
         content = str(body["persona"] or "").strip()
         p = _def_dir(def_id) / "persona" / "LIFE_PERSONA.md"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
+        from infrastructure.filesystem import versioned_io
+
+        versioned_io.write_versioned(p, content, note="人设编辑")
         touched.append("persona")
     if "extra_prompt" in body:
+        from infrastructure.filesystem import versioned_io
+
+        _pd = overlay.def_persona_dir(def_id)
+        if _pd:
+            versioned_io.snapshot(_pd / "EXTRA_PROMPT.md", note="附加指令改前快照")
         overlay.write_def_file(def_id, "EXTRA_PROMPT.md", str(body["extra_prompt"] or ""))
         touched.append("extra_prompt")
     if "l4" in body:
+        from infrastructure.filesystem import versioned_io
+
+        _pd = overlay.def_persona_dir(def_id)
+        if _pd:
+            versioned_io.snapshot(_pd / "L4_PROMPT.md", note="L4 改前快照")
         overlay.write_def_file(def_id, "L4_PROMPT.md", str(body["l4"] or ""))
         touched.append("l4")
     if isinstance(body.get("model"), dict):
@@ -245,7 +261,9 @@ async def handle_def_skill_put(request: web.Request) -> web.Response:
     sdir = def_skills_dir(def_id) or (_def_dir(def_id) / "skills")
     target = sdir / name / "SKILL.md"
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
+    from infrastructure.filesystem import versioned_io
+
+    versioned_io.write_versioned(target, content, note=f"skill {name} 编辑")
     _set_def_registered(def_id, name, True)
     logger.info("AGENT_DEF_SKILL_WRITTEN def=%s skill=%s", def_id, name)
     return _json({"ok": True, "name": name, "source": "def"})
@@ -341,7 +359,12 @@ async def handle_def_skill_upload(request: web.Request) -> web.Response:
     sdir = def_skills_dir(def_id) or (_def_dir(def_id) / "skills")
     target = sdir / skill_name
     target.mkdir(parents=True, exist_ok=True)
+    from infrastructure.filesystem import versioned_io
+
     for m in members:
+        _rel = m[len(prefix):] if prefix else m
+        if _rel and (target / _rel).exists():
+            versioned_io.snapshot(target / _rel, note=f"skill {skill_name} zip 覆盖前")
         rel = m[len(prefix):] if prefix else m
         if not rel:
             continue
@@ -569,25 +592,81 @@ async def handle_def_events_put(request: web.Request) -> web.Response:
 # ── 工具 schema（registry 全量） ─────────────────────────────────────────
 
 
+# ── 文件版本（人设/提示词/技能/app.yaml 的快照与回滚；2026-10-12 测试期回退诉求） ──
+
+
+def _kind_to_path(def_id: str, kind: str):
+    """版本管理的 kind → 实际文件路径。返回 None 表示非法。"""
+    if not _def_exists(def_id):
+        return None
+    if kind == "persona":
+        return _def_dir(def_id) / "persona" / "LIFE_PERSONA.md"
+    if kind == "extra_prompt":
+        return _def_dir(def_id) / "persona" / "EXTRA_PROMPT.md"
+    if kind == "l4":
+        return _def_dir(def_id) / "persona" / "L4_PROMPT.md"
+    if kind == "config":
+        return _def_app_yaml(def_id)
+    if kind.startswith("skill:"):
+        name = kind.split(":", 1)[1]
+        if not _SAFE_NAME.match(name):
+            return None
+        from domain.identity.agent_definition import def_skills_dir
+
+        sdir = def_skills_dir(def_id) or (_def_dir(def_id) / "skills")
+        return sdir / name / "SKILL.md"
+    return None
+
+
+async def handle_def_file_versions(request: web.Request) -> web.Response:
+    """GET /api/admin/agent-defs/{def}/file-versions?kind=persona|l4|extra_prompt|config|skill:{name}"""
+    from infrastructure.filesystem import versioned_io
+
+    path = _kind_to_path(request.match_info["def_id"], request.query.get("kind", ""))
+    if path is None:
+        return _json({"ok": False, "error": "定义或类型非法"}, 404)
+    return _json({"ok": True, "versions": versioned_io.list_versions(path)})
+
+
+async def handle_def_file_version_content(request: web.Request) -> web.Response:
+    """GET …/file-versions/content?kind=…&version=v…—— 预览历史内容。"""
+    from infrastructure.filesystem import versioned_io
+
+    path = _kind_to_path(request.match_info["def_id"], request.query.get("kind", ""))
+    if path is None:
+        return _json({"ok": False, "error": "定义或类型非法"}, 404)
+    content = versioned_io.read_version(path, request.query.get("version", ""))
+    if content is None:
+        return _json({"ok": False, "error": "版本不存在"}, 404)
+    return _json({"ok": True, "content": content})
+
+
+async def handle_def_file_version_restore(request: web.Request) -> web.Response:
+    """POST …/file-versions/restore {kind, version}——回滚前自动快照当前内容。"""
+    from infrastructure.filesystem import versioned_io
+
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    kind = str(body.get("kind") or request.query.get("kind") or "")
+    path = _kind_to_path(request.match_info["def_id"], kind)
+    if path is None:
+        return _json({"ok": False, "error": "定义或类型非法"}, 404)
+    version = str(body.get("version") or "")
+    if not versioned_io.restore_version(path, version, note="服务台回滚"):
+        return _json({"ok": False, "error": "版本不存在"}, 404)
+    logger.info("AGENT_DEF_FILE_RESTORED def=%s kind=%s version=%s",
+                request.match_info["def_id"], request.query.get("kind", ""), version)
+    return _json({"ok": True, "restored": version})
+
+
 async def handle_tools_list(_request: web.Request) -> web.Response:
     from interfaces.tools.registry import registry
+    from interfaces.tools import ensure_loaded
 
-    # 工具注册是 import 副作用：显式装载全部模块，master 进程也能拿全量清单
-    mods = ["interfaces.tools." + m for m in (
-        "sense_tools", "action_tools", "memory_cognition_tools",
-        "capability_tools", "vision_tool", "terminal_tool",
-        "skills_tool", "perception_tools", "code_execution_tool")]
-    try:
-        from infrastructure import extension
-
-        mods += extension.tool_modules()
-    except Exception:  # noqa: BLE001 — 扩展点不可用按基座清单
-        pass
-    for _mod in mods:
-        try:
-            __import__(_mod)
-        except Exception:  # noqa: BLE001 — 单模块装载失败不拦清单
-            pass
+    # 工具模块唯一清单在 interfaces/tools/__init__.py——与服务台/worker 共用单一来源
+    ensure_loaded()
     tools = []
     for name in sorted(registry.get_all_tool_names()):
         schema = registry.get_schema(name) or {}
@@ -761,6 +840,9 @@ async def handle_model_config_put(request: web.Request) -> web.Response:
 
 def register_into(router: web.Application) -> None:
     """并进 services_admin 的 /api/admin/ 子应用（须在 add_subapp freeze 之前）。"""
+    router.router.add_get("/agent-defs/{def_id}/file-versions", handle_def_file_versions)
+    router.router.add_get("/agent-defs/{def_id}/file-versions/content", handle_def_file_version_content)
+    router.router.add_post("/agent-defs/{def_id}/file-versions/restore", handle_def_file_version_restore)
     router.router.add_get("/agent-defs/{def_id}/profile", handle_def_profile_get)
     router.router.add_put("/agent-defs/{def_id}/profile", handle_def_profile_put)
     router.router.add_get("/agent-defs/{def_id}/skills", handle_def_skills_list)

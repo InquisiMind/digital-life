@@ -345,6 +345,32 @@ wakeup_prompts.configure_runtime_hooks(
 )
 
 
+def _window_context_block(payload: dict) -> str:
+    """渲染 {recent_context}：同窗口最近对话段；无内容返回 ""（模板不印头部）。
+
+    数据源是 conversation_log（飞书入站、广播接收、本实例外发统一落账的
+    唯一窗口账本）——唤醒与 mid-session 注入共用同一读口，指代消解不再
+    依赖两套上下文机制（2026-10-10 zhp：实例间对话从上下文窗口消失）。
+    读失败静默降级：观察通道不得成为新故障源。
+    """
+    chat_id = str(payload.get("chat_id") or "").strip()
+    if not chat_id:
+        return ""
+    try:
+        from domain.lifecycle.conversation_log import read_window_context
+        ctx = read_window_context(
+            conversation_id=chat_id,
+            platform=str(payload.get("platform") or ""),
+            exclude_text=str(payload.get("text") or ""),
+        )
+    except Exception:
+        logger.debug("window context read failed", exc_info=True)
+        return ""
+    if not ctx:
+        return ""
+    return f"—— 本窗口最近对话（旧→新，供上下文参考，不必逐条回复）——\n{ctx}"
+
+
 def _resolve_event_prompt(reason: str, pending_events: list | None = None) -> str:
     """从事件注册表解析 prompt 模板，兜底用通用唤醒 prompt。
 
@@ -424,6 +450,12 @@ def _resolve_event_prompt(reason: str, pending_events: list | None = None) -> st
                             payload["attachments_block"] = "\n".join(att_lines)
                         else:
                             payload["attachments_block"] = ""
+                        # 同窗口最近对话：仅消息类且带 chat_id 时渲染（模板裸占位，
+                        # 头部由 _window_context_block 负责，空则整段不出现）
+                        if reason in ("message", "group_message"):
+                            payload["recent_context"] = _window_context_block(payload)
+                        else:
+                            payload["recent_context"] = ""
                         # 用 SafeFormatter：缺失字段返回空字符串而不是抛 KeyError
                         fmt = string.Formatter()
                         out_parts = []

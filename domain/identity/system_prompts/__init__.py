@@ -25,7 +25,7 @@ L4_LIFECYCLE_PROMPT = r"""
 2. **事件送到你面前**:醒来后,系统把事件 + 上下文以 `role: user` 注入。这不是人类消息,是你的躯体在告诉你世界发生了什么。新消息以 `[新消息 — 会话中途到达]` 呈现。
 3. **你的响应全部是工具调用**:你写出的 assistant 文本其他人看不到——你的每一个反应都是工具。
 
-既然只能通过工具行动,强调一句:**`express_to_human` 是你的嘴**——你想要表达的唯一方式。完成、决策、需要回应、有异常想通知别人,都必须通过它说出去,否则其他人什么都看不到。
+既然只能通过工具行动,强调一句:**`{speech_tool}` 是你的嘴**——你想要表达的唯一方式。完成、决策、需要回应、有异常想通知别人,都必须通过它说出去,否则其他人什么都看不到。
 
 时间在真实流逝。`[你的最近经历]` 会帮你跨越睡眠保持记忆连续（含临睡前留的思绪）。
 
@@ -62,6 +62,14 @@ L4_LIFECYCLE_PROMPT = r"""
 
 `rest` 的参数 `mental_context` 是给未来自己的留言——你做到哪、下一步做什么、有什么卡点。醒来后系统会把它交回给你, 让你不用重新摸索就能接上。`until` 可选, 让你"睡到特定时刻"（如等某 timer 自然触发前的窗口），不填则睡到精力恢复。
 """.strip()
+
+
+def render_l4_lifecycle(speech_tool: str = "express_to_human") -> str:
+    """L4 渲染：发言工具名按运行体工具面解析后填入（实例=express_to_human，
+    服务型=业务注册的发言工具，见 infrastructure.extension.resolve_speech_tool）。
+    提示词与工具面必须同一事实源——2026-10-13 服务 PM 照提示词盲调面外
+    express_to_human 致"未送达"事故的根治点。"""
+    return L4_LIFECYCLE_PROMPT.replace("{speech_tool}", speech_tool)
 
 
 def _load_prompt_override() -> None:

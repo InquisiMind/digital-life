@@ -528,7 +528,7 @@ def _summarize_segment(segment: list[dict], session_db, session_id: str, seg_idx
         # 同时做两件事：
         #   a) 剥离行为指令尾部（"如需回应必须用 express_to_human…"）——
         #      那是当轮的有效指令，留在这里会误导模型对旧消息再回复
-        #   b) 截断过长正文（保留头部 800 字符）——段首 wake prompt 动辄几 KB
+        #   b) 截断过长正文（保留头部 2000 字符）——段首 wake prompt 动辄几 KB
         #      （alpha 发的长文档评审），全量保留等于没折
         #   c) 裹上「历史回顾」标记，语义与 narrative 路径一致
         for m in out:
@@ -537,8 +537,8 @@ def _summarize_segment(segment: list[dict], session_db, session_id: str, seg_idx
                 if not c or c.startswith("[历史回顾"):
                     continue
                 c = _strip_wake_prompt_directives(c)
-                if len(c) > 800:
-                    c = c[:800] + "\n[…过长已截断…]"
+                if len(c) > 2000:
+                    c = c[:2000] + "\n[…过长已截断…]"
                 m["content"] = f"[历史回顾 · 非新事件 · {time_range}]\n{c}\n[/历史回顾]"
         return out
     except Exception as e:
@@ -1316,10 +1316,16 @@ def _wake_digital_life_inner_safe(
 
         # 人设：LIFE_PERSONA.md 作为 identity layer
         # 生命周期提示通过 ephemeral_system_prompt 注入（API-call 时追加）
+        # 「你的嘴」一句按运行体工具面渲染（实例=express_to_human，服务型=
+        # 业务注册的发言工具）——提示词与工具面同一事实源。
         _l4_lifecycle = ""
         try:
-            from domain.identity.system_prompts import L4_LIFECYCLE_PROMPT
-            _l4_lifecycle = L4_LIFECYCLE_PROMPT
+            from domain.identity.system_prompts import render_l4_lifecycle
+            from infrastructure.extension import resolve_speech_tool
+
+            _l4_lifecycle = render_l4_lifecycle(
+                resolve_speech_tool(instance_id or "", "express_to_human")
+            )
         except Exception:
             pass
         # 服务级 L4 覆盖（存在则整段替换引擎默认）
@@ -1519,6 +1525,19 @@ def _wake_digital_life_inner_safe(
                 })
         except Exception as exc:
             logger.debug("task_skill inject failed: %s", exc)
+
+        # 扩展唤醒上下文：业务层注册的 provider（如咨询的项目待办看板）。
+        # 语义不变——仍是"本次唤醒的快照"，按 wake_seq 记账，查看器按事件回放。
+        try:
+            from infrastructure import extension as _extension
+            for _blk in _extension.run_wake_context_providers(instance_id, reason):
+                prev_history.append({
+                    "role": "user",
+                    "content": str(_blk.get("content") or ""),
+                    "_sys_tool": str(_blk.get("sys_tool") or "ext_context"),
+                })
+        except Exception as exc:
+            logger.debug("wake context providers failed: %s", exc)
 
         # my_context: 我的待办面板（单一渲染入口 domain.todos.board）
         try:

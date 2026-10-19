@@ -6,8 +6,12 @@ import uuid
 from datetime import datetime
 
 
-L4_TOOLSETS = ["actions", "senses", "trading"]
-L4_TASK_TOOLSETS = ["actions", "senses", "tasks", "web", "terminal", "trading"]
+# 场景工具集（按 wake reason 选组）。新注册的 toolset 必须接进这里，否则在
+# 任何唤醒路径都不可见——2026-10-19 生产复盘：web_search(bocha) 注册在
+# "research" 却未接线，三天 0 调用，agent 全靠自注册的 Bing 爬虫 app_web_search
+# 搜索。tests/test_tool_face_consistency.py 有守卫，漏接线 CI 变红。
+L4_TOOLSETS = ["actions", "senses", "research", "mcp", "trading"]
+L4_TASK_TOOLSETS = ["actions", "senses", "tasks", "web", "terminal", "research", "mcp", "trading"]
 
 
 def enabled_toolsets_for_reason(reason: str) -> list[str]:

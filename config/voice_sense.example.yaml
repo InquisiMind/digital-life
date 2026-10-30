@@ -1,0 +1,56 @@
+# 语音感知/网页语音会话 配置模板
+#
+# 本文件是模板：复制为 config/voice_sense.yaml（已 gitignore，不入库）后填写。
+#   cp config/voice_sense.example.yaml config/voice_sense.yaml
+#
+# 为什么不入库：voice_sense.yaml 是运行时可写文件——网页语音控制台的
+# 设置面板（/voice → 设置）会把调节项实时回写到它，且它承载讯飞等
+# 凭据，属实例本地配置（与 config/local.yaml 同一惯例）。
+#
+# 没有这个文件时系统会用内置默认值：语音控制台页面能开，但
+# ASR/TTS 不可用，需在下面 stream_asr 段填入讯飞凭据后重启。
+enabled: false
+kws:
+  model_dir: models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01
+  keywords_file: config/voice_keywords.txt
+  threshold: 0.2
+  use_int8: true
+asr:
+  engine: cloud
+dialog:
+  timeout_seconds: 120
+focus:
+  timeout_seconds: 60
+  retention_days: 3
+quiet_hours:
+  start: '23:00'
+  end: 08:00
+default_instance: ''
+web_voice:
+  # 网页语音控制台（http://localhost:8642/voice）绑定的实例 id；
+  # 留空则用第一个 active 实例
+  default_instance: ''
+  ambient: true
+  tts_voice: ''
+  barge_sensitivity: high
+  mode_note: ''
+  # 讯飞 RTASR 流式听写 —— ASR 与控制台 TTS 共用同一应用的授权
+  # （在讯飞控制台开通「流式听写」与「语音合成」后，把三件套填到这里）
+  stream_asr:
+    provider: iflytek_rtasr
+    app_id: '<讯飞 app_id>'
+    api_key: '<讯飞 api_key>'
+    api_secret: '<讯飞 api_secret>'
+  # 可选：内网 voxcpm TTS 服务；不配置时回退默认合成链路
+  voxcpm:
+    url: 'ws://<内网TTS服务IP>:18083/ws/tts'
+    api_key: ''
+    voice: cs_lora_refmix
+    quality: standard
+  tts_rate: +0%
+  sens_min_chars: 2
+  sens_imm_len: 6
+  sens_imm_cov: 0.35
+  sens_echo_cov: 0.6
+  sens_hold_s: 0.8
+  sens_energy_gate_db: -45.0

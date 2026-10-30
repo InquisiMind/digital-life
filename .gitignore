@@ -4,6 +4,7 @@ auth.json
 config.yaml
 config/secrets.env
 config/local.yaml
+config/voice_sense.yaml
 config/*.bak*
 *.bak
 *.bak.*

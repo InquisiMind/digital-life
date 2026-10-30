@@ -18,6 +18,8 @@ import interfaces.tools.action_tools as _at
 @pytest.fixture
 def isolated_instance(monkeypatch, tmp_path):
     iid = "test-rest-session-iid"
+    # 项目根隔离：rest 卡片落盘（apps/{iid}/data）不得写进真实 apps/
+    monkeypatch.setattr("infrastructure.config.get_project_root", lambda: tmp_path)
     from infrastructure.config import set_current_instance_id, reset_current_instance_id
     token = set_current_instance_id(iid)
     # 每个 test 用新 session_id + 清理 _rest_card_shown_sessions

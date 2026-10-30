@@ -75,6 +75,32 @@ def _get_messages(customer_id, project_id=""):
     return resp.status, json.loads(resp.text)
 
 
+def _drain_pm_inbox(project_id) -> int:
+    """把 PM 信箱里未消费的事件全部标记已消费（模拟 PM 醒来读完客户发言）。
+
+    suspend_project 守卫：客户有未读发言时拒绝收队——测试里 _start 刚发的
+    客户消息还躺在信箱，要先"读掉"才能走挂起/完成的后续断言。返回标记条数。
+    """
+    import sqlite3
+
+    from infrastructure.config import resolve_runtime_dir
+
+    pm = (projects_registry.lookup_project(project_id) or {}).get("pm_id") or ""
+    db = resolve_runtime_dir(pm) / "data" / "state.db"
+    if not db.exists():
+        return 0
+    conn = sqlite3.connect(str(db))
+    try:
+        cur = conn.execute(
+            "UPDATE events SET consumed_at = '2026-01-01T00:00:00+08:00'"
+            " WHERE consumed_at IS NULL"
+        )
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
 def test_start_session_creates_project_and_routes(customer_env):
     d = _start({"customer_name": "李总", "text": "想做咨询", "template": "demo"})
     assert d["ok"] and d["created"] is True
@@ -194,6 +220,7 @@ def test_suspended_customer_message_resumes_not_duplicates(customer_env):
 
     from business.consulting.governance import suspend_project
 
+    _drain_pm_inbox(pid)
     assert suspend_project(pid, reason="waiting_customer")["ok"]
 
     d2 = _start({"customer_name": "郑总", "customer_id": cid, "text": "我回来了"})
@@ -203,6 +230,43 @@ def test_suspended_customer_message_resumes_not_duplicates(customer_env):
 
     assert pr.lookup_project(pid)["status"] == "active"  # 自动复活
     assert len([p for p in pr.list_projects() if p.get("customer_id") == cid]) == 1
+    # 复活发生在消息落信箱之后：这条"我回来了"已在 PM 信箱等待消费
+    from business.consulting.governance import pending_customer_messages
+
+    assert pending_customer_messages(pr.lookup_project(pid)["pm_id"]) == 1
+
+
+def test_suspend_refused_while_customer_message_unread(customer_env):
+    """自动恢复的另一端：客户刚说话还没人读 → 不能收队（2026-10-20 事故）。
+
+    看门狗催 PM"无事可做就挂起"的同一秒客户正式需求入队；入口复活在投递前
+    判断、看到的还是 active，消息随后被塞进挂起后的 wake，PM 全部项目工具报
+    "未挂项目"却没有钥匙。守卫让挂起在"客户有未读发言"时直接不成立。
+    """
+    d = _start({"customer_name": "刘明君", "text": "正式需求来了", "template": "demo"})
+    pid = d["project_id"]
+
+    from business.consulting import projects_registry as pr
+    from business.consulting.governance import (
+        complete_project, pending_customer_messages, suspend_project,
+    )
+
+    pm = pr.lookup_project(pid)["pm_id"]
+    assert pending_customer_messages(pm) == 1
+
+    r = suspend_project(pid, reason="watchdog_said_nothing_to_do", actor=pm)
+    assert r["ok"] is False and "1 条新发言" in r["error"]
+    assert pr.lookup_project(pid)["status"] == "active"  # 没被挂起
+    assert pending_customer_messages(pm) == 1            # 消息也没丢
+
+    # 完成 = 挂起的运行行为，同样受守卫
+    r2 = complete_project(pid, reason="done", actor=pm)
+    assert r2["ok"] is False and "新发言" in r2["error"]
+
+    # PM 读完客户发言后才可收队
+    assert _drain_pm_inbox(pid) >= 1
+    assert suspend_project(pid, reason="waiting_customer", actor=pm)["ok"]
+    assert pr.lookup_project(pid)["status"] == "suspended"
 
 
 def test_suspended_routed_even_when_other_customers_have_active_projects(customer_env):
@@ -217,6 +281,7 @@ def test_suspended_routed_even_when_other_customers_have_active_projects(custome
     a = _start({"customer_name": "若总", "text": "启动研究", "template": "demo"})
     from business.consulting.governance import suspend_project
 
+    _drain_pm_inbox(a["project_id"])
     assert suspend_project(a["project_id"], reason="waiting_customer")["ok"]
 
     # 客户 B：建一个保持 active 的项目（旧 bug 的短路触发器）
@@ -241,6 +306,7 @@ def test_completed_project_reopens_on_customer_message(customer_env):
     from business.consulting import projects_registry as pr
     from business.consulting.governance import complete_project
 
+    _drain_pm_inbox(pid)
     assert complete_project(pid, reason="交付验收通说")["ok"]
 
     d2 = _start({"customer_name": "周总", "customer_id": cid, "text": "还有一个问题",
@@ -590,3 +656,103 @@ def test_attachment_becomes_file_address_message(customer_env):
     # 文件本体落在项目 shared/需求附件/
     att_dir = customer_env / "projects" / pid / "shared" / "需求附件"
     assert any("调研提纲.txt" in p.name for p in att_dir.iterdir())
+
+
+def _minimal_pdf(text: str = "Hello PDF extraction", pages: int = 1) -> bytes:
+    """手工构造的文本 PDF（xref 偏移精确），供抽取链端到端测试；可多页。"""
+    kids = " ".join(f"{3 + i} 0 R" for i in range(pages))
+    objs = {1: b"<< /Type /Catalog /Pages 2 0 R >>",
+            2: f"<< /Type /Pages /Kids [{kids}] /Count {pages} >>".encode()}
+    for i in range(pages):
+        stream = f"BT /F1 18 Tf 72 720 Td ({text} p{i + 1}) Tj ET".encode()
+        objs[3 + i] = (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                       f"/Contents {3 + pages + i} 0 R /Resources "
+                       f"<< /Font << /F1 {3 + 2 * pages} 0 R >> >> >>").encode()
+        objs[3 + pages + i] = b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream"
+    objs[3 + 2 * pages] = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = {}
+    for i in sorted(objs):
+        offsets[i] = len(out)
+        out += f"{i} 0 obj\n".encode() + objs[i] + b"\nendobj\n"
+    xref_pos = len(out)
+    out += f"xref\n0 {3 + 2 * pages + 1}\n0000000000 65535 f \n".encode()
+    for i in sorted(objs):
+        out += f"{offsets[i]:010d} 00000 n \n".encode()
+    out += (b"trailer\n" + f"<< /Size {3 + 2 * pages + 1} /Root 1 0 R >>\n".encode()
+            + b"startxref\n" + str(xref_pos).encode() + b"\n%%EOF\n")
+    return bytes(out)
+
+
+def test_pdf_attachment_extract_sidecar(customer_env):
+    """PDF 上传 → .extract.md 旁路落盘：pdfminer 为主力引擎 + 分页标记保留。
+
+    回归背景（2026-10-20 科拓招股书事故）：pypdf 对港交所系中文 PDF 的
+    CMap 解析必产乱码，旁路一度把乱码文本喂给 agent。"""
+    d = _start({"customer_name": "钱总", "text": "启动", "template": "demo"})
+    cid, pid = d["customer_id"], d["project_id"]
+    from business.consulting import api_customer as cr
+
+    resp = asyncio.run(cr.handle_attachment(_AttachRequest(
+        cid, "招股书.pdf", _minimal_pdf(), ctype="application/pdf")))
+    assert resp.status == 200 and json.loads(resp.text)["ok"]
+
+    att_dir = customer_env / "projects" / pid / "shared" / "需求附件"
+    side = next(p for p in att_dir.iterdir() if p.name.endswith(".extract.md"))
+    body = side.read_text(encoding="utf-8")
+    assert "## 第 1 页" in body          # 分页标记保留（来源表引用页码）
+    assert "Hello PDF extraction" in body  # 文本完整、非乱码
+
+    # 消息行文本带上抽取件路径（agent 无需翻目录即可知）
+    _, mdata = _get_messages(cid)
+    row = next(m for m in mdata["messages"] if (m.get("text") or "").startswith("[附件]"))
+    assert ".extract.md" in row["text"]
+
+
+def test_pdf_extract_falls_back_to_pypdf(customer_env, monkeypatch):
+    """pdfminer 异常时落 pypdf 兜底，抽取旁路不因主力引擎失败而失效。"""
+    d = _start({"customer_name": "钱总", "text": "启动", "template": "demo"})
+    cid, pid = d["customer_id"], d["project_id"]
+
+    def _boom(*a, **kw):
+        raise RuntimeError("pdfminer down")
+
+    monkeypatch.setattr("pdfminer.high_level.extract_text", _boom)
+    from business.consulting import api_customer as cr
+
+    resp = asyncio.run(cr.handle_attachment(_AttachRequest(
+        cid, "兜底.pdf", _minimal_pdf("fallback works"), ctype="application/pdf")))
+    assert resp.status == 200 and json.loads(resp.text)["ok"]
+    att_dir = customer_env / "projects" / pid / "shared" / "需求附件"
+    side = next(p for p in att_dir.iterdir() if p.name.endswith(".extract.md"))
+    assert "fallback works" in side.read_text(encoding="utf-8")
+
+
+def test_pdf_extract_shards_by_pages(customer_env):
+    """>100 页 PDF 按页分片：首片契约名不变、页码全局连续、消息列全路径。
+
+    回归背景：旧实现整篇截断 200K 字符，招股书级长文只有前 1/3 可读。"""
+    d = _start({"customer_name": "钱总", "text": "启动", "template": "demo"})
+    cid, pid = d["customer_id"], d["project_id"]
+    from business.consulting import api_customer as cr
+
+    resp = asyncio.run(cr.handle_attachment(_AttachRequest(
+        cid, "长报告.pdf", _minimal_pdf("dense page", pages=101),
+        ctype="application/pdf")))
+    assert resp.status == 200 and json.loads(resp.text)["ok"]
+
+    att_dir = customer_env / "projects" / pid / "shared" / "需求附件"
+    sides = sorted(p.name for p in att_dir.iterdir() if ".extract" in p.name)
+    assert len(sides) == 2
+    assert sides[0].endswith(".extract.2.md") and sides[1].endswith(".extract.md")
+    first = (att_dir / sides[1]).read_text(encoding="utf-8")
+    second = (att_dir / sides[0]).read_text(encoding="utf-8")
+    assert "## 第 1 页" in first and "dense page p1" in first
+    assert "## 第 100 页" in first           # 首片整 100 页
+    assert "## 第 101 页" in second           # 页码连续，不从 1 重计
+    assert "dense page p101" in second
+
+    # 消息行文本列出全部片路径（模型无需翻目录）
+    _, mdata = _get_messages(cid)
+    row = next(m for m in mdata["messages"] if (m.get("text") or "").startswith("[附件]"))
+    assert ".extract.md" in row["text"] and ".extract.2.md" in row["text"]

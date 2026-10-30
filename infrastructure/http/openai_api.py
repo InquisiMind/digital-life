@@ -69,7 +69,7 @@ async def _handle_chat_completions(request: web.Request) -> web.Response:
                 AIAgent,
                 SessionDB,
                 load_runtime_config,
-                parse_reasoning_effort,
+                parse_reasoning_depth,
                 resolve_runtime_provider,
             )
             from infrastructure.config import get_runtime_config_path
@@ -79,8 +79,7 @@ async def _handle_chat_completions(request: web.Request) -> web.Response:
                 requested=os.getenv("DIGITAL_LIFE_INFERENCE_PROVIDER"),
                 config=cfg,
             )
-            effort = str(cfg.get("agent", {}).get("reasoning_effort", "")).strip()
-            reasoning_config = parse_reasoning_effort(effort)
+            reasoning_config = parse_reasoning_depth(cfg)
 
             session_id = f"openai_api_{uuid.uuid4().hex[:8]}"
             try:

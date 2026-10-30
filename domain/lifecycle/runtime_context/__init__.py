@@ -102,6 +102,26 @@ def reset_current_event_platform(token) -> None:
         pass
 
 
+# ── 语音提前播报：已提前 TTS 的 text 前缀长度 ───────────────────────────────
+# 流式解析（infrastructure/ai/tool_stream.py）在模型还在生成 express_to_human
+# 参数时就按句提前 TTS；工具正式分派时 agent 把已播长度放进本 ContextVar，
+# _send_voice_local 读取后只播剩余尾巴（日志仍记全文）。
+_voice_prespeak_offset: ContextVar[int] = ContextVar("digital_life_voice_prespeak_offset", default=0)
+
+
+def set_voice_prespeak_offset(chars: int) -> object:
+    """设置 express_to_human 本次调用已被提前播报的前缀字符数。"""
+    return _voice_prespeak_offset.set(max(0, int(chars)))
+
+
+def get_voice_prespeak_offset() -> int:
+    return _voice_prespeak_offset.get()
+
+
+def reset_voice_prespeak_offset() -> None:
+    _voice_prespeak_offset.set(0)
+
+
 # ClawBot context_token：微信 ClawBot 发回复必须传的对话令牌
 # express_to_human → _send_wechat_clawbot 读取它
 _context_token: ContextVar[str] = ContextVar("digital_life_context_token", default="")

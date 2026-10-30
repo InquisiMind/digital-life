@@ -122,6 +122,89 @@ def expand_env_vars(value: Any) -> Any:
     return value
 
 
+def _read_env_key_file(path: Path, key: str) -> str:
+    """直接 parse 密钥文件取单个变量（不经 os.environ——进程级共享 env 不可污染）。"""
+    try:
+        if not path.exists():
+            return ""
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#") or "=" not in stripped:
+                continue
+            k, v = stripped.split("=", 1)
+            if k.strip() == key:
+                return v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return ""
+
+
+def resolve_agent_model_profile(target_id: str, *, _depth: int = 0) -> dict[str, str] | None:
+    """解析 ``model.profile: agent:<id>`` 指针 → 该 agent 的有效模型配置。
+
+    基座内置形态（后台子代理继承委托人的 key，见 docs/design/background-subagent.md）：
+      1. 目标自有配置 apps/{target}/config/app.yaml 的 model 段（走路径中枢——
+         服务二跳到 apps/{def}/services/{sid}/config/，席位指针本身也在这里）；
+         若仍是 agent: 指针则递归解析（深度限 3，防环）。
+      2. 服务无自有配置 → 定义层 app.yaml 的 model 段。
+      3. 密钥：apps/{target}/config/secrets.env，服务侧回落定义层 secrets.env。
+    指针即引用：委托人换 key 只改自己一处，子代理下个 worker 自动跟随（每次
+    wake 重读的既有热更新语义）。业务形态（customer 访问码）不在此处理。
+    """
+    target = str(target_id or "").strip()
+    if not target or _depth > 3:
+        return None
+
+    from infrastructure.config import get_instance_dir, get_instance_env_path, get_project_root
+
+    apps_root = get_project_root() / "apps"
+    entry: dict[str, str] = {}
+    model: dict[str, Any] = {}
+
+    own_cfg = _load_yaml_file(get_instance_dir(target) / "config" / "app.yaml")
+    raw = own_cfg.get("model")
+    if isinstance(raw, dict) and raw:
+        model = raw
+    if not model:
+        try:
+            from infrastructure.persistence import services_registry
+
+            def_id = services_registry.resolve_service_def(target)
+        except Exception:
+            def_id = None
+        if def_id:
+            def_cfg = _load_yaml_file(apps_root / def_id / "config" / "app.yaml")
+            raw = def_cfg.get("model")
+            if isinstance(raw, dict) and raw:
+                model = raw
+
+    prof = str(model.get("profile") or "").strip()
+    if prof.startswith("agent:"):
+        nested = resolve_agent_model_profile(prof.split(":", 1)[1], _depth=_depth + 1)
+        if nested:
+            entry.update(nested)
+    for k in ("api_key", "base_url", "name"):
+        v = str(model.get(k) or "").strip()
+        if v:
+            entry[k] = v
+    if not entry.get("api_key"):
+        key = _read_env_key_file(get_instance_env_path(target), "LLM_API_KEY")
+        if not key:
+            try:
+                from infrastructure.persistence import services_registry
+
+                def_id = services_registry.resolve_service_def(target)
+            except Exception:
+                def_id = None
+            if def_id:
+                key = _read_env_key_file(
+                    apps_root / def_id / "config" / "secrets.env", "LLM_API_KEY"
+                )
+        if key:
+            entry["api_key"] = key
+    return entry or None
+
+
 def load_runtime_config(path: Path | None = None) -> dict[str, Any]:
     """加载合并的运行时配置。
 
@@ -166,12 +249,17 @@ def load_runtime_config(path: Path | None = None) -> dict[str, Any]:
             prof = str((own_cfg.get("model") or {}).get("profile") or "").strip()
             if prof:
                 entry = None
-                try:
-                    # 用户自助配置优先（业务存储，经扩展钩子取）
-                    from infrastructure import extension as _ext
-                    entry = _ext.resolve_model_profile(prof)
-                except Exception:
-                    entry = None
+                if prof.startswith("agent:"):
+                    # 基座内置形态：agent:<id> —— 继承另一运行体的模型与 key
+                    # （后台子代理 → 委托人）。业务形态（customer 访问码）不走这里。
+                    entry = resolve_agent_model_profile(prof.split(":", 1)[1])
+                if not entry:
+                    try:
+                        # 用户自助配置优先（业务存储，经扩展钩子取）
+                        from infrastructure import extension as _ext
+                        entry = _ext.resolve_model_profile(prof)
+                    except Exception:
+                        entry = None
                 if not entry:
                     entry = (result.get("testers") or {}).get(prof)  # 管理员预置兜底
                 if isinstance(entry, dict):
@@ -186,9 +274,42 @@ def load_runtime_config(path: Path | None = None) -> dict[str, Any]:
     return expand_env_vars(result) if isinstance(result, dict) else {}
 
 
-def parse_reasoning_effort(effort: str | None) -> dict[str, str]:
-    value = (effort or "").strip().lower()
-    return {"effort": value} if value else {}
+def parse_reasoning_depth(config: dict[str, Any] | None) -> dict[str, Any]:
+    """从三层合并后的运行配置取这个人的思考深度，产出 provider 的 reasoning_config。
+
+    - ``agent.reasoning_depth``：quick | standard | deep（人的基本配置）；缺省或
+      非法值回落 DEFAULT_REASONING_DEPTH（非法值记 WARNING，不静默）。
+    - ``model.reasoning_depth_map``：对单档厂商值的声明式覆盖（网关值域与家族
+      不同时用，如 newapi deep→max）；只保留合法档位键与非空字符串值。
+    每次模型调用的深度就是这里的 depth——运行时没有别的场景规则。
+    """
+    import logging
+
+    from infrastructure.ai.providers import DEFAULT_REASONING_DEPTH, REASONING_DEPTHS
+
+    cfg = config if isinstance(config, dict) else {}
+    agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+    model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+
+    depth = str(agent_cfg.get("reasoning_depth") or "").strip().lower()
+    if depth and depth not in REASONING_DEPTHS:
+        logging.getLogger("digital_life.infrastructure.ai.config").warning(
+            "agent.reasoning_depth=%r 不在 %s 中，按 %s 处理",
+            depth, "/".join(REASONING_DEPTHS), DEFAULT_REASONING_DEPTH,
+        )
+        depth = ""
+    out: dict[str, Any] = {"depth": depth or DEFAULT_REASONING_DEPTH}
+
+    raw_map = model_cfg.get("reasoning_depth_map")
+    if isinstance(raw_map, dict):
+        depth_map = {
+            str(k).strip().lower(): str(v).strip()
+            for k, v in raw_map.items()
+            if str(k).strip().lower() in REASONING_DEPTHS and str(v or "").strip()
+        }
+        if depth_map:
+            out["depth_map"] = depth_map
+    return out
 
 
 def resolve_runtime_provider(requested: str | None = None, config: dict[str, Any] | None = None) -> dict[str, str]:

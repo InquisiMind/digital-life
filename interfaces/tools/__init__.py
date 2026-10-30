@@ -22,6 +22,8 @@ TOOL_MODULES = [
     "interfaces.tools.code_execution_tool",
     "interfaces.tools.mcp_tools",
     "interfaces.tools.web_search_tool",
+    "interfaces.tools.voice_tools",
+    "interfaces.tools.subagent_tools",
 ]
 
 _loaded = False

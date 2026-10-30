@@ -1,0 +1,1352 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>小张 · 语音对话</title>
+<style>
+  /* ══ 设计语言：对齐 AI 战略咨询平台（business/consulting/web/customer）══
+     浅色三灰底 + 品牌蓝 + 语义色 chip；气泡流对话 + 折叠步骤卡。
+     这里是 WS 实时驱动版：同样的展示形态，数据来自 /internal/voice/ws 推流。 */
+  :root {
+    --bg: #f7f8fa; --panel: #ffffff; --sunken: #f0f1f5;
+    --bd: #ececf1; --bd-2: #dfe0e8;
+    --tx: #1b1c22; --tx-2: #565a6b; --tx-3: #9095a6;
+    --pri: #2f6bff; --pri-weak: #eef3ff; --pri-deep: #1d4fd8;
+    --ok: #0e9f6e; --ok-weak: #e6f6ef;
+    --warn: #c2790a; --warn-weak: #fdf3e2;
+    --err: #c0353b; --err-weak: #fdecec;
+    --think: #7a5cff; --think-weak: #f1edff;
+    --echo: #9095a6;
+    --r-s: 8px; --r-m: 12px; --r-l: 16px;
+    --sh-1: 0 1px 2px rgba(20,22,40,.05); --sh-2: 0 10px 32px rgba(20,22,40,.10);
+    --font: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--tx);
+    font-family: var(--font); font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  button { font-family: var(--font); }
+  ::selection { background: var(--pri-weak); }
+
+  /* ── 顶栏 ── */
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 22px; height: 56px; flex-shrink: 0;
+    background: var(--panel); border-bottom: 1px solid var(--bd);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand .mark {
+    width: 30px; height: 30px; border-radius: 9px; color: #fff;
+    background: linear-gradient(135deg, #4d7cff, #b078ec);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700; flex: none;
+  }
+  .brand b { font-size: 15px; font-weight: 650; }
+  .brand .sub { display: block; font-size: 11px; color: var(--tx-3); font-weight: 400; margin-top: 1px; }
+  .status-pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 12px; color: var(--tx-2); font-weight: 550;
+    background: var(--sunken); border: 1px solid var(--bd-2);
+    border-radius: 999px; padding: 5px 13px;
+  }
+  .status-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--tx-3); transition: background .3s; }
+  .status-pill.listening .dot { background: var(--ok); animation: pulse 1.6s infinite; }
+  .status-pill.error .dot { background: var(--err); }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(14,159,110,.4); }
+    70%  { box-shadow: 0 0 0 8px rgba(14,159,110,0); }
+    100% { box-shadow: 0 0 0 0 rgba(14,159,110,0); }
+  }
+  .gear-btn {
+    background: var(--panel); border: 1px solid var(--bd-2); border-radius: 9px;
+    color: var(--tx-2); font-size: 14px; cursor: pointer; padding: 5px 11px;
+    transition: all .12s;
+  }
+  .gear-btn:hover { border-color: var(--pri); color: var(--pri); }
+  .gear-btn.on { background: var(--pri-weak); border-color: var(--pri); color: var(--pri-deep); }
+
+  /* ── 设置抽屉（结构与 ID 全部保留，仅换肤）── */
+  .settings-drawer {
+    display: none;
+    background: var(--panel);
+    border-bottom: 1px solid var(--bd);
+    padding: 14px 22px;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px 18px;
+    flex-shrink: 0;
+  }
+  .settings-drawer.open { display: grid; }
+  .settings-drawer label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--tx-2); font-weight: 550; }
+  .settings-drawer select, .settings-drawer textarea, .settings-drawer input[type="number"] {
+    background: var(--panel); color: var(--tx);
+    border: 1px solid var(--bd-2); border-radius: var(--r-s);
+    padding: 7px 10px; font-size: 13px; outline: none; font-family: var(--font);
+  }
+  .settings-drawer select:focus, .settings-drawer textarea:focus, .settings-drawer input[type="number"]:focus { border-color: var(--pri); }
+  .settings-drawer textarea { grid-column: 1 / -1; min-height: 74px; resize: vertical; line-height: 1.6; }
+  .settings-drawer .actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; }
+  .settings-drawer button.save {
+    background: var(--pri); color: #fff; border: none; border-radius: 9px;
+    padding: 8px 22px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .settings-drawer button.save:hover { background: var(--pri-deep); }
+  .settings-drawer .saved-tip { color: var(--ok); font-size: 12.5px; opacity: 0; transition: opacity .3s; }
+  .settings-drawer .saved-tip.show { opacity: 1; }
+  /* 麦克风电平条 + 门槛 */
+  .level-wrap { grid-column: 1 / -1; }
+  .level-bar-bg {
+    height: 10px; background: var(--sunken); border: 1px solid var(--bd);
+    border-radius: 5px; position: relative; overflow: hidden; margin-top: 6px;
+  }
+  .level-bar { height: 100%; width: 0%; background: var(--pri); transition: width .08s linear; }
+  .level-threshold { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--warn); left: 0%; }
+  .level-note { font-size: 11px; color: var(--tx-3); margin-top: 4px; }
+
+  /* ── 主区：左对话流 + 右执行过程 ── */
+  main { flex: 1; display: flex; flex-direction: row; align-items: stretch; min-height: 0; }
+  .chat-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .chat-scroll { flex: 1; overflow-y: auto; min-height: 0; }
+  .chat-scroll::-webkit-scrollbar, .steps-list::-webkit-scrollbar, .stp-think::-webkit-scrollbar, .stp-d pre::-webkit-scrollbar { width: 8px; }
+  .chat-scroll::-webkit-scrollbar-thumb, .steps-list::-webkit-scrollbar-thumb, .stp-think::-webkit-scrollbar-thumb, .stp-d pre::-webkit-scrollbar-thumb { background: var(--bd-2); border-radius: 4px; border: 2px solid var(--bg); }
+  .col { max-width: 860px; margin: 0 auto; padding: 24px 24px 14px; display: flex; flex-direction: column; gap: 18px; }
+  .chat-empty { text-align: center; color: var(--tx-3); font-size: 13px; padding: 70px 0 30px; line-height: 2; }
+  .chat-empty .big { font-size: 34px; display: block; margin-bottom: 8px; }
+
+  /* 用户消息：右对齐蓝底气泡（咨询台 .msg-u） */
+  .msg-u { width: 100%; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  .msg-u .who { font-size: 11px; color: var(--tx-3); }
+  .msg-u .bub {
+    background: var(--pri-weak); color: var(--tx);
+    padding: 10px 15px; border-radius: 16px 16px 4px 16px;
+    line-height: 1.75; white-space: pre-wrap; word-break: break-word;
+    max-width: min(78%, 640px); font-size: 14px;
+  }
+  /* 说一半的幽灵气泡：确认句实色 + partial 灰斜体，成事件后转正 */
+  .msg-u.pending .bub {
+    background: var(--panel); border: 1.5px dashed var(--bd-2); color: var(--tx-2);
+  }
+  .msg-u.pending .bub .p-partial { color: var(--tx-3); font-style: italic; }
+
+  /* 小张消息：头像 + 白卡气泡（咨询台 .msg-a） */
+  .msg-a { display: flex; gap: 10px; width: 100%; }
+  .msg-a .ava {
+    flex: none; width: 32px; height: 32px; border-radius: 50%; color: #fff;
+    background: linear-gradient(135deg, #4d7cff, #b078ec);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 650; margin-top: 2px;
+  }
+  .msg-a .c { min-width: 0; max-width: min(86%, 720px); }
+  .msg-a .hd { display: flex; align-items: baseline; gap: 7px; margin: 1px 0 4px 2px; }
+  .msg-a .hd b { font-size: 12.5px; font-weight: 600; }
+  .msg-a .hd span { font-size: 10.5px; color: var(--tx-3); }
+  .msg-a .bub {
+    background: var(--panel); border: 1px solid var(--bd);
+    border-radius: 4px 14px 14px 14px;
+    padding: 10px 15px; display: inline-block; max-width: 100%;
+    box-shadow: var(--sh-1); font-size: 14px; line-height: 1.8;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  /* 回复段：一句话一行，行首状态标（▶ 已播 ⏳ 待播 ✂ 被打断） */
+  .rb-seg { display: block; }
+  .rb-seg .mk { font-size: 11px; margin-right: 6px; }
+  .rb-seg.s-queued { color: var(--tx-2); }
+  .rb-seg.s-queued .mk { color: var(--tx-3); }
+  .rb-seg.s-played .mk { color: var(--ok); }
+  .rb-seg.s-cut { color: var(--tx-3); text-decoration: line-through; }
+  .rb-seg.s-cut .mk { color: var(--err); text-decoration: none; }
+  .rb-meta { margin-top: 7px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .rb-chip { font-size: 10.5px; padding: 1px 8px; border-radius: 5px; font-weight: 600; }
+  .c-ok   { background: var(--ok-weak); color: var(--ok); }
+  .c-wait { background: var(--sunken); color: var(--tx-2); }
+  .c-cut  { background: var(--err-weak); color: var(--err); }
+  .c-mute { background: var(--sunken); color: var(--tx-3); }
+
+  /* 输入事件卡（你发出的 utterance 已成事件）→ 由用户气泡承担，不再单独渲染；
+     系统行：居中灰字（打断/他人/异常） */
+  .sysline { text-align: center; color: var(--tx-3); font-size: 11.5px; line-height: 1.7; display: flex; align-items: center; gap: 12px; }
+  .sysline::before, .sysline::after { content: ''; flex: 1; height: 1px; background: var(--bd); }
+  .sysline.barge { color: var(--warn); }
+  .sysline.stop { color: var(--err); }
+  .sysline.err  { color: var(--err); }
+  .sysline.ok { color: var(--ok, #2f9e63); }
+  .sysline.timing { color: var(--tx-3); font-variant-numeric: tabular-nums; }
+  .sysline.other { color: var(--tx-3); }
+  .hist-sep { display: flex; align-items: center; gap: 12px; margin: 4px 0; color: var(--tx-3); font-size: 11px; }
+  .hist-sep::before, .hist-sep::after { content: ''; flex: 1; height: 1px; background: var(--bd); }
+
+  /* 正在思考（typing）：咨询台三点律动 */
+  .msg-a .typing { display: inline-flex; align-items: center; gap: 6px; padding: 9px 14px; background: var(--panel); border: 1px solid var(--bd); border-radius: 4px 14px 14px 14px; color: var(--tx-3); font-size: 12.5px; box-shadow: var(--sh-1); }
+  .typing i { width: 5px; height: 5px; border-radius: 50%; background: var(--tx-3); animation: tp 1.2s infinite; }
+  .typing i:nth-child(2) { animation-delay: .18s; } .typing i:nth-child(3) { animation-delay: .36s; }
+  @keyframes tp { 0%,80%,100% { opacity:.25; transform:translateY(0); } 40% { opacity:1; transform:translateY(-2px); } }
+  .typing .t-label { color: var(--tx-2); }
+
+  /* ── 底部 dock：麦克风 + 提示 ── */
+  .chat-dock {
+    flex-shrink: 0; display: flex; align-items: center; justify-content: center; gap: 18px;
+    padding: 12px 22px 14px; background: var(--bg);
+    border-top: 1px solid var(--bd);
+  }
+  .mic-btn {
+    width: 84px; height: 84px; border-radius: 50%;
+    border: 1px solid var(--bd-2); background: var(--panel);
+    color: var(--tx); cursor: pointer; font-size: 13px; font-weight: 550;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+    transition: all .2s ease; outline: none; box-shadow: var(--sh-1);
+  }
+  .mic-btn:hover { border-color: var(--pri); }
+  .mic-btn .icon { font-size: 26px; line-height: 1; }
+  .mic-btn.on { background: var(--pri); border-color: var(--pri); color: #fff; box-shadow: 0 8px 26px rgba(47,107,255,.38); }
+  .mic-btn.on:hover { filter: brightness(1.06); }
+  .mic-btn:disabled { opacity: .55; cursor: not-allowed; }
+  .mute-btn {
+    width: 56px; height: 56px; border-radius: 50%;
+    border: 1px solid var(--bd-2); background: var(--panel);
+    color: var(--tx-3); cursor: pointer; font-size: 11px; font-weight: 550;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+    transition: all .2s ease; outline: none;
+  }
+  .mute-btn:hover { border-color: var(--warn); color: var(--tx); }
+  .mute-btn .icon { font-size: 20px; line-height: 1; }
+  .mute-btn.on { background: var(--warn); border-color: var(--warn); color: #fff; }
+  .dock-info { display: flex; flex-direction: column; gap: 3px; max-width: 380px; }
+  .dock-title { font-size: 13px; font-weight: 600; color: var(--tx); }
+  .mic-hint { color: var(--tx-3); font-size: 12px; line-height: 1.6; }
+
+  /* ── 右侧执行过程面板 ── */
+  .steps-panel {
+    display: none; width: 372px; flex-shrink: 0;
+    border-left: 1px solid var(--bd); background: var(--panel);
+    flex-direction: column; min-height: 0;
+  }
+  .steps-panel.open { display: flex; }
+  .steps-head {
+    flex-shrink: 0; padding: 13px 16px; font-size: 13px; font-weight: 650;
+    color: var(--tx); border-bottom: 1px solid var(--bd);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .steps-head .live-state { font-size: 11px; color: var(--tx-3); font-weight: 550; }
+  .steps-list { flex: 1; overflow-y: auto; padding: 12px 12px 16px; }
+  .steps-empty { color: var(--tx-3); font-size: 12px; padding: 14px 6px; line-height: 1.9; text-align: center; }
+
+  /* 步骤卡（咨询台 .step/.tool-row 折叠卡形态） */
+  .stp { border: 1px solid var(--bd); border-radius: var(--r-m); background: var(--panel); margin-bottom: 8px; overflow: hidden; }
+  .stp.running { border-color: rgba(47,107,255,.45); box-shadow: 0 2px 10px rgba(47,107,255,.10); }
+  .stp-h { display: flex; align-items: center; gap: 7px; padding: 8px 10px; font-size: 12.5px; }
+  .stp-chip { flex: none; font-size: 10.5px; font-weight: 650; padding: 2px 8px; border-radius: 5px; }
+  .k-think { background: var(--think-weak); color: var(--think); }
+  .k-tool  { background: var(--pri-weak); color: var(--pri-deep); }
+  .k-say   { background: var(--ok-weak); color: var(--ok); }
+  .k-rest  { background: var(--warn-weak); color: var(--warn); }
+  .k-sys   { background: var(--sunken); color: var(--tx-2); }
+  .stp-ico { font-size: 13px; flex: none; }
+  .stp-t { font-weight: 600; color: var(--tx); flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stp-sum { flex: 1; min-width: 0; color: var(--tx-3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stp-spin { flex: none; width: 12px; height: 12px; border-radius: 50%; border: 2px solid rgba(47,107,255,.25); border-top-color: var(--pri); animation: spin 0.9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .stp-think {
+    margin: 0 10px 8px; padding: 8px 10px; max-height: 168px; overflow-y: auto;
+    background: var(--think-weak); border-radius: var(--r-s);
+    font-size: 11.5px; line-height: 1.7; color: var(--tx-2);
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .stp-res { margin: 0 10px 8px; padding: 7px 10px; background: var(--sunken); border-radius: var(--r-s); font-size: 11.5px; line-height: 1.6; color: var(--tx-2); word-break: break-word; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .stp details { border-top: 1px solid var(--bd); }
+  .stp details summary {
+    padding: 6px 10px; font-size: 11px; color: var(--tx-3); cursor: pointer;
+    list-style: none; user-select: none;
+  }
+  .stp details summary::-webkit-details-marker { display: none; }
+  .stp details summary:hover { color: var(--tx); background: var(--bg); }
+  .stp details summary::before { content: '▸ '; }
+  .stp details[open] summary::before { content: '▾ '; }
+  .stp details pre {
+    margin: 0; padding: 8px 10px 10px; background: var(--bg);
+    font-size: 11px; line-height: 1.65; color: var(--tx-2);
+    white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow-y: auto;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+
+  footer {
+    flex-shrink: 0; padding: 7px 22px; color: var(--tx-3);
+    font-size: 11px; text-align: center; background: var(--bg);
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="mark">张</div>
+    <div><b>语音对话</b><span class="sub" id="titleSub">小张 · 全双工实时转写</span></div>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;">
+    <div class="status-pill" id="status"><span class="dot"></span><span id="statusText">未连接</span></div>
+    <button class="gear-btn" id="stepsBtn" title="执行过程">⚡ 执行过程</button>
+    <button class="gear-btn" id="gearBtn" title="设置">⚙ 设置</button>
+  </div>
+</header>
+
+<div class="settings-drawer" id="settingsDrawer">
+    <label>对话实例
+      <select id="setInstance"><option value="">加载中…</option></select>
+    </label>
+    <label>倾听模式
+      <select id="setAmbient">
+        <option value="true">挂机收音（点名才说）</option>
+        <option value="false">对话模式（每句都应）</option>
+      </select>
+    </label>
+    <label>音色
+      <select id="setVoice"></select>
+    </label>
+    <label>打断灵敏度
+      <select id="setSens"></select>
+    </label>
+    <label>语速
+      <select id="setRate"></select>
+    </label>
+    <label>声纹门禁（过滤同事说话：只注入你自己的语音）
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button id="enrollBtn" style="background:var(--pri);color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:13px;cursor:pointer;">注册声纹</button>
+        <span id="enrollStatus" style="font-size:12px;color:var(--tx-3);">检查中…</span>
+      </div>
+    </label>
+    <label class="sens-custom" style="display:none;">判定字数
+      <input type="number" id="sensMinChars" min="1" max="12" step="1" style="background:var(--panel);color:var(--tx);border:1px solid var(--bd-2);border-radius:8px;padding:7px 10px;">
+    </label>
+    <label class="sens-custom" style="display:none;">立即停播字数
+      <input type="number" id="sensImmLen" min="2" max="20" step="1" style="background:var(--panel);color:var(--tx);border:1px solid var(--bd-2);border-radius:8px;padding:7px 10px;">
+    </label>
+    <label class="sens-custom" style="display:none;">回声阈值(0-1)
+      <input type="number" id="sensEchoCov" min="0.3" max="0.95" step="0.05" style="background:var(--panel);color:var(--tx);border:1px solid var(--bd-2);border-radius:8px;padding:7px 10px;">
+    </label>
+    <label class="sens-custom" style="display:none;">断句聚合(秒)
+      <input type="number" id="sensHoldS" min="0.3" max="3" step="0.1" style="background:var(--panel);color:var(--tx);border:1px solid var(--bd-2);border-radius:8px;padding:7px 10px;">
+    </label>
+    <label class="level-wrap">麦克风门槛（过滤远处人声：只送超过门槛的声音去转写）
+      <input type="range" id="micThreshold" min="0" max="100" value="22" style="width:100%;">
+      <div class="level-bar-bg">
+        <div class="level-bar" id="levelBar"></div>
+        <div class="level-threshold" id="levelThreshold"></div>
+      </div>
+      <div class="level-note" id="levelNote">刻度 -70dB ~ 0dB。自己说话记下柱位，同事说话记下柱位，黄线拖到两者之间。</div>
+    </label>
+    <details style="grid-column:1/-1;">
+      <summary style="color:var(--tx-3);font-size:12.5px;cursor:pointer;">判定事件日志（调灵敏度看这里）</summary>
+      <div id="eventLog" style="max-height:180px;overflow-y:auto;font-size:12px;line-height:1.8;color:var(--tx-2);background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:8px 12px;margin-top:6px;"></div>
+    </details>
+    <label style="grid-column:1/-1;">模式提示词（每次唤醒给模型的约定；留空用内置默认）
+      <textarea id="setModeNote" placeholder="留空 = 内置默认（挂机收音/对话模式各自的提示词）"></textarea>
+    </label>
+    <div class="actions">
+      <button class="save" id="saveSettings">保存（实时生效）</button>
+      <span class="saved-tip" id="savedTip">✓ 已生效</span>
+    </div>
+  </div>
+
+<main>
+ <div class="chat-col">
+  <div class="chat-scroll" id="chatScroll">
+    <div class="col" id="chatCol">
+      <div class="chat-empty" id="chatEmpty"><span class="big">🎙️</span>点击下方麦克风开始语音对话<br>说话内容断句后自动发给小张，回复与执行过程实时出现在这里</div>
+    </div>
+  </div>
+  <div class="chat-dock">
+    <button class="mic-btn" id="micBtn" aria-label="开始语音对话">
+      <span class="icon" id="micIcon">🎙️</span>
+      <span id="micLabel">开始对话</span>
+    </button>
+    <button class="mute-btn" id="muteBtn" aria-label="静音麦克风（不断连，只是不收音）" hidden>
+      <span class="icon" id="muteIcon">🔈</span>
+      <span id="muteLabel">静音</span>
+    </button>
+    <div class="dock-info">
+      <div class="dock-title">全双工语音</div>
+      <div class="mic-hint" id="micHint">点击后允许麦克风权限，随时开口即可</div>
+    </div>
+  </div>
+ </div>
+ <aside class="steps-panel" id="stepsPanel">
+   <div class="steps-head"><span>执行过程（实时）</span><span class="live-state" id="stepsState"></span></div>
+   <div class="steps-list" id="stepsList"><div class="steps-empty">他思考了什么、调了什么工具、每步的参数与结果<br>都会实时出现在这里</div></div>
+ </aside>
+</main>
+
+<footer>音频仅用于实时转写 · 断句后自动发给小张 · 回复走浏览器扬声器出声</footer>
+
+<script>
+"use strict";
+
+/* ───────────────────────── 全局状态 ───────────────────────── */
+const WS_BASE = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/internal/voice/ws";
+let ws = null;
+let audioCtx = null;
+let mediaStream = null;
+let workletNode = null;
+let running = false;
+
+const $ = (id) => document.getElementById(id);
+const micBtn = $("micBtn"), micIcon = $("micIcon"), micLabel = $("micLabel"),
+      micHint = $("micHint"), statusPill = $("status"), statusText = $("statusText"),
+      muteBtn = $("muteBtn"), muteIcon = $("muteIcon"), muteLabel = $("muteLabel"),
+      chatScroll = $("chatScroll"), chatCol = $("chatCol"), chatEmpty = $("chatEmpty");
+
+function setStatus(text, cls) {
+  statusText.textContent = text;
+  statusPill.className = "status-pill" + (cls ? " " + cls : "");
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function hhmm(ts) {
+  const d = ts ? new Date(ts * 1000) : new Date();
+  return ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
+}
+/* 只在贴近底部时自动跟随（翻历史时不被拽走） */
+function scrollChat(force) {
+  const near = chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 140;
+  if (force || near) chatScroll.scrollTop = chatScroll.scrollHeight;
+}
+
+/* ═════════════════ 对话流渲染（复刻咨询台气泡形态，WS 实时驱动）═══════════════ */
+
+function clearEmptyHint() { if (chatEmpty) chatEmpty.remove(); }
+
+/* 系统行：打断 / 他人说话 / 异常（居中灰字） */
+function addSysLine(text, cls) {
+  clearEmptyHint();
+  const el = document.createElement("div");
+  el.className = "sysline" + (cls ? " " + cls : "");
+  el.textContent = text;
+  chatCol.appendChild(el);
+  scrollChat(true);
+}
+
+/* 链路计时（服务端 turn_timing）：说完→起播 七段分解；工具干活单列不计 */
+function addTimingLine(m) {
+  clearEmptyHint();
+  const el = document.createElement("div");
+  el.className = "sysline timing";
+  let s = "⏱ 说完→起播 " + m.total + "s ＝ ASR " + m.asr + " + 断句 " + m.endpoint +
+          " + 事件 " + m.event + " + 消费 " + m.consume + " + 生成 " + m.gen +
+          " + 合成 " + m.synth + " + 起播 " + m.play;
+  if (m.work > 0.3) s += " ｜ 另有干活 " + m.work + "s 未计";
+  el.textContent = s;
+  chatCol.appendChild(el);
+  scrollChat(true);
+}
+
+/* 用户消息气泡（右对齐）。ts 秒级时间戳（历史恢复用），空 = 现在 */
+function addUserMsg(text, ts) {
+  clearEmptyHint();
+  const wrap = document.createElement("div");
+  wrap.className = "msg-u";
+  const who = document.createElement("div");
+  who.className = "who";
+  who.textContent = "我 · " + hhmm(ts);
+  const bub = document.createElement("div");
+  bub.className = "bub";
+  bub.textContent = text;
+  wrap.appendChild(who); wrap.appendChild(bub);
+  chatCol.appendChild(wrap);
+  scrollChat(true);
+  return wrap;
+}
+
+/* 小张消息气泡（头像 + 白卡）。segments=true → 逐句带播放状态标的容器 */
+function addAgentMsg(ts, withSegments) {
+  clearEmptyHint();
+  const wrap = document.createElement("div");
+  wrap.className = "msg-a";
+  const ava = document.createElement("div");
+  ava.className = "ava"; ava.textContent = "张";
+  const c = document.createElement("div"); c.className = "c";
+  const hd = document.createElement("div"); hd.className = "hd";
+  hd.innerHTML = "<b>小张</b><span>" + hhmm(ts) + "</span>";
+  const bub = document.createElement("div"); bub.className = "bub";
+  c.appendChild(hd); c.appendChild(bub);
+  wrap.appendChild(ava); wrap.appendChild(c);
+  chatCol.appendChild(wrap);
+  const msg = { el: wrap, bub: bub, segs: 0, played: 0, cut: 0, muted: false, gotReply: false, plainSet: false };
+  if (withSegments) msg.body = bub; // 段落直接铺在气泡里
+  scrollChat(true);
+  return msg;
+}
+
+/* 历史：静态小张消息（无播放状态） */
+function addAgentStatic(text, ts) {
+  const m = addAgentMsg(ts, false);
+  m.bub.textContent = text;
+}
+
+/* ── 进行中的用户气泡：确认句(实) + partial(灰斜体)，event_sent 时转正 ── */
+let pendingUser = null;   // {el, txtEl, confEl, partEl, confirmed}
+function ensurePendingUser() {
+  if (pendingUser) return pendingUser;
+  clearEmptyHint();
+  setTyping(null);   // 用户开口了，收起"思考中"
+  const el = addUserMsg("", null);
+  el.classList.add("pending");
+  el.querySelector(".who").textContent = "我 · 正在说…";
+  const bub = el.querySelector(".bub");
+  const confEl = document.createElement("span");
+  const partEl = document.createElement("span");
+  partEl.className = "p-partial";
+  bub.textContent = "";
+  bub.appendChild(confEl); bub.appendChild(partEl);
+  pendingUser = { el: el, confEl: confEl, partEl: partEl, confirmed: "" };
+  return pendingUser;
+}
+function renderPendingUser() {
+  if (!pendingUser) return;
+  pendingUser.confEl.textContent = pendingUser.confirmed;
+  pendingUser.partEl.textContent = pendingUser.partialText || "";
+  scrollChat(false);
+}
+function dropPendingUser() {
+  if (pendingUser) { pendingUser.el.remove(); pendingUser = null; }
+}
+
+function onPartial(text) { const p = ensurePendingUser(); p.partialText = text; renderPendingUser(); }
+function onSentence(text) { const p = ensurePendingUser(); p.confirmed += text; p.partialText = ""; renderPendingUser(); }
+function onEventSent(msg) {
+  const text = msg.text || (pendingUser ? pendingUser.confirmed : "") || "";
+  dropPendingUser();          // 幽灵气泡升级成正式用户消息
+  closeReply();               // 用户新一轮开口 → 小张上一条气泡收口
+  addUserMsg(text, null);
+  setTyping("已收到，小张处理中…");
+}
+
+/* ── 小张回复气泡：一次 express_to_human = 一条气泡 ──
+   生命周期：prespeak 的 tts_segment 先到（流式提前出声）→ express 工具
+   start（同一次调用继续追加）→ agent_reply 全文（收口 gotReply）→ 剩余段
+   继续追加。下一次 express start 且上一条已 gotReply → 新开气泡。 */
+let currentReply = null;
+let pendingSegRows = [];      // 已收 tts_segment 待播的段（与音频帧一一对应）[{row, seq}]
+let curPlayingSeq = null;     // 最近开始播的段序号（stop_tts 回报服务端 = 假打断恢复起点）
+
+function ensureReplyBlock() {
+  if (currentReply) return currentReply;
+  setTyping(null);
+  currentReply = addAgentMsg(null, true);
+  return currentReply;
+}
+function closeReply() {
+  if (!currentReply) return;
+  const rb = currentReply;
+  // 未出声且无段（静音未播 / 被拦）：正文兜底显示全文
+  if (!rb.segs && !rb.bub.textContent.trim() && rb.fullText) rb.bub.textContent = rb.fullText;
+  updateReplyMeta(rb);
+  currentReply = null;
+  // 注意：不清 pendingSegRows——音频队列照常播放并回标旧行（▶/✂），与气泡收口无关
+}
+function addMetaChip(rb, cls, text) {
+  let meta = rb.bub.parentElement.querySelector(".rb-meta");
+  if (!meta) {
+    meta = document.createElement("div");
+    meta.className = "rb-meta";
+    rb.bub.parentElement.insertBefore(meta, rb.bub.nextSibling);
+  }
+  const chip = document.createElement("span");
+  chip.className = "rb-chip " + cls;
+  chip.textContent = text;
+  meta.appendChild(chip);
+}
+function replyAddSegment(text, seq) {
+  const rb = ensureReplyBlock();
+  // 防重复渲染：agent_reply（express 调用瞬间推送）常先于首个 tts_segment
+  // 到达（合成 0.2-1.5s）——正文已显示全文时清掉占位，让段落行接管显示
+  if (!rb.segs && rb.bub.textContent.trim()) rb.bub.textContent = "";
+  const row = document.createElement("span");
+  row.className = "rb-seg s-queued";
+  row.innerHTML = '<span class="mk">⏳</span>';
+  row.appendChild(document.createTextNode(text));
+  rb.bub.appendChild(row);
+  rb.segs += 1;
+  pendingSegRows.push({ row, seq });
+  updateReplyMeta(rb);
+  scrollChat(false);
+}
+function replyMarkPlayed() {
+  const it = pendingSegRows.shift();
+  if (!it) return;
+  const row = it.row;
+  if (typeof it.seq === "number" && it.seq >= 0) curPlayingSeq = it.seq;
+  row.className = "rb-seg s-played";
+  row.querySelector(".mk").textContent = "▶";
+  if (currentReply) { currentReply.played += 1; updateReplyMeta(currentReply); }
+}
+function replyMarkAllCut() {
+  for (const it of pendingSegRows) {
+    it.row.className = "rb-seg s-cut";
+    it.row.querySelector(".mk").textContent = "✂";
+  }
+  const n = pendingSegRows.length;
+  pendingSegRows = [];
+  const rb = currentReply;
+  if (rb && n) { rb.cut += n; updateReplyMeta(rb); }
+}
+/* 假打断恢复（服务端判定误判 → tts_resume）：清掉误标的 ✂ 行，
+   恢复段将以新 tts_segment 重新追加渲染 */
+function replyClearCutMarks() {
+  const rb = currentReply;
+  if (!rb) return;
+  rb.bub.querySelectorAll(".rb-seg.s-cut").forEach(r => r.remove());
+  rb.cut = 0;
+  updateReplyMeta(rb);
+}
+function replySetText(text) {
+  const rb = ensureReplyBlock();
+  rb.fullText = text;
+  rb.gotReply = true;
+  // 无段落（静音/未合成）→ 正文直接显示全文；有段落则段落文本即正文
+  if (!rb.segs && !rb.bub.textContent.trim()) rb.bub.textContent = text;
+  updateReplyMeta(rb);
+}
+function updateReplyMeta(rb) {
+  const stats = [];
+  if (rb.played) stats.push(['c-ok', '已播 ' + rb.played + ' 段']);
+  if (pendingSegRows.length) stats.push(['c-wait', '待播 ' + pendingSegRows.length + ' 段']);
+  if (rb.cut) stats.push(['c-cut', '被打断 ' + rb.cut + ' 段']);
+  if (!rb.segs && rb.gotReply) { rb.muted = true; stats.push(['c-mute', '静音未播']); }
+  let meta = rb.bub.parentElement.querySelector(".rb-meta");
+  if (meta) meta.remove();
+  for (const s of stats) addMetaChip(rb, s[0], s[1]);
+}
+
+/* ── 思考中 typing 指示（咨询台三点律动）── */
+let typingEl = null, typingLabelEl = null;
+function setTyping(label) {
+  if (!label) { if (typingEl) { typingEl.remove(); typingEl = null; } return; }
+  if (!typingEl) {
+    clearEmptyHint();
+    typingEl = document.createElement("div");
+    typingEl.className = "msg-a";
+    typingEl.innerHTML = '<div class="ava">张</div><div class="c"><div class="typing"><i></i><i></i><i></i><span class="t-label"></span></div></div>';
+    chatCol.appendChild(typingEl);
+    typingLabelEl = typingEl.querySelector(".t-label");
+  }
+  typingLabelEl.textContent = label;
+  scrollChat(false);
+}
+
+/* ── 历史分隔线 ── */
+function addHistSep() {
+  const el = document.createElement("div");
+  el.className = "hist-sep";
+  el.textContent = "以上为刷新前的对话";
+  chatCol.appendChild(el);
+}
+
+/* 页面加载：从 hub 历史环形缓冲恢复对话流（服务重启前无此端点 → 静默跳过） */
+async function loadHistory() {
+  try {
+    const r = await fetch("/internal/voice/history");
+    if (!r.ok) return;
+    const d = await r.json();
+    const items = d.history || [];
+    for (const it of items) {
+      if (it.kind === "user") addUserMsg(it.text || "", it.ts);
+      else if (it.kind === "agent") addAgentStatic(it.text || "", it.ts);
+      else if (it.kind === "interrupt") addSysLine("✂ 打断" + (it.text ? "：" + it.text : ""), "barge");
+    }
+    if (items.length) addHistSep();
+  } catch (e) { /* 端点不存在（旧服务）时安静降级 */ }
+}
+
+/* ═════════════════ 执行过程面板（思考流 + 工具调用折叠卡）════════════════ */
+
+const TOOL_META = {
+  "__thinking__":     { chip: "k-think", icon: "🧠", label: (a) => "第" + (parseArgs(a).round || "?") + "轮推理" },
+  "get_latest_input": { chip: "k-tool",  icon: "📥", label: () => "看一眼最新语音输入" },
+  "express_to_human": { chip: "k-say",   icon: "💬", label: () => "开口说话" },
+  "web_search":       { chip: "k-tool",  icon: "🔍", label: () => "联网搜索" },
+  "terminal":         { chip: "k-tool",  icon: "⌨️", label: () => "跑终端命令" },
+  "execute_code":     { chip: "k-tool",  icon: "🐍", label: () => "执行代码" },
+  "sense_file":       { chip: "k-tool",  icon: "📄", label: () => "读文件" },
+  "write_file":       { chip: "k-tool",  icon: "✍️", label: () => "写文件" },
+  "todo":             { chip: "k-tool",  icon: "📋", label: () => "任务管理" },
+  "process":          { chip: "k-tool",  icon: "⚙️", label: () => "查进程" },
+  "rest":             { chip: "k-rest",  icon: "😴", label: () => "收工休息" },
+  "recall_memory":    { chip: "k-tool",  icon: "💭", label: () => "回忆" },
+  "listen_until_user_done": { chip: "k-tool", icon: "👂", label: () => "等你说完" },
+};
+/* 参数摘要：从 JSON 参数里挑最关键的一两个键值亮在卡片头 */
+const SUMMARY_KEYS = ["query", "command", "path", "file_path", "filename", "text", "content", "action", "task", "name", "url", "keyword", "q", "pattern", "code"];
+function parseArgs(s) {
+  if (!s) return {};
+  try { return JSON.parse(s); } catch (_) { return {}; }
+}
+function summarizeArgs(argsStr) {
+  const a = parseArgs(argsStr);
+  const parts = [];
+  for (const k of SUMMARY_KEYS) {
+    if (a[k] !== undefined && a[k] !== null && a[k] !== "") {
+      parts.push(k + "=" + String(a[k]).replace(/\s+/g, " ").slice(0, 60));
+      if (parts.length >= 2) break;
+    }
+  }
+  if (!parts.length && argsStr) parts.push(String(argsStr).replace(/\s+/g, " ").slice(0, 60));
+  return parts.join(" · ");
+}
+
+let stepRunning = null;       // 当前运行中的工具卡 DOM
+let stepRunningName = "";
+let thinkCard = null;         // 当前思考卡 DOM（流式正文区）
+
+function stepsClearEmpty() {
+  const empty = $("stepsList").querySelector(".steps-empty");
+  if (empty) empty.remove();
+}
+function stepsState(text) { $("stepsState").textContent = text; }
+
+function addStep(msg) {
+  const list = $("stepsList");
+  const name = msg.name || "";
+  const meta = TOOL_META[name] || { chip: "k-sys", icon: "🔧", label: () => name };
+
+  // express_to_human 开始 = 小张新一轮开口：
+  // 上一条气泡已完成（gotReply）→ 收口换新气泡；未完成（prespeak 同一次调用）→ 继续追加
+  if (name === "express_to_human" && msg.phase === "start") {
+    if (currentReply && currentReply.gotReply) closeReply();
+    setTyping(null);
+  }
+  if (name === "__thinking__") { onThinkingStart(msg); return; }
+
+  let label = name;
+  try { label = meta.label(msg.args || ""); } catch (_) { label = name; }
+  const sum = summarizeArgs(msg.args);
+
+  if (msg.phase === "start") {
+    if (stepRunning) finishStep(stepRunning, "");   // 防御：上一步没收到 end
+    const card = document.createElement("div");
+    card.className = "stp running";
+    card.innerHTML =
+      '<div class="stp-h"><span class="stp-chip ' + meta.chip + '">' + chipLabel(name) + '</span>' +
+      '<span class="stp-ico">' + meta.icon + '</span>' +
+      '<span class="stp-t">' + escapeHtml(label) + '</span>' +
+      (sum ? '<span class="stp-sum">' + escapeHtml(sum) + '</span>' : '') +
+      '<span class="stp-spin"></span></div>';
+    if (msg.args) addFold(card, "参数", msg.args);
+    list.appendChild(card);
+    stepRunning = card; stepRunningName = name;
+    stepsClearEmpty();
+    stepsState(label + (sum ? " · " + sum : ""));
+    if (name !== "express_to_human" && name !== "rest") setTyping(label + "…");
+    list.scrollTop = list.scrollHeight;
+  } else if (msg.phase === "end" && stepRunning && stepRunningName === name) {
+    finishStep(stepRunning, msg.result || "");
+    stepRunning = null; stepRunningName = "";
+    stepsState("");
+    setTyping(null);   // 工具收尾：撤"正在做…"指示（下一个事件会重建）
+  }
+}
+function chipLabel(name) {
+  const m = TOOL_META[name];
+  if (!m) return "系统";
+  return { "k-think": "思考", "k-tool": "调用", "k-say": "说话", "k-rest": "休息" }[m.chip] || "系统";
+}
+function addFold(card, title, text) {
+  const d = document.createElement("details");
+  const s = document.createElement("summary");
+  s.textContent = title;
+  const pre = document.createElement("pre");
+  pre.textContent = text;
+  d.appendChild(s); d.appendChild(pre);
+  card.appendChild(d);
+  return d;
+}
+function finishStep(card, result) {
+  const spin = card.querySelector(".stp-spin");
+  if (spin) spin.remove();
+  card.classList.remove("running");
+  if (result) {
+    const res = document.createElement("div");
+    res.className = "stp-res";
+    res.textContent = String(result).replace(/\s+/g, " ");
+    card.appendChild(res);
+    addFold(card, "结果全文", result);
+  }
+  $("stepsList").scrollTop = $("stepsList").scrollHeight;
+}
+
+/* 思考卡：start 建卡 → thinking_delta 流式正文 → thinking_end 收尾折叠 */
+function ensureThinkCard(round) {
+  if (thinkCard) return thinkCard;
+  const list = $("stepsList");
+  const card = document.createElement("div");
+  card.className = "stp running st-think";
+  card.innerHTML =
+    '<div class="stp-h"><span class="stp-chip k-think">思考</span>' +
+    '<span class="stp-ico">🧠</span>' +
+    '<span class="stp-t">第' + (round || "?") + '轮推理</span>' +
+    '<span class="stp-sum">正在想…</span><span class="stp-spin"></span></div>' +
+    '<div class="stp-think"></div>';
+  list.appendChild(card);
+  stepsClearEmpty();
+  thinkCard = { el: card, body: card.querySelector(".stp-think"), sum: card.querySelector(".stp-sum"), text: "" };
+  setTyping("正在思考…");
+  list.scrollTop = list.scrollHeight;
+  return thinkCard;
+}
+function onThinkingStart(msg) {
+  const a = parseArgs(msg.args);
+  ensureThinkCard(a.round);
+  stepsState("第" + (a.round || "?") + "轮推理");
+}
+function onThinkingDelta(text) {
+  const t = ensureThinkCard(null);
+  t.text += text;
+  // 正文区只保留尾部 4000 字（防超长思考把 DOM 撑爆）
+  const show = t.text.length > 4000 ? t.text.slice(-4000) : t.text;
+  t.body.textContent = show;
+  t.body.scrollTop = t.body.scrollHeight;
+  const prev = t.text.replace(/\s+/g, " ").slice(-42);
+  t.sum.textContent = prev;
+  $("stepsList").scrollTop = $("stepsList").scrollHeight;
+}
+function onThinkingEnd(msg) {
+  const t = ensureThinkCard(null);
+  const full = msg.text || t.text;
+  t.el.classList.remove("running");
+  const spin = t.el.querySelector(".stp-spin");
+  if (spin) spin.remove();
+  t.sum.textContent = "想完（" + full.length + " 字）";
+  t.body.remove();
+  const d = document.createElement("details");
+  const s = document.createElement("summary");
+  s.textContent = "思考全文（" + full.length + " 字）";
+  const pre = document.createElement("pre");
+  pre.textContent = full || "（本轮无可见思考）";
+  d.appendChild(s); d.appendChild(pre);
+  t.el.appendChild(d);
+  thinkCard = null;
+  stepsState("");
+  setTyping(null);   // 思考收尾：撤"正在思考…"（后面要么开口要么调工具，都会重建）
+  $("stepsList").scrollTop = $("stepsList").scrollHeight;
+}
+
+$("stepsBtn").addEventListener("click", () => {
+  const open = $("stepsPanel").classList.toggle("open");
+  $("stepsBtn").classList.toggle("on", open);
+});
+
+/* ───────────────────────── 音频采集：16k mono int16 ─────────────────────────
+   AudioContext({sampleRate:16000}) 让浏览器内部重采样（比手写降采样稳），
+   Worklet 只做 float32→int16 + 攒 1280B（40ms）一帧。 */
+const WORKLET_CODE = `
+class PcmSender extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this._buf = new Int16Array(0);
+  }
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (!ch) return true;
+    // float32 [-1,1] → int16
+    const conv = new Int16Array(ch.length);
+    for (let i = 0; i < ch.length; i++) {
+      let s = Math.max(-1, Math.min(1, ch[i]));
+      conv[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    // 攒到 1280B（640 样本 = 40ms）再 post，对齐讯飞推荐帧大小
+    const merged = new Int16Array(this._buf.length + conv.length);
+    merged.set(this._buf); merged.set(conv, this._buf.length);
+    let offset = 0;
+    while (merged.length - offset >= 640) {
+      this.port.postMessage(merged.slice(offset, offset + 640));
+      offset += 640;
+    }
+    this._buf = merged.slice(offset);
+    return true;
+  }
+}
+registerProcessor("pcm-sender", PcmSender);
+`;
+
+async function startCapture() {
+  mediaStream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: false,   // AGC 会把远处人声也推高，能量闸门需要原始远近差
+    },
+    video: false,
+  });
+  audioCtx = new AudioContext({ sampleRate: 16000 });
+  const src = audioCtx.createMediaStreamSource(mediaStream);
+  const blob = new Blob([WORKLET_CODE], { type: "application/javascript" });
+  const mod = await audioCtx.audioWorklet.addModule(URL.createObjectURL(blob));
+  workletNode = new AudioWorkletNode(audioCtx, "pcm-sender");
+  workletNode.port.onmessage = (e) => {
+    const buf = e.data.buffer;
+    const samples = e.data;
+    // RMS 电平（0-100 显示刻度，对数映射更贴人耳）
+    let sum = 0;
+    for (let i = 0; i < samples.length; i++) { const v = samples[i] / 32768; sum += v * v; }
+    const rms = Math.sqrt(sum / samples.length);
+    // dBFS 线性刻度：条 = -70dB..0dB 铺满，噪音/人声差在条上一目了然
+    const db = 20 * Math.log10(Math.max(rms, 1e-6));
+    const level = Math.max(0, Math.min(100, Math.round((db + 70) / 70 * 100)));
+    updateLevelBar(level, db);
+    // 全量上行（2026-10-30 E2E 实测教训）：门控上收服务端——Silero VAD 帧级
+    // 判人声（杂音不喂讯飞）+ 说话态静音放行（讯飞断句需要句尾静音）。
+    // 前端丢帧会把句尾静音一起丢掉，讯飞听不到静音就永不断句
+    // （"说完了很久不转写完成"的前端半边根因）。电平条+黄线仅作噪声可视化。
+    if (running && ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(buf);   // Int16Array 的 ArrayBuffer = raw PCM 二进制帧
+    }
+  };
+
+  let micThreshold = Number(localStorage.getItem("micThreshold") ?? 22);
+  const applyThresholdUI = () => {
+    $("levelThreshold").style.left = micThreshold + "%";
+    $("micThreshold").value = micThreshold;
+    localStorage.setItem("micThreshold", String(micThreshold));
+  };
+  $("micThreshold").addEventListener("input", (ev) => {
+    micThreshold = Number(ev.target.value);
+    applyThresholdUI();
+  });
+  applyThresholdUI();
+
+  let lastLevelPaint = 0;
+  function updateLevelBar(level, db) {
+    const now = performance.now();
+    if (now - lastLevelPaint < 80) return;   // 限频绘制
+    lastLevelPaint = now;
+    $("levelBar").style.width = level + "%";
+    $("levelNote").textContent = "当前 " + db.toFixed(0) + " dB / 门槛 " +
+      ((micThreshold * 0.7 - 70).toFixed(0)) + " dB —— 蓝柱=声音，黄线=门槛，低于黄线不送转写";
+  }
+  src.connect(workletNode);
+  // 不连 destination：零回环，扬声器不会有电流声
+}
+
+function stopCapture() {
+  try { if (workletNode) workletNode.disconnect(); } catch (_) {}
+  try { if (audioCtx) audioCtx.close(); } catch (_) {}
+  try { if (mediaStream) mediaStream.getTracks().forEach(t => t.stop()); } catch (_) {}
+  workletNode = null; audioCtx = null; mediaStream = null;
+}
+
+/* ───────────────────────── TTS 音频播放（服务端合成 → 浏览器出声）─────────────────────────
+   声音从浏览器出：AudioContext 播放 + getUserMedia 的 AEC 回声消除把"自己播的
+   声音"从麦克风信号里消掉——回声从源头消失，打断=毫秒级停播。 */
+let ttsCtx = null;
+let audioQueue = [];        // [{data: ArrayBuffer, epoch: int}]
+let currentSource = null;   // 正在播的 AudioBufferSourceNode（唯一真相源）
+let audioEpoch = 0;         // 打断时 +1 → 旧纪元的音频永远丢弃（严格时序保证）
+let endReportTimer = null;
+
+function ensureTtsCtx() {
+  if (!ttsCtx || ttsCtx.state === "closed") ttsCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return ttsCtx;
+}
+
+function reportPlayback(started) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try { ws.send(JSON.stringify({ type: "tts_playback", state: started ? "start" : "end" })); } catch (_) {}
+  }
+}
+
+function reportPlaybackEndDelayed() {
+  if (endReportTimer) clearTimeout(endReportTimer);
+  endReportTimer = setTimeout(() => { endReportTimer = null; reportPlayback(false); }, 1500);
+}
+
+function reportPlaybackStartNow() {
+  if (endReportTimer) { clearTimeout(endReportTimer); endReportTimer = null; return; }
+  reportPlayback(true);
+}
+
+/* ── 严格时序音频播放 ──
+   规则（zhp 2026-10-30）：
+   1. currentSource 是唯一真相源——只有它代表"正在播"
+   2. onended 只在 source === currentSource 时续队列（消灭竞争）
+   3. stopAllAudio 物理停掉 source + 纪元 +1 → 旧纪元音频入队即丢弃
+   4. 打断后新纪元的音频永远不会播出旧纪元的内容 */
+function stopAllAudio() {
+  audioEpoch++;
+  audioQueue = [];
+  if (currentSource) {
+    try { currentSource.onended = null; currentSource.stop(); } catch(_) {}
+    currentSource = null;
+  }
+  reportPlayback(false);
+  setStatus("聆听中", "listening");
+}
+
+function enqueueAudio(arrayBuffer) {
+  if (endReportTimer) { clearTimeout(endReportTimer); endReportTimer = null; }
+  audioQueue.push({ data: arrayBuffer, epoch: audioEpoch });
+  schedulePlayNext();
+}
+
+/* ── 单飞调度（2026-10-30 修重叠播放）─────────────────────────────────────
+   切块 TTS 后多帧毫秒级连到：decodeAudioData 等待窗口里 currentSource 暂为
+   null，旧代码"!currentSource 就 playNextAudio()"会拉起第二个并发播放循环
+   → 两段音频同时出声。改为 schedulePlayNext 单飞锁：任意时刻至多一个
+   消费循环在跑；锁释放后兜底复查，关闭"清空判定与释放之间入队"的窗口。 */
+let playScheduled = false;
+
+function schedulePlayNext() {
+  if (playScheduled) return;
+  playScheduled = true;
+  playNextAudio().finally(() => {
+    playScheduled = false;
+    if (!currentSource && audioQueue.some(it => it.epoch === audioEpoch)) {
+      schedulePlayNext();
+    }
+  });
+}
+
+async function playNextAudio() {
+  while (true) {
+    // 顺序播放纪律（2026-10-30 叠音回归修复）：正在播 → 什么都不做，
+    // 下一条只由 onended 链触发。此前单飞重构丢了这行守卫：当前块在播、
+    // 新块到达时 schedulePlayNext 直接消费队列 → 并行两个声音。
+    if (currentSource) return;
+    // 跳过所有旧纪元的音频（打断后排队的残留）
+    while (audioQueue.length > 0 && audioQueue[0].epoch !== audioEpoch) {
+      audioQueue.shift();
+    }
+    if (!audioQueue.length) {
+      if (currentSource) reportPlaybackEndDelayed();
+      currentSource = null;
+      return;
+    }
+    const item = audioQueue[0];
+    const myEpoch = item.epoch;
+    try {
+      // 解码（预解码命中时零等待）
+      if (!item.buf) item.buf = await ensureTtsCtx().decodeAudioData(item.data);
+      if (myEpoch !== audioEpoch) { audioQueue.shift(); continue; }  // 解码期间被打断
+      audioQueue.shift();
+      // 预解码下一块：当前块播放的几秒里把下一块解好，onended 后起播
+      // 不再等 decodeAudioData（块间衔接缝 ~50-100ms → ~10-30ms）
+      const nxt = audioQueue.find(it => it.epoch === audioEpoch && !it.buf);
+      if (nxt) {
+        ensureTtsCtx().decodeAudioData(nxt.data).then(b => { nxt.buf = b; }).catch(() => {});
+      }
+      const ctx = ensureTtsCtx();
+      if (ctx.state === "suspended") await ctx.resume();
+      if (!currentSource) reportPlaybackStartNow();  // 从停到播的跳变
+      const src = ctx.createBufferSource();
+      src.buffer = item.buf;
+      src.connect(ctx.destination);
+      currentSource = src;
+      replyMarkPlayed();
+      src.onended = () => {
+        if (src === currentSource && myEpoch === audioEpoch) {
+          currentSource = null;
+          // 自然播完（队列无后续）→ 延迟回报"播放结束"（服务端 TTS 标记精确
+          // 清理；此前该回报是死路径，标记只能靠 30s 过期兜底）
+          if (!audioQueue.some(it => it.epoch === audioEpoch)) reportPlaybackEndDelayed();
+          schedulePlayNext();  // 只续队列如果"我还是当前在播的那个"
+        }
+      };
+      src.start();
+      return;  // 当前段交给 onended 链下一条
+    } catch (err) {
+      audioQueue.shift();  // 这条解码/播放失败 → 丢弃，while 继续下一条
+      currentSource = null;
+    }
+  }
+}
+
+/* ── 麦克风静音（2026-10-30 zhp）：不断连、不收音——禁用采集轨道，浏览器
+   送出静音帧：服务端 VAD 判静音 → 卡住的灰字被讯飞确认断句正常发出，
+   会话/播报完全保持。静音期间小张说话照常能听到。 */
+let micMuted = false;
+function setMicMuted(on) {
+  micMuted = on;
+  try { if (mediaStream) mediaStream.getAudioTracks().forEach(t => { t.enabled = !on; }); } catch (_) {}
+  muteBtn.classList.toggle("on", on);
+  muteIcon.textContent = on ? "🔇" : "🔈";
+  muteLabel.textContent = on ? "已静音" : "静音";
+  muteBtn.title = on
+    ? "已静音：不收音（会话保持，小张说话还能听到）。点一下恢复收听"
+    : "静音麦克风：不断连、只是不收音；杂音卡住断句时静音一下，残留的灰字会被静音确认并发出去";
+}
+muteBtn.addEventListener("click", () => { if (running) setMicMuted(!micMuted); });
+
+/* ───────────────────────── 会话生命周期 ───────────────────────── */
+async function startSession() {
+  micBtn.disabled = true;
+  try {
+    await startCapture();
+  } catch (err) {
+    addSysLine("麦克风不可用：" + (err.message || err), "err");
+    setStatus("麦克风不可用", "error");
+    stopCapture();
+    micBtn.disabled = false;
+    return;
+  }
+  const inst = selectedInstance ? ("?instance=" + encodeURIComponent(selectedInstance)) : "";
+  ws = new WebSocket(WS_BASE + inst);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => setStatus("连接中…");
+  ws.onmessage = (ev) => {
+    // 二进制帧 = TTS 音频（WAV）→ 入队播放；文本帧 = JSON 控制/字幕
+    if (ev.data instanceof ArrayBuffer) {
+      enqueueAudio(ev.data);
+      return;
+    }
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch (_) { return; }
+    switch (msg.type) {
+      case "hello":
+        running = true;
+        setStatus("聆听中", "listening");
+        micBtn.classList.add("on");
+        micIcon.textContent = "⏹️";
+        micLabel.textContent = "结束对话";
+        micHint.textContent = "正在实时转写 · 说话即可，断句自动发给小张；右侧「执行过程」看他怎么想怎么做";
+        muteBtn.hidden = false;
+        setMicMuted(false);
+        break;
+      case "partial":    onPartial(msg.text); break;
+      case "sentence":   onSentence(msg.text); break;
+      case "event_sent":
+        onEventSent(msg);
+        setStatus("已发给小张 · 聆听中", "listening");
+        break;
+      case "agent_reply":
+        replySetText(msg.text);
+        setTyping(null);
+        setStatus("小张说话中", "listening");
+        break;
+      case "tts_segment":
+        replyAddSegment(msg.text, msg.seq);
+        break;
+      case "agent_step":       addStep(msg); break;
+      case "thinking_delta":   onThinkingDelta(msg.text || ""); break;
+      case "thinking_end":     onThinkingEnd(msg); break;
+      case "barge_in":
+        addSysLine((msg.stop_command ? "✂ 喊停：" : "✂ 检测到你说话，已打断播报：") + (msg.partial || ""), msg.stop_command ? "stop" : "barge");
+        setStatus("聆听中（已打断）", "listening");
+        break;
+      case "stop_tts":
+        replyMarkAllCut();
+        // 回报正在播的段序号：服务端假打断恢复据此算"从哪一段续播"
+        if (curPlayingSeq !== null && ws && ws.readyState === WebSocket.OPEN) {
+          try { ws.send(JSON.stringify({ type: "tts_interrupted_at_seq", seq: curPlayingSeq })); } catch (_) {}
+        }
+        stopAllAudio();
+        setStatus("聆听中", "listening");
+        break;
+      case "tts_resume":
+        // 误判打断 → 服务端续播剩余段（新 tts_segment 会重新到达）
+        replyClearCutMarks();
+        addSysLine("↩️ 刚才像是误判了打断，继续播报（" + (msg.count || 0) + " 段）", "ok");
+        break;
+      case "turn_timing":
+        addTimingLine(msg);
+        break;
+      case "other_speaker":
+        addSysLine("👤 " + (msg.speaker || "背景") + "：" + msg.text, "other");
+        break;
+      case "speaker_tag":
+        // 说话人标签（注入 agent 的句子带说话人名）
+        break;
+      case "echo_dropped": break;   // 回声静默过滤，不污染对话流
+      case "asr_error":  addSysLine("转写异常：" + msg.message, "err"); break;
+      case "error":
+        addSysLine(msg.message, "err");
+        setStatus("出错", "error");
+        endSession(false);
+        break;
+      case "stopped": break;
+    }
+  };
+  ws.onclose = () => {
+    if (running) { addSysLine("连接已断开", "err"); }
+    endSession(false);
+  };
+  ws.onerror = () => setStatus("连接出错", "error");
+  micBtn.disabled = false;
+}
+
+function endSession(sendStop) {
+  running = false;
+  muteBtn.hidden = true;
+  setMicMuted(false);
+  if (sendStop && ws && ws.readyState === WebSocket.OPEN) {
+    try { ws.send(JSON.stringify({ type: "stop" })); } catch (_) {}
+  }
+  try { if (ws) ws.close(); } catch (_) {}
+  ws = null;
+  stopCapture();
+  stopAllAudio();
+  micBtn.classList.remove("on");
+  micIcon.textContent = "🎙️";
+  micLabel.textContent = "开始对话";
+  micHint.textContent = "点击后允许麦克风权限，随时开口即可";
+  dropPendingUser();
+  setTyping(null);
+  setStatus("未连接");
+}
+
+micBtn.addEventListener("click", () => {
+  if (running) endSession(true);
+  else startSession();
+});
+
+/* ── 设置面板 ── */
+let selectedInstance = "";
+
+async function loadSettings() {
+  try {
+    const r = await fetch("/internal/voice/settings");
+    const d = await r.json();
+    const s = d.settings || {};
+    selectedInstance = d.default_instance || "";
+    const fill = (id, items, value) => {
+      const el = $(id); el.innerHTML = "";
+      for (const it of items) {
+        const o = document.createElement("option");
+        o.value = it.value; o.textContent = it.label;
+        el.appendChild(o);
+      }
+      el.value = value;
+    };
+    fill("setInstance", (d.instances || []).map(i => ({value: i.id, label: i.name})), selectedInstance);
+    fill("setVoice", [{value: "", label: "实例默认"}].concat(d.voices || []), s.tts_voice || "");
+    fill("setSens", d.sensitivities || [], s.barge_sensitivity || "mid");
+    $("setAmbient").value = String(s.ambient !== false);
+    $("setModeNote").value = s.mode_note || "";
+    fill("setRate", (d.rates || []).map(r => ({value: r, label: r === "+0%" ? "正常" : r})), s.tts_rate || "+0%");
+    $("sensMinChars").value = s.sens_min_chars ?? 2;
+    $("sensImmLen").value = s.sens_imm_len ?? 6;
+    $("sensEchoCov").value = s.sens_echo_cov ?? 0.6;
+    $("sensHoldS").value = s.sens_hold_s ?? 2.0;
+    updateSensCustomVis();
+  } catch (e) { console.warn("load settings failed", e); }
+}
+
+$("saveSettings").addEventListener("click", async () => {
+  const instanceChanged = $("setInstance").value !== selectedInstance;
+  const body = {
+    ambient: $("setAmbient").value === "true",
+    tts_voice: $("setVoice").value,
+    tts_rate: $("setRate").value,
+    barge_sensitivity: $("setSens").value,
+    sens_min_chars: Number($("sensMinChars").value),
+    sens_imm_len: Number($("sensImmLen").value),
+    sens_echo_cov: Number($("sensEchoCov").value),
+    sens_hold_s: Number($("sensHoldS").value),
+    mode_note: $("setModeNote").value,
+  };
+  try {
+    const r = await fetch("/internal/voice/settings", {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      selectedInstance = $("setInstance").value;
+      $("titleSub").textContent = ($("setInstance").selectedOptions[0] || {}).label
+        ? (($("setInstance").selectedOptions[0].label) + " · 全双工实时转写") : "全双工实时转写";
+      $("savedTip").classList.add("show");
+      setTimeout(() => $("savedTip").classList.remove("show"), 1600);
+      // 切实例 → 断开重连（eviction 接管）；其他配置 hub 已实时下发
+      if (instanceChanged) {
+        if (running) { endSession(true); setTimeout(() => startSession(), 400); }
+      }
+    }
+  } catch (e) { console.warn("save settings failed", e); }
+});
+
+function updateSensCustomVis() {
+  const custom = $("setSens").value === "custom";
+  document.querySelectorAll(".sens-custom").forEach(el => el.style.display = custom ? "flex" : "none");
+}
+$("setSens").addEventListener("change", updateSensCustomVis);
+
+async function refreshEvents() {
+  try {
+    const r = await fetch("/internal/voice/events");
+    const d = await r.json();
+    const el = $("eventLog");
+    el.innerHTML = "";
+    const KIND_LABEL = {sentence: "📝 成句", echo_drop: "🔇 回声丢弃", interrupt: "✂️ 打断", flush: "📤 注入"};
+    for (const ev of (d.events || []).slice().reverse()) {
+      const line = document.createElement("div");
+      const label = KIND_LABEL[ev.kind] || ev.kind;
+      const extra = ev.coverage !== undefined ? ` 覆盖率${ev.coverage}` : (ev.n !== undefined ? ` ${ev.n}句合并` : "");
+      line.textContent = `[${ev.t}s] ${label}${extra} ${ev.text || ""}`;
+      el.appendChild(line);
+    }
+    if (!el.children.length) el.textContent = "（暂无事件——说话后这里会出现每一步判定）";
+  } catch (e) {}
+}
+let eventTimer = null;
+$("settingsDrawer").addEventListener("transitionend", refreshEvents);
+$("gearBtn").addEventListener("click", () => {
+  const open = $("settingsDrawer").classList.toggle("open");
+  $("gearBtn").classList.toggle("on", open);
+  if (open) { refreshEvents(); eventTimer = setInterval(refreshEvents, 3000); }
+  else if (eventTimer) { clearInterval(eventTimer); eventTimer = null; }
+});
+
+// ── 声纹注册 ──
+// 声纹跟着实例走（voiceprint.npy 存在 apps/<id>/data/），注册/查询都要带上当前选中的实例
+function enrollQS() {
+  const v = ($("setInstance") && $("setInstance").value) || selectedInstance || "";
+  return v ? "?instance=" + encodeURIComponent(v) : "";
+}
+async function checkEnrollStatus() {
+  try {
+    const r = await fetch("/internal/voice/enroll" + enrollQS());
+    const d = await r.json();
+    $("enrollStatus").textContent = d.enrolled ? "✅ 已注册" : "未注册";
+    $("enrollBtn").textContent = d.enrolled ? "重新注册" : "注册声纹";
+  } catch (e) { $("enrollStatus").textContent = "状态未知"; }
+}
+
+$("enrollBtn").addEventListener("click", async () => {
+  const btn = $("enrollBtn"), st = $("enrollStatus");
+  btn.disabled = true;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false } });
+    const ctx = new AudioContext({ sampleRate: 16000 });
+    const src = ctx.createMediaStreamSource(stream);
+    // 用独立 worklet 收 PCM（与主链路同款，不连 destination 零回环）
+    const blob = new Blob([WORKLET_CODE], { type: "application/javascript" });
+    await ctx.audioWorklet.addModule(URL.createObjectURL(blob));
+    const w = new AudioWorkletNode(ctx, "pcm-sender");
+    const chunks = [];
+    w.port.onmessage = (e) => { chunks.push(new Int16Array(e.data)); };
+    src.connect(w);
+    st.textContent = "🎙️ 请正常说话 15 秒…";
+    for (let i = 15; i > 0; i--) { st.textContent = "🎙️ 请正常说话…还剩 " + i + " 秒"; await new Promise(r => setTimeout(r, 1000)); }
+    stream.getTracks().forEach(t => t.stop());
+    ctx.close();
+    const total = chunks.reduce((s, c) => s + c.length, 0);
+    const pcm = new Int16Array(total);
+    let off = 0;
+    for (const c of chunks) { pcm.set(c, off); off += c.length; }
+    st.textContent = "上传中…";
+    const resp = await fetch("/internal/voice/enroll" + enrollQS(), { method: "POST", body: pcm.buffer });
+    const d = await resp.json();
+    st.textContent = d.ok ? "✅ 注册成功" : "❌ 注册失败（" + (d.error || "音频不足") + "）";
+  } catch (e) {
+    st.textContent = "❌ " + (e.message || "注册失败");
+  }
+  btn.disabled = false;
+  checkEnrollStatus();
+});
+
+checkEnrollStatus();
+loadSettings();
+loadHistory();
+</script>
+</body>
+</html>

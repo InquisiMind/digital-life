@@ -20,6 +20,8 @@ def test_peer_subscription_roundtrip(tmp_path, monkeypatch):
     """sync_subscriptions 应该从 instances.yaml + chat_ids 推导生成。
 
     用 monkeypatch 简化:不走真实 instances.yaml,直接测 save/load。"""
+    # save_subscriptions 写 apps/{iid}/config/——隔离项目根，别污染真实 apps/
+    monkeypatch.setattr("infrastructure.config.get_project_root", lambda: tmp_path)
     subs_in = {
         "oc_test_group": B.Subscription(
             chat_id="oc_test_group",

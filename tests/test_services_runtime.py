@@ -537,11 +537,12 @@ def test_project_bootstrap_with_social_circle(service_env, project_template):
     pid = result["project"]["project_id"]
     a, b = result["services"]
 
-    # 项目行 + PM + 成员表
+    # 项目行 + PM + 成员表（PM 行在声明清单后追加岗位固有三件套，台账=实见）
     assert result["project"]["pm_id"] == a["service_id"]
     assert a["tools"] == ["sense_project_peers", "send_chat_message",
                           "project_file_write", "deliver_to_shared",
-                          "project_todo_create"]
+                          "project_todo_create",
+                          "project_complete", "resume_project", "suspend_project"]
     assert b["tools"] is None  # 未配置=默认全量
     assert len(projects_registry.list_project_members(pid)) == 2
 
@@ -684,6 +685,50 @@ def test_workspace_personal_shared_deliver(service_env, project_template):
     assert q.read_text(encoding="utf-8") == "v2"
 
 
+def test_pm_lifecycle_tools_inherent_to_role(service_env, project_template):
+    """PM 三件套是岗位固有，不依赖模板清单（2026-10-20 咨询4 事故：ai_strategy_4
+    的 PM 清单只有 suspend，撞进挂起态后"没有 resume 工具"是真的）。
+
+    - 模板 PM 清单缺三件套 → 授予与服务行（台账）都补齐，台账=实见
+    - 非 PM 成员不因岗位身份获得（乙是 None → 全量，另造一个带清单的非 PM 验证）
+    - PATCH 配置重写 PM 清单仍保三件套（apply_role_face 是唯一写口）
+    """
+    from business.consulting.tool_face import (
+        PM_LIFECYCLE_TOOLS, apply_role_face, is_project_pm,
+    )
+    from domain import tool_visibility as tv
+    from infrastructure.persistence import services_registry as sr
+
+    result = _create_duo(service_env)
+    pm, other = result["services"]
+    pid = result["project"]["project_id"]
+
+    assert is_project_pm(pm["service_id"]) is True
+    assert is_project_pm(other["service_id"]) is False
+    assert PM_LIFECYCLE_TOOLS <= set(tv.durable_grants(pm["service_id"])["role"])
+    row = sr.lookup_service(pm["service_id"])
+    assert PM_LIFECYCLE_TOOLS <= set(row["tools"])          # 台账补齐
+    assert pm["tools"] == row["tools"]                       # 返回快照与台账一致
+    assert row["tools"][:5] == [                             # 声明顺序保留，三件套追加在尾
+        "sense_project_peers", "send_chat_message", "project_file_write",
+        "deliver_to_shared", "project_todo_create",
+    ]
+
+    # 非 PM 带显式清单：不并入三件套
+    from domain.service import create_service
+
+    c = create_service("echo-def", display_name="丙")["service_id"]
+    sr.update_service_fields(c, project_id=pid)
+    apply_role_face(c, ["send_chat_message", "project_file_read"])
+    assert set(tv.durable_grants(c)["role"]) == {"send_chat_message", "project_file_read"}
+    assert sr.lookup_service(c)["tools"] == ["send_chat_message", "project_file_read"]
+
+    # PATCH 路径：管理员把 PM 清单改窄，三件套照样在
+    apply_role_face(pm["service_id"], ["send_chat_message"])
+    assert set(tv.durable_grants(pm["service_id"])["role"]) == {"send_chat_message"} | PM_LIFECYCLE_TOOLS
+    assert sr.lookup_service(pm["service_id"])["tools"] == ["send_chat_message", *sorted(PM_LIFECYCLE_TOOLS)]
+
+
 def test_todo_tools_and_tool_face(service_env, project_template):
     from business.consulting.tool_face import SERVICE_PROJECT_TOOLS, service_only_tools_hidden
     from domain import tool_visibility as tv
@@ -694,11 +739,14 @@ def test_todo_tools_and_tool_face(service_env, project_template):
     a, b = result["services"]
     pid = result["project"]["project_id"]
 
-    # 岗位面=授予：PM 按模版收紧、乙未配置→全量协作工具集、实例无授予
-    assert set(tv.durable_grants(a["service_id"]).get("role", [])) == {
+    # 岗位面=授予：PM 按模版收紧 + 岗位固有三件套、乙未配置→全量协作工具集、实例无授予
+    from business.consulting.tool_face import PM_LIFECYCLE_TOOLS
+
+    pm_declared = {
         "sense_project_peers", "send_chat_message", "project_file_write",
         "deliver_to_shared", "project_todo_create",
     }
+    assert set(tv.durable_grants(a["service_id"]).get("role", [])) == pm_declared | PM_LIFECYCLE_TOOLS
     assert set(tv.durable_grants(b["service_id"]).get("role", [])) == set(SERVICE_PROJECT_TOOLS)
     assert tv.durable_grants("11111111-1111-1111-1111-111111111111") == {}
     assert service_only_tools_hidden("11111111-1111-1111-1111-111111111111") is True
@@ -924,7 +972,36 @@ def test_quiet_signaler(service_env, project_template):
     assert service_runner.run_quiet_signaler() == 0
 
 
-def test_loop_fires_due_alarms_respects_subscription(service_env):
+def _emit_due_in_service(root, sid: str, kind: str, payload: dict) -> None:
+    """在服务身份下直接落一条已到期事件（绕过 emit_to_service 的订阅闸——
+    模拟 worker 内 set_alarm / 系统直发这类不走外部投递口的来源）。"""
+    from infrastructure.config import set_current_instance_id, reset_current_instance_id
+    from domain.lifecycle.events import (
+        emit_event, set_instance_context, reset_instance_context,
+        set_wake_suppressed, reset_wake_suppressed,
+    )
+
+    cfg = set_current_instance_id(sid)
+    evt = set_instance_context(sid)
+    sup = set_wake_suppressed(True)
+    try:
+        from domain.lifecycle.affairs.runtime import init_db
+
+        init_db()
+        emit_event(kind=kind, payload=payload)
+    finally:
+        reset_wake_suppressed(sup)
+        reset_instance_context(evt)
+        reset_current_instance_id(cfg)
+
+
+def test_loop_fires_due_alarms_without_timer_subscription(service_env):
+    """自设闹钟到期永远拉起（SERVICE_WAKE_KINDS）；其余未订阅 kind 到期仍不拉起。
+
+    2026-10-20 事故：模板创建的服务从未订阅 timer，PM 的 rest 闹钟到期后躺了
+    4 分半，直到群消息恰好到来才被合批捎醒。rest 对服务承诺"预计 X 醒来"，
+    调度闸必须兜住这个承诺——闹钟只能由服务自己设，到期叫醒自己不该看订阅表。
+    """
     from domain.lifecycle.clock import now_dt
     from domain.service import create_service
     from infrastructure.persistence import services_registry as sr
@@ -933,6 +1010,7 @@ def test_loop_fires_due_alarms_respects_subscription(service_env):
     root = service_env
     _make_def(root)
     sid = create_service("echo-def")["service_id"]
+    assert "timer" not in (sr.lookup_service(sid) or {}).get("subscriptions")
 
     # 在服务上下文里设一个已到期的 timer（模拟 agent 自设 rest 闹钟到点）
     from infrastructure.config import set_current_instance_id, reset_current_instance_id
@@ -961,16 +1039,18 @@ def test_loop_fires_due_alarms_respects_subscription(service_env):
     conn.close()
     assert timer_events == 1
 
-    # 订阅闸（默认只认消息类）：timer 到期也不拉起
+    # 未订阅 timer（默认订阅只有 message）—— 到期闹钟依然拉起
     spawned: list[str] = []
     loop = ServiceWorkerLoop(stale_seconds=3600, spawn=lambda s: (spawned.append(s), _FakeProc())[1])
-    assert loop.tick() == []
-    assert spawned == []
-
-    # 订阅 timer 后 → 拉起
-    sr.update_service_fields(sid, subscriptions=["message", "timer"])
     assert loop.tick() == [sid]
     assert spawned == [sid]
+
+    # 对照：其余未订阅 kind 到期仍被订阅闸拦住，不拉起；显式订阅后才拉起
+    sid2 = create_service("echo-def")["service_id"]
+    _emit_due_in_service(root, sid2, "project_quiet", {"project_id": "p1"})
+    assert loop.tick() == []
+    sr.update_service_fields(sid2, subscriptions=["message", "project_quiet"])
+    assert loop.tick() == [sid2]
 
 
 # ── C14 转译层（PRD v0.2 场景走查头号漏项） ───────────────────────────
@@ -1052,3 +1132,79 @@ def test_unlock_notifies_assignee(service_env, project_template):
     hits = [e for e in emitted if e[0] == worker and e[1] == "todo_assigned"]
     assert hits and hits[0][2]["action"] == "前置已满足，轮到你了"
     assert "S04 战略判断" in hits[0][2]["title"]
+
+
+def test_unlock_detail_is_template_defined_only(service_env, project_template):
+    """解锁通知的任务明细 = 任务自身（模版定义）的 detail，原样透传。
+
+    2026-10-28 zhp：不再拼"前置…已解锁"话术，更不允许 _STAGE_SKILL
+    硬编码映射拼"方法论：先 skill_view(...)"机制提示。
+    """
+    from unittest.mock import patch
+
+    result = _create_duo(service_env, customer={"id": "cust-9", "name": "客户"})
+    pid = result["project"]["project_id"]
+    pm, worker = result["pm_service_id"], result["services"][1]["service_id"]
+
+    tpl_detail = "Q1-Q10 行业地图与目标企业公开现状；EXT-F 事实条目+时效表；产出 01-external-neutral.md"
+    t1 = projects_registry.create_project_todo(pid, "S01 需求与材料边界",
+                                               assignee_id=pm, status="open")
+    t2 = projects_registry.create_project_todo(
+        pid, "S02 公司与行业研究", detail=tpl_detail, assignee_id=worker,
+        depends_on=["S01 需求与材料边界"], status="blocked")
+
+    emitted = []
+    with patch("domain.service.emit_to_service",
+               lambda sid, kind, payload=None, **kw: emitted.append((sid, kind, payload)) or 1):
+        assert projects_registry.update_project_todo(
+            t1["todo_id"], status="done", actor=pm)
+
+    hits = [e for e in emitted if e[0] == worker and e[1] == "todo_assigned"]
+    assert hits, "解锁通知缺失"
+    detail = hits[0][2]["detail"]
+    assert detail == tpl_detail, f"明细须原样透传模版定义，实际: {detail!r}"
+    assert "方法论" not in detail and "skill_view" not in detail
+    assert "已解锁" not in detail
+
+
+def test_project_completion_requests_analyst_retro(service_env, project_template):
+    """项目完成 → 项目里的复盘分析师收到 project_completed 事件（v1 自动复盘触发器）。
+
+    分析师按 def 识别（consulting-trace-analyst-def）；没配分析师的项目不发。
+    事件订阅自动补齐。
+    """
+    from unittest.mock import patch
+
+    from business.consulting import governance, projects_registry
+    from infrastructure.config import set_current_instance_id, reset_current_instance_id
+    from infrastructure.persistence import services_registry
+
+    # 建分析师 def + 服务，挂进项目
+    def_dir = service_env / "apps" / "consulting-trace-analyst-def" / "config"
+    def_dir.mkdir(parents=True)
+    (def_dir / "app.yaml").write_text(
+        "runtime_kind: definition\ndisplay_name: 执行复盘分析师\n", encoding="utf-8")
+    result = _create_duo(service_env, customer={"id": "cust-9", "name": "客户"})
+    pid = result["project"]["project_id"]
+    svc = services_registry.create_service(
+        "consulting-trace-analyst-def", display_name="执行复盘分析师")
+    sid = svc["service_id"]
+    projects_registry.add_project_member(pid, sid, role="复盘分析师")
+
+    emitted = []
+    with patch("domain.service.emit_to_service",
+               lambda s_, k, payload=None, **kw: emitted.append((s_, k, payload)) or 1):
+        r = governance.complete_project(pid, reason="客户确认交付完成", actor=pm_sid_of(result))
+        assert r.get("ok"), r
+
+    hits = [e for e in emitted if e[0] == sid and e[1] == "project_completed"]
+    assert hits, "分析师未收到复盘请求"
+    payload = hits[0][2]
+    assert payload["project_name"] and payload["reason"] == "客户确认交付完成"
+    # 订阅自动补齐
+    row = services_registry.lookup_service(sid) or {}
+    assert "project_completed" in (row.get("subscriptions") or [])
+
+
+def pm_sid_of(result):
+    return result["pm_service_id"]

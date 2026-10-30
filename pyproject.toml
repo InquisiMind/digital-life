@@ -27,6 +27,17 @@ dependencies = [
 
 [project.optional-dependencies]
 # Capability tier——例：图像识别、语音、量化。非核心运行可装。
+# 文档文本抽取（客户上传附件 → .extract.md 旁路）。pdfminer 为主力 PDF
+# 引擎（CMap 兼容好，港交所系中文 PDF 不乱码），pypdf 仅兜底；docx/xlsx/
+# pptx 同一抽取链。曾长期为软依赖靠 ad-hoc 安装，2026-10-20 乱码事故后
+# 转正：新机器 uv sync --extra documents 即得。
+documents = [
+    "pdfminer.six>=20240506",
+    "pypdf>=4.0",
+    "python-docx>=1.1",
+    "openpyxl>=3.1",
+    "python-pptx>=1.0",
+]
 capabilities = [
     "numpy>=1.26",
     "opencv-python>=4.9",

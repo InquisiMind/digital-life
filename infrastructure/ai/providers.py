@@ -15,9 +15,14 @@
   字段上天然同名（各家官方文档明确），一份抽取逻辑覆盖。
   OpenAI o 系列走 message.reasoning.summary，专属子类处理。
 
-思考强度（customize_payload / reasoning_effort）：
-  GLM 原生 5 档；OpenAI o 系列自动收敛到 low/medium/high；其它家族不识别该字段，
-  payload 不带，避免某些严格模式（OpenAI o1）报 400。
+思考深度（customize_payload / reasoning_effort）：
+  产品只认三档 quick / standard / deep（人的基本配置 agent.reasoning_depth），
+  厂商值是各家族声明的 depth_map：GLM/StepFun low/high/xhigh；OpenAI o 系
+  low/medium/high；其它家族不识别该字段，payload 不带，避免严格模式 400。
+  网关值域与家族不同时（newapi 只认 low/high/max）用配置 model.reasoning_depth_map
+  覆盖单档，声明错了就 400 一次改一次——不做运行时自学映射（会把配置错误藏起来）。
+  运行时没有任何场景规则：每次调用的深度 = 这个人的基本档（2026-10-20 zhp 定稿，
+  旧 think_cycle 状态机 A/B/C 入口与 effort_domain 自学已退役）。
 
 Claude：
   原生 api.anthropic.com 走 /v1/messages 而非 OpenAI /chat/completions，
@@ -29,6 +34,15 @@ Claude：
 from __future__ import annotations
 
 from typing import Any, Mapping, Protocol
+
+# 产品层思考深度三档（人的基本配置 agent.reasoning_depth 的值域）
+REASONING_DEPTHS: tuple[str, ...] = ("quick", "standard", "deep")
+DEFAULT_REASONING_DEPTH = "standard"
+REASONING_DEPTH_LABELS: Mapping[str, str] = {
+    "quick": "快答",
+    "standard": "标准",
+    "deep": "深思",
+}
 
 
 class LLMProvider(Protocol):
@@ -75,6 +89,12 @@ class _BaseProvider:
     # "继续升级 lesson"。每个家族按自身对历史 reasoning 的"服从度"独立设：
     # GLM-5.2 实测可以 5 轮不漂移；StepFun Flash 累积效应更强，限制到 3 轮。
     reuse_max_rounds: int = 10
+    # 产品三档 → 本家族 reasoning_effort 值。None = 家族不识别该字段，payload 不带。
+    depth_map: Mapping[str, str] | None = None
+    # 本家族端点是否支持 SSE 流式 chat/completions（agent._chat 据此选流式路径，
+    # 语音会话的"边生成边按句 TTS"依赖它）。默认 True：OpenAI-compatible 端点
+    # 基本都有；个别家族（o1 老流式约束）显式关。
+    supports_stream: bool = True
 
     def extract_reasoning(self, message: Mapping[str, Any]) -> str:
         """国内主流模型（GLM/DeepSeek/Qwen/Kimi）出站 reasoning_content 字段同名。
@@ -140,8 +160,23 @@ class _BaseProvider:
         *,
         reasoning_config: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """默认：不修改 payload。带 reasoning_effort 字段的家族自行覆盖。"""
-        return dict(payload)
+        """按 depth_map 把产品档位写成本家族的 reasoning_effort；无 depth_map 不带字段。
+
+        reasoning_config = {"depth": quick|standard|deep, "depth_map"?: {...}}，
+        depth_map 是配置层对单档的覆盖（网关值域与家族不同时用，如 newapi deep→max）。
+        """
+        out = dict(payload)
+        if self.depth_map is None or not reasoning_config:
+            return out
+        depth = str(reasoning_config.get("depth") or "").strip()
+        if depth not in self.depth_map:
+            return out
+        override = reasoning_config.get("depth_map")
+        mapped = ""
+        if isinstance(override, Mapping):
+            mapped = str(override.get(depth) or "").strip()
+        out["reasoning_effort"] = mapped or self.depth_map[depth]
+        return out
 
 
 class GLMProvider(_BaseProvider):
@@ -162,18 +197,9 @@ class GLMProvider(_BaseProvider):
     # GLM-5.2 实测可以维持 5 轮 reasoning 跨轮延续而不漂移；更多轮易让早期思考
     # 在长 context 里反复出现、误导当前决策。
     reuse_max_rounds = 5
-
-    def customize_payload(
-        self,
-        payload: dict[str, Any],
-        *,
-        reasoning_config: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """GLM：reasoning_effort 字段原生支持（minimal/low/medium/high/xhigh）。"""
-        out = dict(payload)
-        if reasoning_config and reasoning_config.get("effort"):
-            out["reasoning_effort"] = reasoning_config["effort"]
-        return out
+    # 原生五档 minimal/low/medium/high/xhigh；产品只用三个：medium 在 newapi
+    # 类网关上不存在（曾被 400 后悄悄映射成 high），标准档直接取 high。
+    depth_map = {"quick": "low", "standard": "high", "deep": "xhigh"}
 
 
 class StepFunProvider(_BaseProvider):
@@ -192,6 +218,28 @@ class StepFunProvider(_BaseProvider):
     # 案例：10 轮累积导致 25 轮 LLM 调用全在执行"继续升级 lesson"的自我指令）。
     # 收紧到 3 轮：足够延续近期思路，又限制累积效应。
     reuse_max_rounds = 3
+    # 与 GLM 同协议透传（五档实测均不报错，内部用法未公开）
+    depth_map = {"quick": "low", "standard": "high", "deep": "xhigh"}
+
+
+class DeepSeekProvider(_BaseProvider):
+    """DeepSeek 官方端点家族（deepseek-chat / deepseek-flash / v4 系列）。
+
+    2026-10-28 实测接入（语音小张 deepseek-flash）踩的三个坑全部在此消化：
+      1. 历史里 assistant 消息带 reasoning_content → 400（"must be passed
+         back"）→ 出站剥掉（与 DeepSeek-Reasoner 官方要求一致）。
+      2. V4 系默认思考模式，payload 以 tool 消息结尾（agent 工具循环标准
+         形状）时要求回传思考 → 400。语音场景本来就要快 → 固定
+         ``thinking: {"type": "disabled"}``。要开思考需另立方案（回传
+         reasoning 或换端点），不要在这里偷偷打开。
+      3. 不认 reasoning_effort 字段 → 不带。
+    流式：官方 SSE 完全 OpenAI 兼容（supports_stream=True，含 usage chunk）。
+    """
+
+    name = "deepseek"
+    thinking_keep_mode = "drop"
+    depth_map = None
+    supports_stream = True
 
     def customize_payload(
         self,
@@ -199,11 +247,17 @@ class StepFunProvider(_BaseProvider):
         *,
         reasoning_config: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """StepFun：透传 reasoning_effort（与 GLM 同协议）。"""
-        out = dict(payload)
-        if reasoning_config and reasoning_config.get("effort"):
-            out["reasoning_effort"] = reasoning_config["effort"]
-        return out
+        payload = dict(payload)
+        payload.pop("reasoning_effort", None)
+        payload["thinking"] = {"type": "disabled"}
+        # 出站剥历史 reasoning_content（DS 400）。messages 为 list[dict]，
+        # 就地去键；非 dict 项（理论不该有）跳过。
+        msgs = payload.get("messages")
+        if isinstance(msgs, list):
+            for m in msgs:
+                if isinstance(m, dict):
+                    m.pop("reasoning_content", None)
+        return payload
 
 
 class GenericOpenAIProvider(_BaseProvider):
@@ -234,6 +288,10 @@ class OpenAIReasoningProvider(_BaseProvider):
 
     name = "openai_reasoning"
     thinking_keep_mode = "drop"
+    # 值域窄：low / medium / high（不支持 minimal/xhigh）
+    depth_map = {"quick": "low", "standard": "medium", "deep": "high"}
+    # o 系流式约束多（旧版不支持 stream），保持非流式走已验证路径
+    supports_stream = False
 
     def extract_reasoning(self, message: Mapping[str, Any]) -> str:
         """OpenAI o1: 拿 message.reasoning.summary（字符串）。"""
@@ -248,26 +306,6 @@ class OpenAIReasoningProvider(_BaseProvider):
             return summary.strip()
         # fallback 走 base 的 reasoning_content（应对 OpenAI 兼容代理转译）
         return super().extract_reasoning(message)
-
-    def customize_payload(
-        self,
-        payload: dict[str, Any],
-        *,
-        reasoning_config: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """OpenAI o1: reasoning_effort 重映射 GLM 5 档 → OpenAI 3 档。"""
-        out = dict(payload)
-        if reasoning_config and reasoning_config.get("effort"):
-            effort = reasoning_config["effort"]
-            mapping = {
-                "minimal": "low",
-                "low": "low",
-                "medium": "medium",
-                "high": "high",
-                "xhigh": "high",
-            }
-            out["reasoning_effort"] = mapping.get(effort, "medium")
-        return out
 
 
 # 简易工厂：按 model name 推断家族。
@@ -284,6 +322,8 @@ def resolve_provider(model: str) -> LLMProvider:
         return OpenAIReasoningProvider()
     if "glm" in m:
         return GLMProvider()
+    if "deepseek" in m or m.startswith("ds-"):
+        return DeepSeekProvider()
     if m.startswith("step-") or "stepfun" in m:
         # step-3 / step-3.5-flash / step-3.7-flash / step-2-16k 等。
         # 区分于 OpenAI 兼容代理里可能出现的其它 "step" 子串，用 "step-" 前缀+ "stepfun" 双重匹配。
@@ -296,9 +336,13 @@ def resolve_provider(model: str) -> LLMProvider:
 
 
 __all__ = [
+    "DEFAULT_REASONING_DEPTH",
+    "REASONING_DEPTHS",
+    "REASONING_DEPTH_LABELS",
     "LLMProvider",
     "GLMProvider",
     "StepFunProvider",
+    "DeepSeekProvider",
     "GenericOpenAIProvider",
     "OpenAIReasoningProvider",
     "resolve_provider",

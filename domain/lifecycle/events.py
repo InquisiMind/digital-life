@@ -170,6 +170,20 @@ def _caller_summary() -> list[str]:
         return ["?"]
 
 
+# accumulate 合并的正文提取字段链：群/私聊= text，语音= transcript/summary。
+# 顺序即优先级，第一个非空者作为该事件的"正文本体"。
+_CONTENT_FIELDS = ("text", "last_sent_text", "transcript", "summary")
+
+
+def _content_of(payload: Dict) -> str:
+    """从事件 payload 提取正文本体（str，无内容返回空串）。"""
+    for fld in _CONTENT_FIELDS:
+        v = payload.get(fld)
+        if v:
+            return str(v)
+    return ""
+
+
 def _apply_debounce(kind: str, payload: Dict, fire_at: Optional[str]) -> Optional[int]:
     """防抖合并 — 窗口期内同类型事件合并为一条，避免事件风暴。
 
@@ -248,35 +262,51 @@ def _apply_debounce(kind: str, payload: Dict, fire_at: Optional[str]) -> Optiona
                 texts = merged.get("_merged_texts", [])
                 if not isinstance(texts, list):
                     texts = []
-                new_sender = payload.get("sender_name") or payload.get("sender_id") or "?"
-                new_text = payload.get("text") or payload.get("last_sent_text") or ""
+                # 内容字段按事件类型各不相同（2026-10-30 语音合批通用化）：
+                # 群/私聊是 text，语音是 transcript/summary。按序取第一个非空，
+                # 让 accumulate 对任何"带正文本体"的事件类型都成立。
+                new_text = _content_of(payload)
+                new_sender = payload.get("sender_name") or payload.get("sender_id") or ""
                 # 归档现有主文本(风暴延后后多级合并成为常态:延后事件的主字段
                 # 会被后续合并覆盖,不归档该条就从 batch 视图里消失了)
-                old_text = str(existing_payload.get("text") or "")
+                old_text = _content_of(existing_payload)
                 old_sender = str(
                     existing_payload.get("sender_name")
                     or existing_payload.get("sender_id")
-                    or "?"
+                    or ""
                 )
                 if old_text and old_text != new_text and not any(t.get("text") == old_text for t in texts):
-                    texts.append({"sender": old_sender, "text": old_text[:200]})
+                    texts.append({"sender": old_sender, "text": old_text[:200],
+                                  "at": str(existing_payload.get("at") or "")})
                 if new_text:
-                    texts.append({"sender": new_sender, "text": new_text[:200]})
+                    texts.append({"sender": new_sender, "text": new_text[:200],
+                                  "at": str(payload.get("at") or "")})
                 # 不设条数上限——按你的设计"按时间区间累积,不看消息数量"
                 merged["_merged_texts"] = texts
-                # 保留最新发送者信息(main text/sender 字段仍指最新的一条,
+                # 保留最新发送者信息(main 字段仍指最新的一条,
                 # wake_prompt 主行用最新那条,真正 batch 历史走 _merged_texts)
-                if "sender_name" in payload:
-                    merged["sender_name"] = payload["sender_name"]
-                if "text" in payload:
-                    merged["text"] = payload["text"]
+                for fld in ("sender_name", "text", "transcript", "summary", "at"):
+                    if fld in payload:
+                        merged[fld] = payload[fld]
 
-            conn.execute(
+            cur = conn.execute(
                 "UPDATE events SET payload = ?, created_at = ? "
-                "WHERE event_id = ? AND (channel LIKE ? OR channel IS NULL)",
+                "WHERE event_id = ? AND consumed_at IS NULL "
+                "AND (channel LIKE ? OR channel IS NULL)",
                 (json.dumps(merged, ensure_ascii=False), now_iso(),
                  existing_id, instance_channel + "%"),
             )
+            if cur.rowcount == 0:
+                # 消费竞态守卫：SELECT 与 UPDATE 之间目标事件恰好被消费
+                # （唤醒即触发 / mid-session 模型接走）——合并进一条已消费的
+                # 事件等于把新内容扔进黑洞（返回 merged_id 但永远没人再读它）。
+                # 让位给正常 INSERT 路径，新内容自成一条新事件。
+                logger.info(
+                    "EMIT_DEBOUNCE_RACE kind=%s event_id=%d consumed mid-merge "
+                    "→ insert fresh",
+                    kind, existing_id,
+                )
+                return None
             logger.info(
                 "EMIT_DEBOUNCE_MERGED kind=%s event_id=%d policy=%s merged_count=%d "
                 "window_s=%d channel_prefix=%r",

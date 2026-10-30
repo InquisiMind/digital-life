@@ -30,36 +30,53 @@ def test_perception_signal_not_in_manual_path():
 
 
 def test_render_perception_signal_uses_yaml_template():
-    """渲染 perception_signal 走 yaml 模板，summary 内容出现在结果里。"""
+    """渲染 perception_signal 走 yaml 模板：transcript 正文 + 注入头 + 事件 id。
+
+    2026-10-28 语音会话改造：模板从 hotkey 摘要版（summary/media_path/sense_media
+    提示）换成语音听觉信号版（{transcript} + {voice_mode_note}）；
+    2026-10-30 语音合批再补 {_merged_texts_block}。
+    """
     ev = {
         "event_id": 999,
         "kind": "perception_signal",
-        "display_name": "感知信号",
+        "display_name": "人类呼唤",
         "payload": {
-            "source": "hotkey_screen",
+            "source": "voice_session",
             "summary": "屏幕显示某股票行情现价10.5元",
+            "transcript": "你好小张，帮我看下行情",
             "media_path": "/tmp/cap.png",
             "ok": True,
         },
     }
     out = _render_signal_message(ev)
-    # summary 全文应在渲染结果里（不是只显示 ID+类型）
-    assert "股票行情现价10.5元" in out
-    # media_path 回看指引在
-    assert "/tmp/cap.png" in out
+    # transcript 正文在（不是只显示 ID+类型）
+    assert "你好小张，帮我看下行情" in out
     # event id 在
     assert "#999" in out
 
 
-def test_render_perception_signal_has_sense_media_hint():
-    """渲染结果应提示用 sense_media 回看（来自 yaml wake_prompt 模板）。"""
+def test_render_perception_signal_merged_lines_visible():
+    """语音合批渲染（2026-10-30）：_merged_texts 的逐句内容+时间标注进注入文本。"""
     ev = {
-        "event_id": 1,
+        "event_id": 1000,
         "kind": "perception_signal",
-        "payload": {"source": "x", "summary": "y", "media_path": "/tmp/z.png"},
+        "payload": {
+            "source": "voice_session",
+            "transcript": "今天怎么样",
+            "reply_channel": "voice",
+            "at": "2026-10-30T11:00:09+08:00",
+            "_merged_count": 3,
+            "_merged_texts": [
+                {"sender": "", "text": "你好", "at": "2026-10-30T11:00:01+08:00"},
+                {"sender": "", "text": "你在么", "at": "2026-10-30T11:00:05+08:00"},
+            ],
+        },
     }
     out = _render_signal_message(ev)
-    assert "sense_media" in out
+    assert "今天怎么样" in out, "主行 = 最新一句"
+    assert "你好" in out and "你在么" in out, "合并历史逐句可见"
+    assert "11:00:01" in out and "11:00:05" in out, "逐条时间标注"
+    assert "之前合并的 2 条消息" in out
 
 
 def test_render_perception_signal_includes_transcript_when_present():

@@ -118,6 +118,8 @@ def emit_segment_to_instance(
     transcript: str,
     audio_path: str,
     config: PerceptionConfig,
+    *,
+    extra_payload: dict | None = None,
 ) -> int | None:
     """把一段语音转写作为 perception_signal 事件发给目标实例。
 
@@ -126,6 +128,8 @@ def emit_segment_to_instance(
       - ``set_instance_context``（事件 channel 隔离）
 
     payload 标记 ``reply_channel="voice"`` 让实例的回复走 TTS。
+    ``extra_payload`` 并入 payload（网页语音会话用它带 ``quick_first_reply``
+    等唤醒行为标记）。
     """
     try:
         from domain.lifecycle.events import emit_event, set_instance_context
@@ -134,14 +138,25 @@ def emit_segment_to_instance(
         set_current_instance_id(instance_id)
         set_instance_context(instance_id)
 
-        event_id = emit_event("perception_signal", {
+        try:
+            from domain.lifecycle.clock import beijing_now_dt
+            at = beijing_now_dt().isoformat(timespec="seconds")
+        except Exception:
+            at = ""
+        payload = {
             "source": "voice_session",
             "summary": transcript or "（语音转写为空）",
             "transcript": transcript,
             "media_path": audio_path,
             "ok": bool(transcript),
             "reply_channel": "voice",
-        })
+            # 到达时刻（与 message 事件同字段同名）：合批后逐条时间标注、
+            # 注入侧 spoken_delay 延迟提醒都靠它
+            "at": at,
+        }
+        if extra_payload:
+            payload.update(extra_payload)
+        event_id = emit_event("perception_signal", payload)
         logger.info("voice segment routed to %s: event_id=%d transcript=%s",
                     instance_id[:8], event_id, (transcript or "")[:40])
         return event_id

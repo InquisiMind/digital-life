@@ -15,3 +15,26 @@ quiet_hours:
   start: '23:00'
   end: 08:00
 default_instance: ''
+web_voice:
+  default_instance: 6f307170-b126-48d5-b549-663545a2c061
+  ambient: true
+  tts_voice: ''
+  barge_sensitivity: high
+  mode_note: ''
+  stream_asr:
+    provider: iflytek_rtasr
+    app_id: 24bc2790
+    api_key: dad87d87be250e18c9430098d2bc4ef7
+    api_secret: YTkyNGZhMDY0NGY4MWUzZWI5MWZmNzJk
+  voxcpm:
+    url: ws://172.31.3.159:18083/ws/tts
+    api_key: test
+    voice: cs_lora_refmix
+    quality: standard
+  tts_rate: +0%
+  sens_min_chars: 2
+  sens_imm_len: 6
+  sens_imm_cov: 0.35
+  sens_echo_cov: 0.6
+  sens_hold_s: 0.8
+  sens_energy_gate_db: -45.0

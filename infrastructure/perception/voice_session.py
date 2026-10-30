@@ -113,9 +113,15 @@ def _find_silero_onnx() -> Path:
             if cand.exists():
                 return cand.resolve()
 
+    # 3. 兜底：仓库自带模型（2026-10-30 web-voice VAD 落地时下载，
+    #    与 silero-vad pip 包同权重文件，热键链路不再强依赖 pip 包）
+    repo_model = Path(__file__).resolve().parents[2] / "models" / "vad" / _SILERO_ONNX_FILENAME
+    if repo_model.exists():
+        return repo_model
+
     raise FileNotFoundError(
         "找不到 silero_vad.onnx —— 请安装 silero-vad 包（pip install silero-vad），"
-        "其自带 ONNX 权重，无需联网下载。"
+        "或将权重放到 models/vad/silero_vad.onnx。"
     )
 
 
@@ -164,13 +170,22 @@ class VADSegmenter:
 
         mp = str(model_path) if model_path else str(_find_silero_onnx())
         self._sess = ort.InferenceSession(mp, providers=["CPUExecutionProvider"])
-        self._state = np.zeros((2, 1, 128), dtype=np.float32)
-        self._sr_arr = np.array(sample_rate, dtype=np.int64)
-        # Silero VAD 要求在每帧前拼 64 样本的"上下文"（上一帧的最后 64 样本）。
-        # 官方 Python API 的 __call__ 里做了 x = cat([context, x])。
-        # 没这个 context padding，模型输出恒为 ~0.0005（全判静音）。
-        self._context_size = 64  # 16kHz 时的 context 大小
-        self._context = np.zeros((1, self._context_size), dtype=np.float32)
+        # 模型两代 API 自适应（2026-10-30）：仓库 models/vad/ 与 sherpa-onnx 配套
+        # 权重是 v4（x/h/c，x=原始 512 样本，状态 [2,1,64]）；silero-vad pip
+        # 新包是 v5（input/state/sr，input=512+64 上下文拼接，状态 [2,1,128]）。
+        # 此前代码只写了 v5 喂法，pip 包没装时被 skip 掩盖——模型落到仓库后暴露。
+        input_names = {i.name for i in self._sess.get_inputs()}
+        self._v5_api = "input" in input_names
+        if self._v5_api:
+            self._state = np.zeros((2, 1, 128), dtype=np.float32)
+            self._sr_arr = np.array(sample_rate, dtype=np.int64)
+            # v5 要求每帧前拼 64 样本上下文（官方 __call__ 的 cat([context, x])）
+            self._context_size = 64
+            self._context = np.zeros((1, self._context_size), dtype=np.float32)
+        else:
+            # v4：x 直接喂原始 512 样本（上下文在 c 状态里）；h/c [2,1,64]
+            self._h = np.zeros((2, 1, 64), dtype=np.float32)
+            self._c = np.zeros((2, 1, 64), dtype=np.float32)
 
         # 状态机
         self._in_speech = False
@@ -204,20 +219,29 @@ class VADSegmenter:
 
     def _process_block(self, block: np.float32) -> None:
         """判定一帧（512 样本）并更新状态机。"""
-        # 官方 API 的关键预处理：在 512 样本前拼 64 样本的上下文 → 576 样本输入
-        x = np.concatenate([self._context, block.reshape(1, -1)], axis=1).astype(np.float32)
-        out = self._sess.run(
-            ["output", "stateN"],
-            {
-                "input": x,
-                "state": self._state,
-                "sr": self._sr_arr,
-            },
-        )
-        prob = float(out[0][0].flatten()[0])
-        self._state = out[1]  # 状态传递给下一帧（关键：VAD 是有状态的）
-        # 更新 context（当前帧的最后 64 样本）
-        self._context = block.reshape(1, -1)[:, -self._context_size:].astype(np.float32)
+        if self._v5_api:
+            x = np.concatenate(
+                [self._context, block.reshape(1, -1)], axis=1
+            ).astype(np.float32)
+            out = self._sess.run(
+                ["output", "stateN"],
+                {"input": x, "state": self._state, "sr": self._sr_arr},
+            )
+            prob = float(out[0][0].flatten()[0])
+            self._state = out[1]
+            self._context = block.reshape(1, -1)[:, -self._context_size:].astype(np.float32)
+        else:
+            # v4（仓库 models/vad 权重）：x = 原始 512 样本，h/c 状态传递
+            out = self._sess.run(
+                ["prob", "new_h", "new_c"],
+                {
+                    "x": block.reshape(1, -1).astype(np.float32),
+                    "h": self._h,
+                    "c": self._c,
+                },
+            )
+            prob = float(out[0].flatten()[0])
+            self._h, self._c = out[1], out[2]
 
         is_speech = prob >= self.threshold
         # 保存原始 int16（用于落盘），从 float 还原（避免精度问题，块都来自 int16 源）

@@ -154,6 +154,29 @@ class ToolRegistry:
             return []
 
     def dispatch(self, name: str, args: dict[str, Any] | None = None, **kwargs: Any) -> str:
+        # 执行过程观测（2026-10-29 zhp：语音会话前端实时显示他在干什么）。
+        # 全 try/except 零侵入：观测失败绝不影响工具执行。
+        _observer_iid = ""
+        try:
+            from infrastructure.config import get_app_instance_id
+            from infrastructure.perception.web_voice import get_web_voice_hub
+
+            _observer_iid = get_app_instance_id() or ""
+            if _observer_iid:
+                get_web_voice_hub().notify_tool_event(_observer_iid, name, "start", args, None)
+        except Exception:
+            _observer_iid = ""
+        result = self._dispatch_inner(name, args, **kwargs)
+        if _observer_iid:
+            try:
+                from infrastructure.perception.web_voice import get_web_voice_hub
+
+                get_web_voice_hub().notify_tool_event(_observer_iid, name, "end", None, result)
+            except Exception:
+                pass
+        return result
+
+    def _dispatch_inner(self, name: str, args: dict[str, Any] | None = None, **kwargs: Any) -> str:
         entry = self._tools.get(name)
         if not entry:
             return tool_error(f"Unknown tool: {name}",

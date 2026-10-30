@@ -15,7 +15,10 @@ adapters:
 model:
   default: ${DIGITAL_LIFE_MODEL:-glm-5.1}
   provider: ${DIGITAL_LIFE_PROVIDER:-glm}
+  # 走 newapi 类网关时声明值域差异（只认 low/high/max）：
+  # reasoning_depth_map: {deep: max}
 
 agent:
   max_turns: 90
-  reasoning_effort: medium
+  # 思考深度兜底档：quick | standard | deep（人的 app.yaml 可覆盖）
+  reasoning_depth: standard

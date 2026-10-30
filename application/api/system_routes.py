@@ -259,7 +259,7 @@ async def _handle_system_budget_series(request: web.Request) -> web.Response:
 def _services_summary_safe() -> dict:
     """服务型 agent 摘要（def/服务实例/运行统计）。失败降级为空结构。"""
     try:
-        from application.api.services_admin_routes import collect_services_overview
+        from domain.service.overview import collect_services_overview
 
         return collect_services_overview()
     except Exception:

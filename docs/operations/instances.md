@@ -311,9 +311,18 @@ GLM / DeepSeek-Reasoner / Qwen3 / Kimi-K1.5 思考模型在响应 `message.reaso
 只改 `infrastructure/ai/providers.py`：
 
 1. 新增 `<Name>Provider(_BaseProvider)` 类，声明 `name` + `thinking_keep_mode`
-2. 只在该家族有差异化需求时覆盖 `extract_reasoning` / `customize_payload`（如不同字段名、不同 reasoning_effort 值域）
+2. 家族支持 `reasoning_effort` 时声明 `depth_map`（产品三档 quick/standard/deep → 该家族值；不声明=不带字段）；只在字段名等有真差异时才覆盖 `extract_reasoning` / `customize_payload`
 3. 在 `resolve_provider(model)` 加路由分支
 4. `agent.py` / `assembly.py` 一行不改
+
+### 思考深度
+
+思考深度是**人**的基本配置：`agent.reasoning_depth: quick | standard | deep`（快答 / 标准 / 深思），
+三层合并 `config/default.yaml`（兜底 standard）→ `config/local.yaml` → 人的 `apps/<id>/config/app.yaml`。
+实例在控制台「实例配置 → 任务策略」改，咨询的人（def）在服务台 def 详情「模型」改；改完下次唤醒生效。
+每次模型调用就按这个档——运行时没有快答 / 自主升档 / 卡住兜底等场景规则（2026-10-20 定稿，旧 think_cycle 退役）。
+网关值域与家族声明表不同（newapi 只认 low/high/max）时，在机器层 `local.yaml` 声明 `model.reasoning_depth_map: {deep: max}`；
+声明错了端点会 400 并在日志里点名该档，改配置即可，不做运行时自学映射。
 
 ### 旧名兼容
 

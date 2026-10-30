@@ -423,11 +423,25 @@ def _resolve_event_prompt(reason: str, pending_events: list | None = None) -> st
                         mt = payload.get("_merged_texts", [])
                         if isinstance(mc, int) and mc > 1 and isinstance(mt, list) and mt:
                             lines = [
-                                f"  之前合并的 {mc-1} 条消息（30 秒窗口内累积到达）:"
+                                f"  之前合并的 {mc-1} 条消息（合并窗口内陆续到达）:"
                             ]
                             for item in mt:
                                 if isinstance(item, dict):
-                                    lines.append(f"    {item.get('sender','?')}：{item.get('text','')[:200]}")
+                                    # 逐条时间标注（2026-10-30 语音合批）：合并的
+                                    # 各条到达时刻可能差很多秒，模型需要时序语境。
+                                    # 无 at 的老条目（群消息存量）保持原样不带时间。
+                                    item_at = str(item.get("at") or "").strip()
+                                    at_tag = ""
+                                    if item_at:
+                                        try:
+                                            from .clock import parse_iso as _pi_mt
+                                            at_tag = f"{_pi_mt(item_at).strftime('%H:%M:%S')} "
+                                        except Exception:
+                                            at_tag = ""
+                                    sender = item.get("sender") or ""
+                                    text_i = item.get("text", "")[:200]
+                                    body = f"{sender}：{text_i}" if sender else text_i
+                                    lines.append(f"    {at_tag}{body}")
                                 elif isinstance(item, str):
                                     lines.append(f"    {item[:200]}")
                             payload["_merged_texts_block"] = "\n".join(lines)

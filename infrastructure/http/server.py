@@ -272,6 +272,7 @@ async def run_instance_gateway(instance_id: str) -> None:
     # SIGUSR1 = 停止本实例 TTS 播报（按键打断 / barge-in）。感知热键单守护
     # 跑在 master 进程，worker 又不起 HTTP server——跨进程即时控制只能走
     # 信号：master 按路由表查 supervisor pid 发 SIGUSR1，这里消费。
+    # （2026-10-30 server.py 被外部覆盖时丢失，从 HEAD 复原）
     def _barge_in_handler():
         try:
             from infrastructure.perception.voice_output import stop_playback
@@ -444,6 +445,7 @@ async def run_instance_gateway(instance_id: str) -> None:
     # PerceptionDaemon（否则 N 实例 = N 个全局热键监听）。全部热键由 master
     # 进程的 HotkeyRouterDaemon 持有，按 config/perception.yaml 的路由表
     # 按键路由到实例；KWS 语音唤醒（AudioSenseService）独立可配置。
+    # （2026-10-30 server.py 被外部覆盖时此段退回了逐实例启动旧版，已复原）
 
     await stop_event.wait()
     logger.info("Instance %s shutting down...", instance_id[:8])
@@ -459,11 +461,6 @@ async def run_instance_gateway(instance_id: str) -> None:
     ck_thread.join(timeout=5)
     if takeover:
         takeover.stop()
-    if perception_daemon:
-        try:
-            perception_daemon.stop()
-        except Exception:
-            pass
     logger.info("Instance %s stopped", instance_id[:8])
 
 
@@ -981,11 +978,6 @@ async def run_master_gateway() -> None:
     from application.api.broadcast_routes import add_broadcast_routes
     add_broadcast_routes(app)
 
-    # 服务注册管理 API（基座能力）：/api/admin/*（服务实例/agent-defs/skills/
-    # tools/events/subscriptions；业务管理端点经扩展点在冻结前注入）
-    from application.api.services_admin_routes import add_services_admin_routes
-    add_services_admin_routes(app)
-
     # 业务应用（咨询台/配置台页面/客户 API 等）经扩展点挂载——基座只认注册
     from infrastructure import extension
     extension.mount_api(app)
@@ -1004,6 +996,15 @@ async def run_master_gateway() -> None:
         add_voice_sense_routes(app)
     except Exception as exc:
         logger.warning("Voice sense routes failed (non-fatal): %s", exc)
+
+    # 网页语音会话（全双工对话控制台）：页面 + WS + settings/enroll/speakers API。
+    # 2026-10-30 11:25 server.py 被外部操作覆盖成旧版时此注册块丢失（当日
+    # 11:09 启动的 master 还带着它）——此处按原样恢复，只增不改。
+    try:
+        from application.api.voice_ws_routes import add_voice_ws_routes
+        add_voice_ws_routes(app)
+    except Exception as exc:
+        logger.warning("Voice web console routes failed (non-fatal): %s", exc)
 
 
     # 启动时同步各实例的 subscriptions.yaml(其他实例在哪群 → 各自写好 peers 列表)
@@ -1060,6 +1061,7 @@ async def run_master_gateway() -> None:
     # AudioSenseService（独立开关，暂关）。
     # barge-in：TTS 播在 worker 进程里，master 通过 supervisor 发 SIGUSR1
     # （worker 的事件循环处理器调 stop_playback——见 run_instance_gateway）。
+    # （2026-10-30 server.py 被外部覆盖时此段丢失，从 HEAD 复原）
     def _barge_in_worker(instance_id: str) -> bool:
         try:
             ok = supervisor.signal_process(instance_id, signal.SIGUSR1)

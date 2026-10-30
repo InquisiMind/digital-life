@@ -80,7 +80,7 @@ def test_def_file_versions_endpoints(customer_env, monkeypatch):
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
 
-    from application.api.services_admin_routes import add_services_admin_routes
+    from business.consulting.services_admin_routes import add_services_admin_routes
 
     app = web.Application()
     add_services_admin_routes(app)

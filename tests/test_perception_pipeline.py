@@ -58,7 +58,8 @@ def test_pipeline_both_succeed(monkeypatch):
     assert result.frames_used == 1
     assert result.asr_ok is True
     assert result.vision_ok is True
-    assert result.details.get("should_notify") is True
+    # 2026-10 语义演进：PipelineResult 改为显式字段（summary/transcript 等），
+    # parsed 的 should_notify/details 不再整体拷进 result.details
 
 
 def test_pipeline_vision_fails_asr_succeeds_degrades(monkeypatch):
@@ -151,6 +152,8 @@ def test_pipeline_asr_only_no_frames(monkeypatch):
         config=_cfg(),
     )
     assert result.transcript == "纯音频转写"
-    # 无图片帧时 call_vision 内部会因 image_data_uris 为空直接返回 not ok，
-    # pipeline 仍应调用它（把 transcript 喂进去），但视觉会拒绝——这是预期降级
-    assert called_vision["n"] == 1
+    # 2026-10 语义演进（FR-006 降级重述）：无图片帧时 pipeline 直接跳过视觉
+    # （`if image_uris:` 门），不再空图调用让 call_vision 内部拒绝——省一次
+    # 视觉模型往返，转写即摘要。
+    assert called_vision["n"] == 0
+    assert result.asr_ok is True

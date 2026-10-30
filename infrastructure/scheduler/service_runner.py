@@ -176,6 +176,7 @@ class ServiceWorkerLoop:
     def tick(self) -> list[str]:
         """扫一轮：返回本轮 spawn 的服务 id 列表（测试断言用）。"""
         self._reap()
+        from domain.service.registry import SERVICE_WAKE_KINDS
         from infrastructure.persistence import services_registry
 
         spawned: list[str] = []
@@ -192,10 +193,11 @@ class ServiceWorkerLoop:
                 logger.warning(
                     "service alarm fire failed service_id=%s: %s", sid, exc
                 )
-            # 订阅闸（特性 3）：默认只认消息类 kind；订阅 all 则不过滤
+            # 订阅闸（特性 3）：恒含消息类 + 自设闹钟（SERVICE_WAKE_KINDS，
+            # 单一来源在 domain.service.registry）；订阅 all 则不过滤
             subs = svc.get("subscriptions")
             kinds = None if subs == "all" else tuple(
-                {"message", "group_message"} | set(subs or [])
+                SERVICE_WAKE_KINDS | set(subs or [])
             )
             if not has_due_events(sid, kinds=kinds):
                 continue

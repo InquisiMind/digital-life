@@ -45,6 +45,12 @@ def _make_test_env(instance_id: str = "test") -> tuple[str, Path]:
     db_path = Path(tmp) / "state.db"
     os.environ["DIGITAL_LIFE_INSTANCE_ID"] = instance_id
     os.environ["DIGITAL_LIFE_RUNTIME_HOME"] = tmp
+    # get_project_root 是硬编码仓库根；wake 机器的 sessions/llm dumps 走它——
+    # 不重定向的话每轮全量都会在真实 apps/ 下重建 test-l4-full（2026-10-28）
+    global _SAVED_PROJECT_ROOT
+    import infrastructure.config as _cfg
+    _SAVED_PROJECT_ROOT = _cfg.get_project_root
+    _cfg.get_project_root = lambda: Path(tmp)
 
     from domain.lifecycle.affairs.runtime import configure_runtime_hooks
     configure_runtime_hooks(db_path=db_path)
@@ -80,8 +86,16 @@ def _wait_bg_wake_done(instance_id: str, timeout_s: float = 10.0) -> None:
         time.sleep(0.05)
 
 
+_SAVED_PROJECT_ROOT = None
+
+
 def _cleanup_test_env(tmp: str):
     shutil.rmtree(tmp, ignore_errors=True)
+    global _SAVED_PROJECT_ROOT
+    if _SAVED_PROJECT_ROOT is not None:
+        import infrastructure.config as _cfg
+        _cfg.get_project_root = _SAVED_PROJECT_ROOT
+        _SAVED_PROJECT_ROOT = None
     if "DIGITAL_LIFE_INSTANCE_ID" in os.environ:
         del os.environ["DIGITAL_LIFE_INSTANCE_ID"]
     if "DIGITAL_LIFE_RUNTIME_HOME" in os.environ:

@@ -11,6 +11,14 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import httpx
+import hashlib
+
+# ── 联想注入(统一召回)门槛参数 V1 (2026-10-20, zhp 授权"联想门槛你们可以帮忙研究") ──
+# 设计: 推荐≠检索, 噪音是唯一成本 → 相关性门槛 + 同文去重 + 醒段级冷却 + 归因标识
+_PASSIVE_MIN_WEIGHTED = 0.18      # 注入最低加权分(unified_recall final_score × turn_weight)
+_PASSIVE_TOP_N = 6                # 单次注入条数上限(原 10)
+_RECALL_COOLDOWN_MSGS = 2         # 距上次注入至少间隔的消息条数
+_RECALL_ESCALATE_RATIO = 1.5      # 冷却期内仅当最高分 ≥ 阈值×此倍数才放行(升级注入)
 
 from infrastructure.config import get_runtime_home
 from interfaces.tools.registry import registry
@@ -43,6 +51,10 @@ class AIAgent:
     api_mode: str = "chat_completions"
     max_iterations: int = 90
     reasoning_config: Mapping[str, Any] | None = None
+    # 首轮降档（2026-10-28 网页语音会话）：事件 payload 带 quick_first_reply
+    # 时 scheduler 传 "quick"——本 wake 的**第一次** LLM 调用用该档（速答），
+    # 之后的调用回到人的基本档（继续干活可以思考）。空串 = 无覆盖。
+    first_call_depth: str = ""
     quiet_mode: bool = True
     platform: str = "l4"
     session_id: str = ""
@@ -64,6 +76,8 @@ class AIAgent:
 
     def __post_init__(self) -> None:
         self.logs_dir.mkdir(parents=True, exist_ok=True)
+        # first_call_depth 的待用标记（_chat 消费一次后清空）
+        self._first_call_depth_pending = (self.first_call_depth or "").strip()
         self.session_log_file = self.logs_dir / f"{self.session_id or 'session'}.json"
         # 字面 LLM input dump 目录：每次调 _chat 之前的 _messages_for_call
         # 必须达 "字面相等"。前端展示 / sessions JSON 都可能跟实际不一致
@@ -138,16 +152,6 @@ class AIAgent:
             完成手头工作就 rest。
         """
         session_id = self.session_id or task_id or "adhoc"
-        # think effort 状态机（2026-09-18 事件触发化）: 一次 wake 一个状态。
-        # 人类消息类 wake → 首轮 fast(low) 快答; 其余 wake → 配置档起手。
-        # 判据用 scheduler 传入的 wake_reason（"message"/"group_message"）——
-        # 554b7a6 原版此处引用了不存在的局部变量 wake_signal，运行期 NameError，
-        # 三个实例连续 3 次 wake 失败（9/20 10:0x 全量 offline 事故）。
-        from infrastructure.ai import think_cycle
-        self._effort_state = think_cycle.new_state()
-        if wake_reason in ("message", "group_message", "chat_stream"):
-            think_cycle.init_for_wake(self._effort_state, human_message=True)
-        self._wake_call_idx = 0  # 兼容保留: 旧快答计数器（think_cycle 接管后仅观测用）
         # 每个 wake 推进一次段号。设计语义：segment_index = wake 序号，单调递增。
         # 同一 wake 内的所有消息（system/user/assistant/tool/sys_tool 注入）共享同一段号。
         # 这是新段启始的唯一入口；append_message 自身不自增。
@@ -521,7 +525,24 @@ class AIAgent:
                         ensure_ascii=False,
                     )
                 else:
-                    result = registry.dispatch(name, arguments, session_id=session_id)
+                    # 语音提前播报对账：流式阶段已按句 TTS 的前缀长度交给
+                    # _send_voice_local（只播剩余尾巴；日志/会话记录仍全文）
+                    _prespeak = getattr(self, "_voice_prespeak_chars", 0)
+                    if _prespeak > 0 and name == "express_to_human":
+                        try:
+                            from domain.lifecycle.runtime_context import (
+                                reset_voice_prespeak_offset, set_voice_prespeak_offset,
+                            )
+
+                            set_voice_prespeak_offset(_prespeak)
+                            try:
+                                result = registry.dispatch(name, arguments, session_id=session_id)
+                            finally:
+                                reset_voice_prespeak_offset()
+                        except Exception:
+                            result = registry.dispatch(name, arguments, session_id=session_id)
+                    else:
+                        result = registry.dispatch(name, arguments, session_id=session_id)
                 # V6 通用条件暴露 → 引擎本轮通行证: dispatch 后检测 preview=True
                 # + 工具声明了 reveals_tools_on → 发 wake 级授予, 下一轮模型能看到;
                 # 结果不含 preview (confirm/执行完毕) → 按来源收回本轮授予
@@ -540,18 +561,6 @@ class AIAgent:
                             _tv.revoke(_rid, source=f"preview:{name}")
                 except Exception:
                     pass
-                # think_cycle: 工具结果喂给 effort 状态机——
-                # · 快答轮完成后结束 fast (on_success)
-                # · 基础设施异常 (Tool execution failed) 计 stuck, 连续 3 次兜底升 high
-                # 业务失败语义 (工具正常返回 {"error": ...}) 不算 stuck——那是模型
-                # 该自己想办法的事, 不该偷懒换档。
-                try:
-                    from infrastructure.ai import think_cycle
-                    _st = getattr(self, "_effort_state", None)
-                    if _st is not None:
-                        think_cycle.on_tool_result(_st, name, result)
-                except Exception:
-                    logger.debug("think_cycle.on_tool_result failed", exc_info=True)
                 tool_calls_seen.append({"name": name, "arguments": arguments, "result": result})
                 messages.append({"role": "tool", "tool_call_id": call.get("id"), "name": name, "content": result})
                 self._append_message(session_id, "tool", result, tool_name=name, tool_call_id=call.get("id"))
@@ -656,6 +665,166 @@ class AIAgent:
                 m.pop("reasoning_content", None)
         return messages
 
+    def _effective_reasoning_config(self) -> Mapping[str, Any] | None:
+        """本次调用的深度配置：默认人的基本档；首轮速答覆盖只消费一次。"""
+        override = getattr(self, "_first_call_depth_pending", "")
+        if override:
+            self._first_call_depth_pending = ""
+            return {**(self.reasoning_config or {}), "depth": override}
+        return self.reasoning_config
+
+    # ── 流式消费 + 语音提前播报（2026-10-28）─────────────────────────────────
+
+    def _post_chat_stream(
+        self,
+        client: "httpx.Client",
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """SSE 流式调用，组装回与非流式同构的响应 dict。
+
+        - 逐行解析 data: {...} chunk；content / reasoning_content / tool_calls
+          （按 index 累积 id/name/arguments 片段）全部归位到 message。
+        - usage 从末尾 usage chunk 取（请求带 stream_options.include_usage；
+          端点不给则计 0，_record_token_usage 对缺失 usage 已有容忍）。
+        - 语音唤醒时对第一个工具调用（express_to_human）做 text 参数的
+          按句提前 TTS（_maybe_voice_early_speak）。
+        """
+        stream_payload = {
+            **payload,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        tool_slots: dict[int, dict[str, str]] = {}
+        usage: dict[str, Any] = {}
+        with client.stream(
+            "POST", url, headers=headers, json=stream_payload
+        ) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                raw = line[5:].strip()
+                if not raw or raw == "[DONE]":
+                    continue
+                try:
+                    chunk = json.loads(raw)
+                except Exception:
+                    continue
+                if isinstance(chunk.get("usage"), dict):
+                    usage = chunk["usage"]
+                choices = chunk.get("choices") or []
+                delta = (choices[0].get("delta") or {}) if choices else {}
+                if delta.get("content"):
+                    content_parts.append(delta["content"])
+                rc = delta.get("reasoning_content")
+                if isinstance(rc, str) and rc:
+                    reasoning_parts.append(rc)
+                    self._notify_voice_thinking_delta(rc)
+                for tc in delta.get("tool_calls") or []:
+                    idx = int(tc.get("index") or 0)
+                    slot = tool_slots.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                    if tc.get("id"):
+                        slot["id"] = tc["id"]
+                    fn = tc.get("function") or {}
+                    if fn.get("name"):
+                        slot["name"] = fn["name"]
+                    frag = fn.get("arguments")
+                    if isinstance(frag, str) and frag:
+                        slot["arguments"] += frag
+                        self._maybe_voice_early_speak(idx, slot["name"], frag)
+
+        message: dict[str, Any] = {"role": "assistant", "content": "".join(content_parts)}
+        if reasoning_parts:
+            message["reasoning_content"] = "".join(reasoning_parts)
+        if tool_slots:
+            message["tool_calls"] = [
+                {
+                    "id": slot["id"] or f"call_{idx}",
+                    "type": "function",
+                    "function": {"name": slot["name"], "arguments": slot["arguments"]},
+                }
+                for idx, slot in sorted(tool_slots.items())
+            ]
+        return {"choices": [{"message": message, "finish_reason": "tool_calls" if tool_slots else "stop"}], "usage": usage}
+
+    def _notify_voice_thinking_delta(self, text: str) -> None:
+        """语音会话：reasoning 增量下发（前端执行过程"他在想什么"实时流）。
+
+        零侵入观测：非语音平台/无会话/推送失败都不影响生成主链路。
+        """
+        try:
+            from domain.lifecycle.runtime_context import get_current_event_platform
+
+            if (get_current_event_platform() or "") != "voice":
+                return
+            from infrastructure.config import get_app_instance_id
+            from infrastructure.perception.web_voice import get_web_voice_hub
+
+            get_web_voice_hub().notify_thinking_delta(get_app_instance_id() or "", text)
+        except Exception:
+            pass
+
+    def _maybe_voice_early_speak(self, tool_index: int, name: str, args_fragment: str) -> None:
+        """语音唤醒时，express_to_human 的 text 参数按句提前 TTS。
+
+        只处理第一个工具调用（语音回复场景它就是 express）；句子边界由
+        TextFieldSentenceStream 判定。已播字符数记在 _voice_prespeak_chars，
+        分派时经 set_voice_prespeak_offset 交给 _send_voice_local 剥前缀。
+        """
+        if tool_index != 0 or name != "express_to_human":
+            return
+        try:
+            from domain.lifecycle.runtime_context import get_current_event_platform
+
+            if (get_current_event_platform() or "") != "voice":
+                return
+            from infrastructure.perception.voice_output import (
+                get_tts_voice, is_tts_enabled, speak,
+            )
+            from infrastructure.config import get_app_instance_id
+
+            iid = get_app_instance_id() or ""
+            if not is_tts_enabled(iid):
+                return
+            from infrastructure.ai.tool_stream import TextFieldSentenceStream
+
+            if self._voice_sentence_stream is None:
+                self._voice_sentence_stream = TextFieldSentenceStream()
+                logger.info("voice early-speak armed (express_to_human streaming)")
+            stream = self._voice_sentence_stream
+            stream.feed(args_fragment)
+            # 目标甄别（2026-10-30 多消息重复播放事故）：args 里出现非语音
+            # 目标（chat_id=oc_xxx / channel=feishu:* 等）→ 立即缴械不再提前播。
+            # 语音会话只播语音回复；发飞书的消息走飞书（模型偶尔会"语音可能
+            # 没出声"就顺手飞书再发一遍——两次 express 都被念出来 = 重复）。
+            # text 在 schema 里先于 chat_id 流出，首句可能已播（罕见、无害），
+            # 甄别到就止损。多通道单调用（channels 数组含 voice）不受影响。
+            import re as _re
+
+            m = _re.search(r'"(?:chat_id|channel)"\s*:\s*"([^"]{0,64})', stream.raw_args)
+            if m and m.group(1) and not m.group(1).startswith("voice"):
+                if self._voice_prespeak_chars or stream.emitted_chars:
+                    logger.info("voice early-speak DISARMED (non-voice target %r after %d chars)",
+                                m.group(1)[:24], stream.emitted_chars)
+                self._voice_sentence_stream = None
+                return
+            from infrastructure.perception.web_voice import web_tts_voice
+
+            voice = web_tts_voice(iid) or get_tts_voice(iid)
+            rate = web_tts_rate()
+            for sentence in stream.pop_sentences():
+                if speak(sentence, voice=voice, rate=rate):
+                    self._voice_prespeak_chars = stream.emitted_chars
+                    logger.info("voice early-speak (%d chars): %s",
+                                len(sentence), sentence[:30])
+        except Exception:
+            logger.debug("voice early-speak skipped", exc_info=True)
+
+
     def _chat(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         consumed_normal = self._inject_signalled_events(messages)
         consumed_normal = self._inject_due_db_events(messages) or consumed_normal
@@ -691,45 +860,41 @@ class AIAgent:
         # agent.py 不识别"现在是 GLM 还是 o1 还是 Claude"。
         # 之前硬编码 `payload["reasoning_effort"] = effort` 被 cargo 推进来——对
         # o1 会 400 Bad Request，对 Claude/DSt 不识别但被静默忽略。
-        reasoning_config = self.reasoning_config
-        # think effort 状态机（2026-09-18 事件触发化, 取代旧语音快答单点逻辑）:
-        #   A 人类消息事件→首轮 fast(low) 快答 | B think 工具升档(TTL) | C 卡住兜底 high
-        #   优先级 C > B > A > 配置档。旧 DIGITAL_LIFE_VOICE_FAST 开关保留为
-        #   A 入口总闸（默认开）。decide() 内部推进 call_idx/override 计数。
-        try:
-            from infrastructure.ai import think_cycle
-
-            state = getattr(self, "_effort_state", None)
-            if state is None:  # 兜底: 未走 run_conversation 的裸 _chat 调用（测试等）
-                state = self._effort_state = think_cycle.new_state()
-            think_cycle.set_active_state(state)  # think 工具桥接: 每次 decide 前刷新活跃 state
-            fast_enabled = os.getenv("DIGITAL_LIFE_VOICE_FAST", "1") == "1"
-            effort, why = think_cycle.decide(
-                state,
-                config_effort=str(reasoning_config.get("effort", "medium")) if reasoning_config else "medium",
-            )
-            if why == "fast_first_reply" and not fast_enabled:
-                effort = str(reasoning_config.get("effort", "medium")) if reasoning_config else "medium"
-                why = "config(fast_disabled)"
-            if why != "config":
-                reasoning_config = (
-                    {**reasoning_config, "effort": effort} if reasoning_config else {"effort": effort}
-                )
-                logger.info("think_cycle: call#%d effort→%s (%s)", state["call_idx"], effort, why)
-        except Exception:
-            pass
-        # 端点值域学习（infrastructure/ai/effort_domain.py）：该端点曾因某档
-        # 400 被拒过 → 学得的邻档映射持久化，所有唤醒装配时直接用对档。
-        if reasoning_config and reasoning_config.get("effort"):
-            from infrastructure.ai import effort_domain as _ed
-
-            _mapped = _ed.get_fix(url, str(reasoning_config["effort"]))
-            if _mapped:
-                reasoning_config = {**reasoning_config, "effort": _mapped}
+        #
+        # 思考深度 = 这个人的基本档（reasoning_config.depth，来自 agent.reasoning_depth），
+        # 每次调用都一样；运行时不再有快答/升档/卡住兜底等场景规则，也不做端点
+        # 400 自学映射（2026-10-20 zhp 定稿：一个人一个档位，动态性归模型内部）。
+        # 唯一例外（2026-10-28 zhp 拍板，网页语音）：first_call_depth 让本 wake
+        # 第一次调用降档速答——语音对话要"先应一声再干活"，首答延迟是硬伤。
+        reasoning_config = self._effective_reasoning_config()
         payload = self._provider.customize_payload(
             payload,
             reasoning_config=reasoning_config,
         )
+        logger.info(
+            "LLM call depth=%s reasoning_effort=%s",
+            (reasoning_config or {}).get("depth", "-"),
+            payload.get("reasoning_effort", "-"),
+        )
+        # 执行过程观测：语音会话前端显示"思考中（第 N 轮）"
+        # voice_obs_iid 同时供流式 reasoning 增量（_post_chat_stream）与
+        # 思考收尾（本次调用 return 前）使用——平台判定只做一次。
+        voice_obs_iid = ""
+        try:
+            from domain.lifecycle.runtime_context import get_current_event_platform
+
+            if (get_current_event_platform() or "") == "voice":
+                from infrastructure.config import get_app_instance_id
+                from infrastructure.perception.web_voice import get_web_voice_hub
+
+                voice_obs_iid = get_app_instance_id() or ""
+                if voice_obs_iid:
+                    get_web_voice_hub().notify_tool_event(
+                        voice_obs_iid, "__thinking__", "start",
+                        {"round": (getattr(self, "_call_seq", 0) or 0) + 1}, None,
+                    )
+        except Exception:
+            pass
         if not payload["tools"]:
             payload.pop("tools")
         # 工具面快照：分派闸用（见 wake 循环 dispatch 前的拦截）。
@@ -748,6 +913,19 @@ class AIAgent:
         # 这些都对模型决策有实质影响——dump 必须在 POST 之前、payload 完整成型后做。
         # 这一份是 ground truth：任何"模型为什么这样做"的问题都能从这里溯因。
         self._dump_llm_payload(payload)
+
+        # ── 流式（2026-10-28 落地）───────────────────────────────────────────
+        # provider 声明 supports_stream 且未被 env 关闭 → SSE 流式消费：
+        #   1) read 超时从"整次生成"退化为"chunk 间隔"（360s 长生成不再怕超时）
+        #   2) 语音唤醒时 express_to_human 的 text 参数边生成边按句提前 TTS
+        #      （_maybe_voice_early_speak / infrastructure/ai/tool_stream.py）
+        # 消费端把 SSE 组装回与非流式完全同构的响应 dict，下游零改动。
+        self._voice_prespeak_chars = 0
+        self._voice_sentence_stream = None
+        use_stream = (
+            bool(getattr(self._provider, "supports_stream", False))
+            and __import__("os").getenv("DIGITAL_LIFE_LLM_STREAM", "1") != "0"
+        )
 
         # timeout 拆分 — 历史 BUG: scalar timeout=300 在所有生命周期(connect/read/pool)
         # 都给 5 分钟,导致一次 GLM 推理卡死会阻塞整个 wake 几十分钟。现拆细:
@@ -804,9 +982,12 @@ class AIAgent:
         while True:
             try:
                 with httpx.Client(timeout=http_timeout) as client:
-                    response = client.post(url, headers=headers, json=payload)
-                    response.raise_for_status()
-                    data = response.json()
+                    if use_stream:
+                        data = self._post_chat_stream(client, url, headers, payload)
+                    else:
+                        response = client.post(url, headers=headers, json=payload)
+                        response.raise_for_status()
+                        data = response.json()
                 choice = (data.get("choices") or [{}])[0]
                 _msg = choice.get("message") or {}
                 # Layer 1（存）：provider 提取 reasoning 文本，挂回 message dict。
@@ -818,6 +999,17 @@ class AIAgent:
                         _msg["reasoning"] = _reasoning
                 except Exception:
                     pass
+                # 执行过程观测：思考结束（语音前端思考卡收尾，带本轮 reasoning 全文）
+                if voice_obs_iid:
+                    try:
+                        from infrastructure.perception.web_voice import get_web_voice_hub
+
+                        get_web_voice_hub().notify_thinking_end(
+                            voice_obs_iid,
+                            _msg.get("reasoning_content") or _msg.get("reasoning") or "",
+                        )
+                    except Exception:
+                        pass
                 return {"message": _msg, "raw": data, "_consumed_normal": consumed_normal}
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429:
@@ -873,30 +1065,24 @@ class AIAgent:
                         "LLM API 429 retry budget exhausted (%d/%d) — raising",
                         retry_429_attempts, MAX_429_RETRIES,
                     )
-                # 400 点名 reasoning_effort：端点值域比家族默认窄（newapi 只认
-                # low/high/max；config 档 medium 会 400）。按邻档归一后原地重试，
-                # 并持久化到 effort_domain 学习库——该端点此后所有唤醒装配时
-                # 直接用对档，只此一次付学费。
+                # 400 点名 reasoning_effort = 端点值域与家族声明表不一致（如 newapi
+                # 只认 low/high/max）。不自愈、不换档重试——响一次，配置里
+                # model.reasoning_depth_map 覆盖该档后下次唤醒即对（自学映射会把
+                # 配置错误藏起来，2026-10-20 退役）。
                 if (
                     e.response.status_code == 400
                     and isinstance(payload.get("reasoning_effort"), str)
                     and "reasoning_effort" in e.response.text
                 ):
-                    from infrastructure.ai import effort_domain as _ed
-
-                    _cur = payload["reasoning_effort"]
-                    _new = _ed.NEAR.get(_cur)
-                    if _new:
-                        _ed.record_fix(url, _cur, _new)
-                        payload["reasoning_effort"] = _new
-                        logger.warning(
-                            "LLM API 400 names reasoning_effort=%s — endpoint value "
-                            "domain narrower than family default, remapping→%s "
-                            "(learned for this endpoint), retrying in place",
-                            _cur, _new,
-                        )
-                        continue
-                # 非 429 的 HTTPStatusError（5xx / 4xx）以前直接抛出，保持原行为。
+                    logger.error(
+                        "LLM API 400 rejects reasoning_effort=%s (depth=%s) at %s — "
+                        "declare model.reasoning_depth_map.%s in config for this endpoint",
+                        payload.get("reasoning_effort"),
+                        (self.reasoning_config or {}).get("depth", "-"),
+                        url,
+                        (self.reasoning_config or {}).get("depth", "standard"),
+                    )
+                # 非 429 的 HTTPStatusError（5xx / 4xx）直接抛出，保持原行为。
                 raise
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as e:
                 last_error = e
@@ -2161,10 +2347,25 @@ class AIAgent:
                 continue
             try:
                 from domain.lifecycle.events import peek_unconsumed_event
-                still_pending = peek_unconsumed_event(int(eid)) is not None
+                fresh = peek_unconsumed_event(int(eid))
             except Exception:
-                still_pending = True
+                fresh = None
+                still_pending = True  # DB 不可读 → fail-open 照旧投递
+            else:
+                still_pending = fresh is not None
             if still_pending:
+                # 池条目的 payload 是入池瞬间的快照；之后该事件行可能又被
+                # 防抖合并更新（语音合批：后续语音句并进同一条事件的
+                # _merged_texts）。渲染前用 DB 最新 payload 覆盖快照——
+                # DB 是唯一真值，与下方消费判断同一次读，零额外查询。
+                if fresh is not None:
+                    fresh_payload = fresh.get("payload")
+                    if isinstance(fresh_payload, dict) and fresh_payload != ev.get("payload"):
+                        logger.info(
+                            "pool payload refreshed from DB: event %s picked up "
+                            "debounce-merged content before render", eid,
+                        )
+                        ev["payload"] = fresh_payload
                 verified.append(ev)
                 continue
             logger.info(
@@ -2277,18 +2478,6 @@ class AIAgent:
         """
         failed: list[dict] = []
 
-        # think_cycle A 入口(mid-session): 人类消息打断当前任务 → 下一轮 LLM call
-        # 走 fast 快答(用户在等), 快答后再恢复原 effort。新消息=新的快答意图,
-        # 多条合并消费时 on_human_message 天然幂等(每次都重置 pending)。
-        def _fire_think_cycle() -> None:
-            try:
-                from infrastructure.ai import think_cycle
-                state = getattr(self, "_effort_state", None)
-                if state is not None:
-                    think_cycle.on_human_message(state)
-            except Exception:
-                logger.debug("think_cycle.on_human_message failed", exc_info=True)
-
         for ev in events:
             eid = ev.get("event_id")
 
@@ -2375,7 +2564,6 @@ class AIAgent:
                     self.audit_ctx.recall("wake_signal", content)
                 except Exception:
                     logger.debug("Failed to dual-write wake_signal", exc_info=True)
-            _fire_think_cycle()
 
         return failed
 
@@ -2450,6 +2638,15 @@ class AIAgent:
         if not new_messages:
             return
 
+        # ── 联想门槛 V1.1: 时机闸门 ──
+        # 本批新消息含"收尾类"工具调用时整体静默, 不做联想注入。
+        # 依据 zero 10/20 十二批体感标定(批次3/4): 收尾/收工语境注入 9 条 0 命中,
+        # 且睡前上下文应尽量干净; 纯规则零成本, 无误伤(干活语境不会触发这些工具)。
+        _RECALL_QUIET_TOOLS = {"rest", "record_thought", "todo_trigger", "dream"}
+        for _nm in new_messages:
+            if _nm.get("role") == "tool" and _nm.get("name") in _RECALL_QUIET_TOOLS:
+                return
+
         # Separate: assistant thinking (primary) vs other messages (secondary)
         # reasoning_content 是 GLM 推理过程，经常比 content（"打完话后的输出"）长得多，
         # 包含模型的关注点——是 entity 匹配最强信号。现在 reasoning_content 直接在
@@ -2460,7 +2657,7 @@ class AIAgent:
         # 提取到 "rest"/"闹钟"/"止损" 等被自身注入的"实体" → 回音污染召回结果。
         # review 2026-07-23 用户反馈"召回内容场景略有偏差"的真根因。
         _BREADCRUMB_MARKERS = (
-            "🎯[", "[联想命中", "[命中:", "命中:", "score=", "[统一召回]",
+            "🎯[", "[联想命中", "[命中:", "命中:", "score=", "[统一召回]", "框架自动注入",
             "[Route A", "如需更多调 sense_entity",
         )
 
@@ -2635,8 +2832,31 @@ class AIAgent:
             # 排序取 top
             sorted_results = sorted(all_results_map.values(),
                                     key=lambda x: x.get("_weighted", 0), reverse=True)
+            # ── 联想门槛 V1: 相关性阈值过滤 ──
+            gated = [r for r in sorted_results
+                     if r.get("_weighted", 0) >= _PASSIVE_MIN_WEIGHTED]
+            # 同文去重: 认知库里同文多条(不同 chunk_id)只注一条 — zero 10/20 实锤 #23765/#23767
+            seen_hashes = getattr(self, "_injected_text_hashes", None)
+            if seen_hashes is None:
+                seen_hashes = set()
+                self._injected_text_hashes = seen_hashes  # 尽早持久化引用(静默分支也不丢)
+            deduped = []
+            for r in gated:
+                th = hashlib.md5("".join((r.get("text") or "").split()).encode()).hexdigest()
+                if th not in seen_hashes:
+                    deduped.append(r)
+                    seen_hashes.add(th)  # 本轮内同文也要去重(回归场景3实锤)
+            if not deduped:
+                return  # 本轮无足够相关且未注入过的联想 → 静默, 不打扰
+            # 醒段级冷却: 距上次注入不满 N 条消息时, 仅当最高分显著超阈值才放行
+            _now_len = len(messages)
+            if _now_len < getattr(self, "_recall_cooldown_until", 0):
+                if deduped[0].get("_weighted", 0) < _PASSIVE_MIN_WEIGHTED * _RECALL_ESCALATE_RATIO:
+                    return
+            self._recall_cooldown_until = _now_len + _RECALL_COOLDOWN_MSGS
+            self._injected_text_hashes = seen_hashes  # 已在循环内逐条 add
             entity_breadcrumbs = render_breadcrumbs(
-                sorted_results[:10], new_entities=entities
+                deduped[:_PASSIVE_TOP_N], new_entities=entities
             )
         except Exception as ue:
             logger.warning(
@@ -2665,6 +2885,9 @@ class AIAgent:
             )
             entity_breadcrumbs = "\n".join(lines)
 
+        # 归因标识: 明示框架自动注入(联想推荐), 非模型发起的调用 —
+        # 防模型侧误判为自身调用走排查弯路(zhp 2026-10-20 反馈)
+        entity_breadcrumbs = "[框架自动注入 · 联想推荐]\n" + entity_breadcrumbs
         breadcrumb_text = entity_breadcrumbs
         assistant_msg, tool_msg = self._sys_tool_call("entity_recall", breadcrumb_text)
         messages.append(assistant_msg)
@@ -2857,7 +3080,23 @@ def _sanitize_payload_messages(messages: list[dict[str, Any]]) -> None:
     2. 孤儿 tool 剔除：tool 结果的 tool_call_id 在前文 assistant.tool_calls
        中无配对 → 删除（实测 alpha 50 条消息 16 条孤儿，剔除后同 payload
        重放即被接受）。
+
+    DS 接入归一（2026-10-28，DeepSeek 端点严格校验、GLM 从不查——归一后
+    对两家语义等价、payload 全程 spec 合法）：
+    0a. assistant/tool 消息 ``content=null`` → ""（GLM 纯工具回复常见 null，
+        DS 422 invalid type: null）。
+    0b. 无父对的 tool 消息（DB 回放丢 assistant 半边的合成注入）降级为
+        user 消息（内容原样）——DS 400 "must be followed by tool messages"。
     """
+    # 0. DS 兼容归一（在头不变式与孤儿剔除之前）
+    for i, m in enumerate(messages):
+        if not isinstance(m, dict):
+            continue
+        if m.get("content") is None:
+            m["content"] = ""
+        if m.get("role") == "tool" and not m.get("tool_call_id"):
+            # 无 id 的 tool（历史回放丢配对）→ 降级 user，内容原样保留
+            messages[i] = {"role": "user", "content": m.get("content") or ""}
     # 1. 头不变式
     for i, m in enumerate(messages):
         if m.get("role") == "system":

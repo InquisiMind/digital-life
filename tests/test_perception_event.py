@@ -12,16 +12,24 @@ from domain.lifecycle.event_registry import get_event_type, validate_event_type
 
 
 def test_perception_signal_registered():
-    """perception_signal 已在 event_types.yaml 注册。"""
+    """perception_signal 已在 event_types.yaml 注册。
+
+    2026-10-28 语音会话改造后 display_name=人类呼唤 / priority=10；
+    2026-10-30 语音合批：accumulate 防抖窗口 8s（模型思考期连续语音句
+    合并进同一条事件，见 tests/test_voice_event_merge.py）。
+    """
     assert validate_event_type("perception_signal", raise_on_unknown=True) is True
     et = get_event_type("perception_signal")
     assert et is not None
-    assert et.display_name == "感知信号"
-    assert et.priority == 7
+    assert et.display_name == "人类呼唤"
+    assert et.priority == 10
     assert et.consumption_policy == "on_trigger"
+    assert et.debounce_window_s == (8, 8)  # registry 解析为 (min, max) 元组
+    assert et.merge_policy == "accumulate"
     # allowed_tools 应含回看工具
     assert "sense_media" in et.allowed_tools
     assert "express_to_human" in et.allowed_tools
+    assert "get_latest_input" in et.allowed_tools
 
 
 def test_emit_perception_signal_does_not_raise(monkeypatch):

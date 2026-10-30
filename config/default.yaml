@@ -21,4 +21,13 @@ model:
   provider: glm
   base_url: https://open.bigmodel.cn/api/coding/paas/v4
   name: glm-5.3
-  vision: glm-5-3-flash
+  vision: glm-5.3-flash
+  # 产品三档 → 厂商 reasoning_effort 值由 provider 家族声明（GLM low/high/xhigh）。
+  # 网关值域不同（newapi 只认 low/high/max）时在机器层 local.yaml 覆盖单档：
+  #   reasoning_depth_map: {deep: max}
+agent:
+  # 思考深度是"人"的基本配置：quick 快答 / standard 标准 / deep 深思。
+  # 这里是未声明者的兜底；每个人在自己的 apps/<id>/config/app.yaml 覆盖，
+  # 控制台「任务策略」与服务台 def 详情都可改。每次模型调用就按这个档，
+  # 运行时没有快答/升档/卡住兜底等场景规则（2026-10-20 定稿）。
+  reasoning_depth: standard

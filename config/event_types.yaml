@@ -657,8 +657,12 @@ event_types:
       media_path: string?
       ok: boolean?
     description: 人类主动呼唤数字生命看一眼当前屏幕——"看看这个"，附带视觉+语音理解
-    debounce_window_s: 0
-    merge_policy: latest
+    # 2026-10-30 语音合批：模型思考期间连续到来的语音句合并进同一条事件
+    # （accumulate 攒 _merged_texts，模板 {_merged_texts_block} 展示），而不是
+    # 一句一个事件逐条 midsession 注入。窗口由消费闸门自然封口：事件被消费
+    # （唤醒即触发/模型 mid-session 接走）后合并链断开，下一句是全新事件。
+    debounce_window_s: 8
+    merge_policy: accumulate
     consumption_policy: on_trigger
     wake_prompt: '👁️ 人类在呼唤你
 
@@ -666,12 +670,16 @@ event_types:
       你的听觉信号：{transcript}
 
 
-      注意：用户在通过语音和你交流（可能在等你说）。建议先简短回应一句表示收到，让用户知道你在，然后再做事，做完再汇报结果。回复要口语化、简短，适合听。可以分多次表达——每次说一小段，不用一次把话说完，多次表达会自动排队依次播出。
+      {_merged_texts_block}
+
+
+      {voice_mode_note}
 
 
       '
     allowed_tools:
     - express_to_human
+    - get_latest_input
     - sense_image
     - sense_media
     - sense_status

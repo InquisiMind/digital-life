@@ -14,6 +14,16 @@ config/*.bak*
 apps/*/
 !apps/.gitkeep
 
+# === 业务层 ===
+# business/ 是业务产品实现（AI 战略咨询、团队协作等平台层），含业务细节，
+# 不入公开远端 GitHub；本地由 business/ 内独立私有 git 仓库做版本管理。
+business/
+
+# === 协作群组运行时 ===
+# groups/<grp-id>/ 是团队协作的运行时工作区（群组共享文档、成员工作稿），
+# 属运行时生成数据 + 公司侧工作产物，永不入库。
+groups/
+
 # === 运行时数据 ===
 *.db
 *.db-shm

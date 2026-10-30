@@ -7,7 +7,9 @@
     （data/、workspace/）；persona/skills/app.yaml/secrets 是定义层资产，
     由路径中枢二跳共享，不复制进服务目录（避免漂移）。
   - 服务级触发源默认关（特性 3）：订阅默认只有消息类——消息是对话服务的
-    存在意义；其余事件（闹钟/项目/广播）须显式写入 subscriptions。
+    存在意义；其余事件（项目/广播）须显式写入 subscriptions。例外是服务
+    自设的 timer 闹钟：rest 工具向服务承诺"闹钟已设置、到点醒来"，所以
+    闹钟到期永远拉起，不依赖订阅表显式声明（SERVICE_WAKE_KINDS）。
   - 归档 archived = 事实上的封存：事件层拒绝（messaging.emit_to_service）
     + 调度循环不再拉起（service_runner 只扫 active），不需要状态机
     （特性 1：开关 + 记忆持久天然满足"完成后封存、新对话可再入"）。
@@ -26,6 +28,13 @@ logger = logging.getLogger("digital_life.domain.service")
 # 服务级订阅永远放行的事件种类（对齐实例级订阅闸的 _ALWAYS_PASSTHROUGH_KINDS
 # 中与对话相关的子集；birth 是服务自身首次引导的内部事件，不经此闸）。
 SERVICE_PASSTHROUGH_KINDS = {"message", "group_message"}
+
+# 调度循环判定"到期事件是否拉起 worker"的恒含集合 = 消息类 + 自设闹钟。
+# timer 只能由服务自己在 worker 内 set_alarm 产生（落在自己的 state.db），
+# 到期不叫醒自己就等于 rest 的"预计 X 醒来"承诺作废——模板创建的服务从未
+# 显式订阅 timer，闹钟只能靠恰好到来的消息合批捎上（2026-10-20 PM 睡过
+# 10:27 闹钟、4 分半后才被群消息捎醒的事故）。其余 kind 仍按 subscriptions。
+SERVICE_WAKE_KINDS = frozenset(SERVICE_PASSTHROUGH_KINDS | {"timer"})
 
 
 def validate_agent_def(def_id: str) -> Path:
@@ -61,6 +70,7 @@ def create_service(
     *,
     service_id: str | None = None,
     project_id: str = "",
+    owner_ref: str = "",
     display_name: str = "",
     capabilities: dict | None = None,
     subscriptions: list | None = None,
@@ -71,12 +81,14 @@ def create_service(
     新建服务要指定的四件事（设计文档 6.1）：基于哪个定义（此处）、属于哪个
     项目（project_id，可空=未挂项目）、初始上下文与对客身份（上层职责，
     刀 3 管理面接入；此处先落注册表字段）。tools：岗位工具面（模版角色）。
+    owner_ref：委托关系（后台子代理，见 domain/service/delegate.py）。
     """
     validate_agent_def(agent_def_id)
     svc = services_registry.create_service(
         agent_def_id,
         service_id=service_id,
         project_id=project_id,
+        owner_ref=owner_ref,
         display_name=display_name,
         capabilities=capabilities,
         subscriptions=subscriptions,

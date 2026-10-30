@@ -163,9 +163,10 @@ def assemble(
 
     # ④ 主体旗标：service_only 对所有默认面排除（协作工具的唯一入口是
     #    授予——这是岗位收紧能成立的前提）；host_only 仅服务默认面排除；
-    #    capability_scope=shared（agent 自注册的 shared 工具）对所有默认面
-    #    排除——"全实例可选启用"按字面落实：注册者注册时即授予，其他人显式
-    #    授予才可见，不再漫灌。
+    #    instance_hidden 仅实例默认面排除（如洞见研报——服务型专属，实例不
+    #    沾）；capability_scope=shared（agent 自注册的 shared 工具）对所有
+    #    默认面排除——"全实例可选启用"按字面落实：注册者注册时即授予，其他
+    #    人显式授予才可见，不再漫灌。
     is_service = _is_service(runtime_id)
     dropped = set()
     for n in names:
@@ -173,6 +174,7 @@ def assemble(
         if (
             meta.get("service_only")
             or (is_service and meta.get("host_only"))
+            or (not is_service and meta.get("instance_hidden"))
             or meta.get("capability_scope") == "shared"
         ):
             dropped.add(n)

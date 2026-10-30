@@ -53,8 +53,13 @@ def test_resolve_openai_reasoning_family():
 
 
 def test_resolve_generic_openai_for_domestic_models():
-    # DeepSeek / Qwen / Kimi / Moonshot / 裸 GPT 都走 GenericOpenAIProvider（drop）
-    for model in ["deepseek-reasoner", "qwen-max", "kimi-k1.5", "moonshot-v1-8k", "gpt-4o", "unknown-model"]:
+    # Qwen / Kimi / Moonshot / 裸 GPT 走 GenericOpenAIProvider（drop）；
+    # deepseek-* 走 DeepSeekProvider（2026-10-30 DS 官方直连接入后认领，同为 drop）
+    from infrastructure.ai.providers import DeepSeekProvider
+    p = resolve_provider("deepseek-reasoner")
+    assert isinstance(p, DeepSeekProvider), "deepseek-reasoner 应路由到 DeepSeekProvider"
+    assert p.thinking_keep_mode == "drop"
+    for model in ["qwen-max", "kimi-k1.5", "moonshot-v1-8k", "gpt-4o", "unknown-model"]:
         p = resolve_provider(model)
         assert isinstance(p, GenericOpenAIProvider), f"{model} 应路由到 GenericOpenAIProvider"
         assert p.thinking_keep_mode == "drop"
@@ -128,9 +133,9 @@ def test_stepfun_reuse_injects_reasoning_content():
     assert result[1]["content"] == "你好"
 
 
-def test_stepfun_passes_reasoning_effort():
-    """StepFun 实测接受 reasoning_effort 字段，与 GLM 同协议透传。"""
-    out = StepFunProvider().customize_payload({}, reasoning_config={"effort": "high"})
+def test_stepfun_maps_depth_like_glm():
+    """StepFun 实测接受 reasoning_effort 字段，与 GLM 同一张声明表。"""
+    out = StepFunProvider().customize_payload({}, reasoning_config={"depth": "standard"})
     assert out["reasoning_effort"] == "high"
 
 
@@ -237,25 +242,43 @@ def test_openai_reasoning_extracts_from_reasoning_summary():
 # ─────────────────── customize_payload reasoning_effort ───────────────────
 
 
-def test_glm_passes_5_level_effort():
-    out = GLMProvider().customize_payload({}, reasoning_config={"effort": "xhigh"})
-    assert out["reasoning_effort"] == "xhigh"
+def test_glm_depth_map_three_levels():
+    """产品三档 → GLM 声明表 low/high/xhigh；medium 不进产品。"""
+    p = GLMProvider()
+    assert p.customize_payload({}, reasoning_config={"depth": "quick"})["reasoning_effort"] == "low"
+    assert p.customize_payload({}, reasoning_config={"depth": "standard"})["reasoning_effort"] == "high"
+    assert p.customize_payload({}, reasoning_config={"depth": "deep"})["reasoning_effort"] == "xhigh"
 
 
-def test_generic_drops_effort():
-    out = GenericOpenAIProvider().customize_payload({}, reasoning_config={"effort": "xhigh"})
+def test_unknown_depth_or_missing_config_sends_no_field():
+    p = GLMProvider()
+    assert "reasoning_effort" not in p.customize_payload({}, reasoning_config={"depth": "medium"})
+    assert "reasoning_effort" not in p.customize_payload({}, reasoning_config=None)
+    assert "reasoning_effort" not in p.customize_payload({}, reasoning_config={})
+
+
+def test_depth_map_override_for_gateway_value_domain():
+    """网关值域与家族不同（newapi 只认 low/high/max）：配置声明单档覆盖，其余档照表。"""
+    cfg = {"depth": "deep", "depth_map": {"deep": "max"}}
+    assert GLMProvider().customize_payload({}, reasoning_config=cfg)["reasoning_effort"] == "max"
+    cfg2 = {"depth": "standard", "depth_map": {"deep": "max"}}
+    assert GLMProvider().customize_payload({}, reasoning_config=cfg2)["reasoning_effort"] == "high"
+
+
+def test_generic_drops_depth():
+    out = GenericOpenAIProvider().customize_payload({}, reasoning_config={"depth": "deep"})
     assert "reasoning_effort" not in out
 
 
-def test_openai_reasoning_remaps_5_to_3_levels():
+def test_openai_reasoning_depth_map():
     p = OpenAIReasoningProvider()
-    assert p.customize_payload({}, reasoning_config={"effort": "minimal"})["reasoning_effort"] == "low"
-    assert p.customize_payload({}, reasoning_config={"effort": "xhigh"})["reasoning_effort"] == "high"
-    assert p.customize_payload({}, reasoning_config={"effort": "medium"})["reasoning_effort"] == "medium"
+    assert p.customize_payload({}, reasoning_config={"depth": "quick"})["reasoning_effort"] == "low"
+    assert p.customize_payload({}, reasoning_config={"depth": "standard"})["reasoning_effort"] == "medium"
+    assert p.customize_payload({}, reasoning_config={"depth": "deep"})["reasoning_effort"] == "high"
 
 
 def test_payload_not_mutated():
     """customize_payload 返回副本，不修改入参。"""
     src = {"model": "glm"}
-    GLMProvider().customize_payload(src, reasoning_config={"effort": "high"})
+    GLMProvider().customize_payload(src, reasoning_config={"depth": "standard"})
     assert src == {"model": "glm"}

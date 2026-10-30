@@ -67,10 +67,15 @@ def test_sense_audio_missing_deps_returns_error(monkeypatch):
 
 
 def test_perception_tools_in_agent_load_list():
-    """_ensure_tools_loaded 应包含 perception_tools（spec FR-014 工具可见性）。"""
+    """perception_tools 装载状态锁定（2026-10 决策：感知热键链路不上生产）。
+
+    历史：spec FR-014 曾要求默认装载；后拍板感知热键/duodian 工具不上生产
+    装载清单（按需实例再挂）。本测试锁住"默认不装载"的现状——若未来重新
+    默认装载，把断言翻回来即可。
+    """
     import inspect
 
     from infrastructure.ai import agent
 
     src = inspect.getsource(agent.AIAgent._ensure_tools_loaded)
-    assert "interfaces.tools.perception_tools" in src
+    assert "interfaces.tools.perception_tools" not in src

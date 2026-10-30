@@ -201,6 +201,129 @@ def _run_foreground(api_port: int | None = None) -> int:
     return subprocess.call(_runtime_command(), cwd=str(ROOT), env=_base_env(api_port, ROOT))
 
 
+# ── launchd KeepAlive 探测收养（2026-10-30 双 master 根治）──────────────────
+# Mac 上有 launchd KeepAlive 任务直跑 gateway/main.py：stop 杀掉它后 KeepAlive
+# 秒级拉新 master 抢回 8642。此前 start 不探测就再 spawn → 双 master 并存漂
+# 8643；stop 后 pidfile 空转报假 "stopped"。收养 = 找到活 master → 健康后写
+# 回 pidfile/meta，不再制造第二个。
+_LAUNCHD_LABEL = "com.zhp.digital-life.master"
+
+
+def _launchd_keepalive() -> bool:
+    """macOS launchd KeepAlive master 是否在管（其他平台恒 False）。"""
+    if IS_WINDOWS or not sys.platform.startswith("darwin"):
+        return False
+    try:
+        out = subprocess.run(
+            ["launchctl", "list"], capture_output=True, text=True, timeout=5
+        ).stdout
+        return _LAUNCHD_LABEL in (out or "")
+    except Exception:
+        return False
+
+
+def _find_running_masters() -> list[int]:
+    """本仓库正在运行的 master 进程（gateway/main.py，不含 --instance worker）。"""
+    try:
+        out = subprocess.run(
+            ["ps", "-eo", "pid=,command="], capture_output=True, text=True, timeout=5
+        ).stdout
+    except Exception:
+        return []
+    root_marker = str(ROOT / "gateway" / "main.py")
+    pids: list[int] = []
+    for line in (out or "").splitlines():
+        line = line.strip()
+        if root_marker not in line or "--instance" in line:
+            continue
+        head = line.split(None, 1)
+        if head:
+            try:
+                pids.append(int(head[0]))
+            except ValueError:
+                pass
+    return pids
+
+
+def _port_serving(port: int) -> bool:
+    """端口上是否有 HTTP 服务应答（任何状态码都算活着；连接拒绝 = 没起）。"""
+    import urllib.error
+    import urllib.request
+
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2)
+        return True
+    except urllib.error.HTTPError:
+        return True  # 有 HTTP 应答 = 服务在（404 也是活着）
+    except Exception:
+        return False
+
+
+def _adopt_master(api_port: int | None, *, wait_s: float, reason: str) -> int | None:
+    """探测到已有 master → 等健康（launchd 拉起后 Python import ~16s）→ 收养。
+
+    无 master 立即返回 None；有 master 但 wait_s 内不健康也收养（卡死状态
+    让 pidfile 至少指向真相，而不是再 spawn 一个加剧混乱）。多个 master
+    收养 pid 最小的那个并告警。
+    """
+    masters = _find_running_masters()
+    if not masters:
+        return None
+    if len(masters) > 1:
+        print(f"WARNING: multiple masters running {masters} — 收养 {min(masters)}，"
+              f"其余请人工核查（多 master 会抢端口/漂移）")
+    # 探测候选端口：显式指定 → 上次 meta 记录 → 默认 8642（现有 master 实际
+    # 服务的端口；_find_free_port 给的是"下一个空闲"不是它）
+    seen: set[int] = set()
+    candidates: list[int] = []
+    for p in (api_port, _meta_api_port(), 8642):
+        if p and p not in seen:
+            seen.add(p)
+            candidates.append(p)
+    deadline = time.time() + wait_s
+    while True:
+        alive = [p for p in masters if _is_running(p)]
+        if not alive:
+            return None
+        serving = next((p for p in candidates if _port_serving(p)), None)
+        if serving is not None or time.time() >= deadline:
+            pid = min(alive)
+            port = serving or candidates[-1]
+            PID_FILE.write_text(str(pid))
+            MASTER_PID_FILE.write_text(str(pid))
+            META_FILE.write_text(
+                json.dumps(
+                    {
+                        "pid": pid,
+                        "started_at": time.time(),
+                        "log": str(LOG_FILE),
+                        "runtime_home": str(VAR_DIR),
+                        "api_port": port,
+                        "adopted": True,
+                        "adopt_reason": reason,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+            return pid
+        time.sleep(1.0)
+
+
+def _adopt_respawned_master(api_port: int | None) -> int | None:
+    """launchd KeepAlive：stop 后被秒级拉起 → 等健康后收养新 pid（stop 挡不住）。"""
+    if not _launchd_keepalive():
+        return None
+    return _adopt_master(api_port, wait_s=30.0, reason="launchd-respawn")
+
+
+def _meta_api_port() -> int | None:
+    try:
+        return json.loads(META_FILE.read_text()).get("api_port")
+    except Exception:
+        return None
+
+
 def _start(args: argparse.Namespace) -> int:
     _prepare_runtime_home()
     pid = _read_pid()
@@ -211,10 +334,25 @@ def _start(args: argparse.Namespace) -> int:
     if pid:
         _cleanup_pid_files()
 
+    # launchd KeepAlive 探测收养（2026-10-30 双 master 根治）：stop 后 launchd
+    # 秒级拉新 master 抢回 8642；不探测直接 spawn = 双 master 并存（漂 8643）。
+    # 注意收养探测用"显式传入或默认 8642"——_resolve_api_port(None) 会找空闲
+    # 端口（8642 被现有 master 占着就给 8643），探 8643 永远不通白等 30s。
+    api_port = _resolve_api_port(args.api_port)
+    explicit_port: int | None = None
+    if args.api_port and args.api_port != "auto":
+        try:
+            explicit_port = int(args.api_port)
+        except (TypeError, ValueError):
+            explicit_port = None
+    adopted = _adopt_master(explicit_port, wait_s=30.0, reason="start-probe")
+    if adopted:
+        print(f"digital-life already running: pid={adopted} (adopted — launchd/残留 master)")
+        print(f"log={LOG_FILE}")
+        return 0
+
     # 清理上次残留的 instance 子进程 PID 文件（master 重启后这些都不再有效）
     _cleanup_instance_pid_files()
-
-    api_port = _resolve_api_port(args.api_port)
 
     if args.foreground:
         return _run_foreground(api_port)
@@ -276,6 +414,13 @@ def _start(args: argparse.Namespace) -> int:
 def _stop(args: argparse.Namespace) -> int:
     pid = _read_pid()
     if not pid:
+        # pidfile 空但 launchd master 可能活着（重生后 pidfile 未归位的历史状态）
+        respawned = _adopt_respawned_master(None)
+        if respawned:
+            print(f"digital-life actually running: pid={respawned} (adopted)")
+            print(f"KeepAlive 在管，stop 挡不住：真要停用 launchctl bootout "
+                  f"gui/{os.getuid()}/{_LAUNCHD_LABEL}")
+            return 1
         print("digital-life is not running")
         _cleanup_pid_files()
         # 清理可能残留的 instance PID 文件
@@ -284,6 +429,10 @@ def _stop(args: argparse.Namespace) -> int:
     if not _is_running(pid):
         print(f"digital-life pid file was stale: pid={pid}")
         _cleanup_pid_files()
+        respawned = _adopt_respawned_master(None)
+        if respawned:
+            print(f"digital-life actually running: pid={respawned} (launchd respawn, adopted)")
+            return 1
         _cleanup_instance_pid_files()
         return 0
 
@@ -310,12 +459,17 @@ def _stop(args: argparse.Namespace) -> int:
 
     # master 收到 SIGTERM 后会通过 InstanceSupervisor 优雅 stop 所有子进程，
     # 这可能需要 5-15 秒（每个实例 FeishuAdapter.stop + cron join）
+    prev_port = _meta_api_port()
     deadline = time.time() + args.timeout
     while time.time() < deadline:
         if not _is_running(pid):
             _cleanup_pid_files()
             _cleanup_instance_pid_files()
             print("digital-life stopped")
+            respawned = _adopt_respawned_master(prev_port)
+            if respawned:
+                print(f"launchd KeepAlive 已拉起新 master: pid={respawned} (已收养；"
+                      f"stop 挡不住 KeepAlive，真重启用 restart)")
             return 0
         time.sleep(0.25)
 
@@ -337,6 +491,9 @@ def _stop(args: argparse.Namespace) -> int:
                 os.kill(pid, signal.SIGKILL)
         _cleanup_pid_files()
         print("digital-life killed after timeout")
+        respawned = _adopt_respawned_master(_meta_api_port())
+        if respawned:
+            print(f"launchd KeepAlive 已拉起新 master: pid={respawned} (已收养)")
         return 0
 
     print("digital-life did not stop before timeout")
@@ -367,6 +524,26 @@ def _status(_args: argparse.Namespace) -> int:
 
 
 def _restart(args: argparse.Namespace) -> int:
+    # launchd KeepAlive 在管时，stop→start 会被收养逻辑变成 no-op（新 master
+    # 秒级回归）。真重启走 launchctl kickstart -k 让 launchd 自己弹杀重拉。
+    if _launchd_keepalive():
+        prev_port = _meta_api_port()
+        try:
+            uid = os.getuid()
+            subprocess.run(
+                ["launchctl", "kickstart", "-k", f"gui/{uid}/{_LAUNCHD_LABEL}"],
+                capture_output=True, timeout=15,
+            )
+            print(f"launchd service bounced: {_LAUNCHD_LABEL} (kickstart -k)")
+            time.sleep(2.5)
+            pid = _adopt_master(prev_port, wait_s=45.0, reason="restart-kickstart")
+            if pid:
+                print(f"digital-life restarted: pid={pid} (launchd)")
+                print(f"log={LOG_FILE}")
+                return 0
+            print("launchd bounce 后未探测到健康 master，退回常规 restart 路径")
+        except FileNotFoundError:
+            pass  # 无 launchctl → 常规路径
     stop_args = argparse.Namespace(timeout=args.timeout, kill=True)
     _stop(stop_args)
     # Lark WS 后端需要 ~1-2 秒释放旧连接；多实例需要更长时间确保所有 bot WS 都释放

@@ -132,6 +132,8 @@ def test_daemon_toggle_idempotent(monkeypatch, tmp_path):
     # 采集器必须 mock：真 _Recorder 会 spawn /usr/bin/python3 麦克风子进程
     # 并把 wav 落到真实 media_dir（test-toggle-iid 目录就是这么来的）。
     monkeypatch.setattr(dm, "_Recorder", _FakeRecorder)
+    # state.json / wav 落点一并隔离（test_daemon_toggle_idempotent 同款防护）
+    monkeypatch.setattr(dm, "media_dir", lambda iid: tmp_path)
     # _feedback 会发 macOS 通知 + 叮声，测试期一并静音。
     monkeypatch.setattr(dm, "_feedback", lambda *a, **kw: None)
 

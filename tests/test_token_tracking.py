@@ -65,15 +65,21 @@ def test_token_tracker_records_and_aggregates(isolated_runtime):
     assert "T" in t.day_resets_at()
 
 
-def test_token_tracker_zero_records_skipped(isolated_runtime):
+def test_token_tracker_zero_records_skipped(isolated_runtime, monkeypatch, tmp_path):
     """全 0 token 的记录应被静默丢掉。"""
     from infrastructure.budget import get_token_tracker
-    from infrastructure.config import set_current_instance_id
-    set_current_instance_id("test-zero")
+    from infrastructure.config import (
+        reset_current_instance_id,
+        set_current_instance_id,
+    )
+    # 实例上下文用完即复位——泄漏会让后续测试按泄漏身份写真实 apps/
+    monkeypatch.setattr("infrastructure.config.get_project_root", lambda: tmp_path)
+    tok = set_current_instance_id("test-zero")
     t = get_token_tracker()
     t.record(instance_id="test-zero", input_tokens=0, output_tokens=0,
              session_id="s")
     assert t.usage_today("test-zero") == 0
+    reset_current_instance_id(tok)
 
 
 def test_energy_token_coefficient_defaults_and_env_override(isolated_runtime, monkeypatch):
@@ -95,12 +101,17 @@ def test_energy_token_coefficient_defaults_and_env_override(isolated_runtime, mo
     assert eng.ENERGY_PER_KTOKEN_OUTPUT == 0.9
 
 
-def test_agent_records_token_usage_from_raw_response(isolated_runtime):
+def test_agent_records_token_usage_from_raw_response(isolated_runtime, monkeypatch, tmp_path):
     """AIAgent._record_token_usage 解析 raw.usage，累计到 session 字段 + 写预算追踪器。"""
     from infrastructure.ai.agent import AIAgent
     from infrastructure.budget import get_token_tracker
-    from infrastructure.config import set_current_instance_id
-    set_current_instance_id("test-agent")
+    from infrastructure.config import (
+        reset_current_instance_id,
+        set_current_instance_id,
+    )
+    monkeypatch.setattr("infrastructure.config.get_project_root", lambda: tmp_path)
+    # 实例上下文必须随测试复位——泄漏会让后续测试按泄漏身份写真实 apps/
+    tok = set_current_instance_id("test-agent")
 
     ag = AIAgent(model="x", base_url="http://x", session_id="s1")
     assert ag.session_input_tokens == 0
@@ -117,15 +128,21 @@ def test_agent_records_token_usage_from_raw_response(isolated_runtime):
     assert ag.session_input_tokens == 20000
     assert ag.session_output_tokens == 800
     # budget_log 也记了一笔
+    reset_current_instance_id(tok)
+
     used = get_token_tracker().usage_last_hour("test-agent")
     assert used == 20800
 
 
-def test_agent_skips_missing_usage(isolated_runtime):
+def test_agent_skips_missing_usage(isolated_runtime, monkeypatch, tmp_path):
     """raw 没有 usage 字段时静默跳过，不破坏 LLM 流程。"""
     from infrastructure.ai.agent import AIAgent
-    from infrastructure.config import set_current_instance_id
-    set_current_instance_id("test-missing")
+    from infrastructure.config import (
+        reset_current_instance_id,
+        set_current_instance_id,
+    )
+    monkeypatch.setattr("infrastructure.config.get_project_root", lambda: tmp_path)
+    tok = set_current_instance_id("test-missing")
     ag = AIAgent(model="x", base_url="http://x")
 
     # 没 usage 字段
@@ -136,6 +153,8 @@ def test_agent_skips_missing_usage(isolated_runtime):
     # usage 是 None
     ag._record_token_usage({"usage": None})
     assert ag.session_input_tokens == 0
+
+    reset_current_instance_id(tok)
 
     # usage 全 0
     ag._record_token_usage({"usage": {"prompt_tokens": 0, "completion_tokens": 0}})

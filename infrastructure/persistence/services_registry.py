@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS services (
     service_id TEXT PRIMARY KEY,
     agent_def_id TEXT NOT NULL,
     project_id TEXT DEFAULT '',
+    owner_ref TEXT DEFAULT '',
     display_name TEXT DEFAULT '',
     status TEXT NOT NULL DEFAULT 'active',
     capabilities_json TEXT DEFAULT '{}',
@@ -70,6 +71,7 @@ CREATE TABLE IF NOT EXISTS service_leases (
 _MIGRATION_COLUMNS = {
     "services": {
         "tools_json": "TEXT",
+        "owner_ref": "TEXT DEFAULT ''",
     },
 }
 
@@ -162,6 +164,7 @@ def create_service(
     agent_def_id: str,
     service_id: str | None = None,
     project_id: str = "",
+    owner_ref: str = "",
     display_name: str = "",
     capabilities: dict | None = None,
     subscriptions: list | None = None,
@@ -170,19 +173,23 @@ def create_service(
     """注册一个服务型运行体并返回完整行。不创建目录（目录骨架归 domain 层）。
 
     tools：岗位工具面（模版角色 → 服务行，None=默认全量项目工具集）。
+    owner_ref：委托关系（后台子代理 → 委托人），形如 instance:{uuid} /
+    service:{sid}；普通服务留空。创建后语义上不可变（无改挂路径）。
     """
     _ensure_schema()
     sid = service_id or new_service_id()
     now = _now_iso()
     with closing(_connect()) as conn, conn:
         conn.execute(
-            "INSERT INTO services (service_id, agent_def_id, project_id, display_name,"
-            " status, capabilities_json, subscriptions_json, tools_json, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO services (service_id, agent_def_id, project_id, owner_ref,"
+            " display_name, status, capabilities_json, subscriptions_json, tools_json,"
+            " created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 sid,
                 agent_def_id,
                 project_id,
+                owner_ref,
                 display_name,
                 SERVICE_STATUS_ACTIVE,
                 json.dumps(capabilities or {}, ensure_ascii=False),
@@ -193,8 +200,8 @@ def create_service(
                 now,
             ),
         )
-    logger.info("SERVICE_CREATED service_id=%s agent_def_id=%s project_id=%s",
-                sid, agent_def_id, project_id)
+    logger.info("SERVICE_CREATED service_id=%s agent_def_id=%s project_id=%s owner=%s",
+                sid, agent_def_id, project_id, owner_ref)
     row = lookup_service(sid)
     assert row is not None
     return row
@@ -222,6 +229,32 @@ def list_services(status: str | None = None) -> list[dict]:
             rows = conn.execute(
                 "SELECT * FROM services ORDER BY created_at"
             ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def list_services_by_owner(
+    owner_ref: str,
+    *,
+    status: str | None = None,
+    agent_def_id: str | None = None,
+) -> list[dict]:
+    """按委托人列服务（后台子代理的并发上限与复盘聚合都走这里）。"""
+    if not owner_ref:
+        return []
+    _ensure_schema()
+    clauses = ["owner_ref = ?"]
+    params: list[Any] = [owner_ref]
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if agent_def_id:
+        clauses.append("agent_def_id = ?")
+        params.append(agent_def_id)
+    with closing(_connect()) as conn, conn:
+        rows = conn.execute(
+            f"SELECT * FROM services WHERE {' AND '.join(clauses)} ORDER BY created_at",
+            params,
+        ).fetchall()
     return [_row_to_dict(r) for r in rows]
 
 

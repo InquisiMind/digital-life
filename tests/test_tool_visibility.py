@@ -261,9 +261,17 @@ def _legacy_face(*, runtime_id, enabled_toolsets, whitelist):
         is_svc = resolve_service_def(runtime_id or "") is not None
     except Exception:
         pass
+    # service_only 旗标的排除语义与引擎对齐（2026-10-28 起 service_only 不再
+    # 是 consulting 专属清单——任何业务都可按注册表元数据声明，如协作台工具）。
+    # consulting 协作工具维持旧授予面路径（allowed 交集），仅对清单之外的
+    # service_only 工具做默认面排除（引擎语义：无授予不可见）。冻结的只是
+    # 五层顺序与交集算法，旗标语义随引擎走。
+    svc_only = {n for n in names if reg.get_tool_metadata(n).get("service_only")}
+    extra_svc_only = svc_only - set(SERVICE_PROJECT_TOOLS)
     if not is_svc:
-        return [n for n in names if n not in SERVICE_PROJECT_TOOLS]
-    out = [n for n in names if n != "express_to_human"]  # 旧 HOST_HIDDEN_FOR_SERVICES
+        return [n for n in names
+                if n not in SERVICE_PROJECT_TOOLS and n not in extra_svc_only]
+    out = [n for n in names if n != "express_to_human" and n not in extra_svc_only]
     allowed = _legacy_allowed(get_app_instance_id())
     if allowed is not None:
         out = [n for n in out if n not in SERVICE_PROJECT_TOOLS or n in allowed]

@@ -35,6 +35,8 @@ class ConfigField:
     restart_required: bool = True
     readonly: bool = False
     options: tuple[str, ...] = ()
+    # select 选项的展示文案（值 → 标签）；缺省时前端直接显示值
+    option_labels: tuple[tuple[str, str], ...] = ()
     description: str = ""
 
 
@@ -45,7 +47,7 @@ SECTION_META: dict[str, dict[str, str]] = {
     "wechat":    {"label": "微信通道", "description": "ClawBot 凭证。仅私聊。点扫码登录自动获取 Token。"},
     "behavior":  {"label": "群聊行为", "description": "注意关键词 / Owner——与通道无关，是数字生命的行为策略。"},
     "runtime":   {"label": "运行节律 / 精力策略", "description": "心跳、token 上限、精力折算系数。"},
-    "tasks":     {"label": "任务执行策略", "description": "最大轮数、推理强度。"},
+    "tasks":     {"label": "任务执行策略", "description": "最大轮数、思考深度。"},
     "perception": {"label": "感知系统", "description": "快捷键触发录屏录音，视觉模型理解后注入事件。需授予辅助功能/屏幕录制/麦克风权限。改动后需重启网关。"},
     "social":    {"label": "社交接管范围", "description": "飞书全接管的群聊白名单/黑名单。控制数字生命以你的身份拉取哪些群的消息（隐私边界）。改动后下一轮拉取生效。"},
 }
@@ -182,9 +184,15 @@ FIELDS: tuple[ConfigField, ...] = (
     # ════════════ 任务策略 ════════════
     ConfigField("agent.max_turns", "最大执行轮数", "tasks", "yaml", "number", path="agent.max_turns", default=90),
     ConfigField(
-        "agent.reasoning_effort", "推理强度", "tasks", "yaml", "select",
-        path="agent.reasoning_effort", default="medium",
-        options=("minimal", "low", "medium", "high", "xhigh"),
+        "agent.reasoning_depth", "思考深度", "tasks", "yaml", "select",
+        path="agent.reasoning_depth", default="standard",
+        options=("quick", "standard", "deep"),
+        option_labels=(("quick", "快答"), ("standard", "标准"), ("deep", "深思")),
+        restart_required=False,
+        description=(
+            "这个人的基本思考深度，每次模型调用都按它（快答 / 标准 / 深思）。"
+            "厂商档位由模型家族声明：GLM 直连 low / high / xhigh。改完下次唤醒生效。"
+        ),
     ),
 
     # ════════════ 感知系统（feature 003-perception）════════════
@@ -358,6 +366,7 @@ class ConfigCenterWorkflow:
             "restart_required": field.restart_required,
             "readonly": field.readonly,
             "options": list(field.options),
+            "option_labels": dict(field.option_labels),
             "description": field.description,
         }
 
@@ -417,7 +426,7 @@ class ConfigCenterWorkflow:
             "agent": {
                 "runtime_provider": env.get("DIGITAL_LIFE_RUNTIME_PROVIDER", "l4"),
                 "max_turns": ConfigCenterWorkflow._get_nested(yaml_config, "agent.max_turns") or 90,
-                "reasoning_effort": ConfigCenterWorkflow._get_nested(yaml_config, "agent.reasoning_effort") or "medium",
+                "reasoning_depth": ConfigCenterWorkflow._get_nested(yaml_config, "agent.reasoning_depth") or "standard",
             },
         }
 

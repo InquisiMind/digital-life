@@ -133,3 +133,39 @@ python scripts/perception_daemon.py --instance zero --mode cli
 ```
 
 感知信号作为 `perception_signal` 事件注入，与飞书消息等价——主意识空闲时唤醒，运行中时平滑注入（下一轮思考看到）。
+
+## 网页语音会话（前端按钮入口，2026-10-28）
+
+替代快捷键的前端入口：浏览器打开 `http://localhost:8642/voice`，点麦克风按钮进入全双工语音对话。
+
+```
+浏览器(AudioWorklet 16k PCM) → WS /internal/voice/ws
+  → 讯飞 RTASR 大模型版实时转写（type=1 中间结果推浏览器实时字幕；
+     type=0 确认句 = 云端断句点）
+  → 每句 emit perception_signal（reply_channel=voice + quick_first_reply）
+  → 实例首轮 LLM 调用降 quick 档速答，之后回基本档继续干活
+  → 回复走 express_to_human → voice:speaker → 本地 TTS 扬声器
+```
+
+要点：
+- **凭据**：实例 `app.yaml` 的 `perception.stream_asr`（app_id/api_key/api_secret）。两键易反：`api_key`=accessKeyId=控制台 APIKey（实测踩坑，填反握手报 35010）
+- **回声闸门**：TTS 播放期间写 `var/run/voice/tts_active_<iid>` 标记（voice_output 维护），播放中收到的确认句按回声丢弃；打断（barge-in）立即清标记，真人句放行
+- **默认实例**：`config/voice_sense.yaml` 的 `web_voice.default_instance`（当前小张）；连接时 `?instance=<id>` 可覆盖
+- 单会话单槽位（第二个连接收 busy）；讯飞单会话上限 8h，15s 无音频自动补静音帧保活
+- 相关模块：`infrastructure/perception/rtasr_llm.py`（讯飞流客户端）、`web_voice.py`（会话+闸门）、`application/api/voice_ws_routes.py`（WS 路由）、`interfaces/web/voice-console/`（前端）
+
+## 语音对话提速与打断（2026-10-28 二期）
+
+- **模型**：语音小张（6f307170）用 DS 官方 `deepseek-flash`（控制台名 DeepSeek-V4.1-Flash-1017）。实测同 payload 比 GLM 快：首响 1-3.6s（GLM 2-4s 且晚高峰尖刺 6-9s）。DS 严格校验由 `DeepSeekProvider`（providers.py）+ `_sanitize_payload_messages` 归一消化：null content→""、孤儿 tool→user、剥历史 reasoning_content、`thinking:disabled`（V4 思考模式拒绝"tool 结尾"的 agent 循环形状）
+- **流式**：`agent._chat` SSE 流式消费（provider `supports_stream` 声明，env `DIGITAL_LIFE_LLM_STREAM=0` 可关），read 超时退化为 chunk 间隔
+- **提前按句 TTS**：`infrastructure/ai/tool_stream.py` 增量解码 express_to_human 的 text 参数，句成即 `speak()`（不必等整段生成完）；分派时经 `voice_prespeak_offset` ContextVar 剥已播前缀只播尾巴，日志记全文。首句发声 ≈ 说完后 2s
+- **打断（barge-in）**：播报中若讯飞 partial 与最近播报文本"覆盖率 <0.5"（`web_voice._maybe_barge_in`）= 真人插话 → `stop_playback()` 停声（模型继续干活、文字照常下发前端）；回声（覆盖率高）忽略。被打断后下一句绕过回声闸门直接注入
+- **前端**：/voice 字幕区显示小张回复（绿色"小张 · "前缀）与打断提示
+- **TTS 声音**：`perception.tts_voice` 配置。zm_030/zf_001=本地 Kokoro 神经声（kokoro_tts_server :8300）；zh-CN-*=edge-tts 云端；macOS 声名=say。讯飞在线合成未接——Kokoro/edge 已够用，要接再加引擎
+
+## 三期：浏览器播放 + 流水线合成 + 打断静音（2026-10-28 晚）
+
+- **TTS 从浏览器出**（`voice_output._send_web_tts`）：合成完的音频经 WS binary 帧推浏览器 AudioContext 播放——浏览器 AEC 从源头消掉自己播的声音（回声/打断误判的根治），且部署远端也能听到。无活跃网页会话时回退本地 afplay（老行为）
+- **合成∥播放流水线**（`voice_output._synth_worker_loop ×3 + _play_loop`）：speak() 发号入队 → 3 线程并行合成 → 播放线程按序消费。旧"合成→播→合成→播"串行是"半句一顿"的根源；kokoro 长句另拆 ≤12 字子句并行请求（30 字 5.1s→2.2s）
+- **打断静音纪元**（`mute_playback/unmute_playback`）：barge-in 后本轮剩余输出全部只出文字不出声（含流式生成中的后续句），用户句成句注入即解除。文字链路（前端 agent_reply/日志）全程不受影响
+- 事故教训：播放线程是常驻循环，单条异常必须顶层兜底（NameError 一次 = TTS 永久静默）；批量删函数后用 `compileall` + AST 未定义引用扫描双验证

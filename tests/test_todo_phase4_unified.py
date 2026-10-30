@@ -12,8 +12,11 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _instance_context(monkeypatch):
+def _instance_context(monkeypatch, tmp_path):
     iid = f"test-inst-{uuid.uuid4().hex[:8]}"
+    # 项目根隔离到 tmp：todo 落盘（apps/{iid}/data/todos 等）不得写进真实 apps/
+    # （曾因此每次全量测试在 apps/ 留下数百个 test-inst-* 目录，2026-10-28 zhp）
+    monkeypatch.setattr("infrastructure.config.get_project_root", lambda: tmp_path)
     monkeypatch.setenv("DIGITAL_LIFE_INSTANCE_ID", iid)
     from domain.lifecycle.events import set_instance_context
     from infrastructure.config import set_current_instance_id

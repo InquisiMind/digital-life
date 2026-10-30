@@ -71,6 +71,13 @@ class PerceptionConfig:
     # 讯飞 ASR 语言/口音
     iflytek_language: str = "zh_cn"
     iflytek_accent: str = "mandarin"
+    # 实时流式转写（网页语音会话用）：provider=iflytek_rtasr → 讯飞实时语音
+    # 转写大模型版（rtasr_llm.py）。凭据语义与 IAT 相同命名但**两键易反**
+    # （实测 accessKeyId=控制台 APIKey），见 rtasr_llm.py 模块头注释。
+    stream_asr_provider: str = ""
+    stream_asr_app_id: str = ""
+    stream_asr_api_key: str = ""       # accessKeyId（控制台 APIKey）
+    stream_asr_api_secret: str = ""    # accessKeySecret（控制台 APISecret）
 
 
 def _project_root() -> Path:
@@ -154,6 +161,7 @@ def load_config(instance_id: str | None = None) -> PerceptionConfig:
     # 讯飞 ASR 配置
     asr_provider = (perc_cfg.get("asr_provider") or "glm").strip()
     iflytek_cfg = perc_cfg.get("iflytek") or {}
+    stream_cfg = perc_cfg.get("stream_asr") or {}
 
     return PerceptionConfig(
         enabled=bool(perc_cfg.get("enabled", False)),
@@ -175,6 +183,10 @@ def load_config(instance_id: str | None = None) -> PerceptionConfig:
         iflytek_api_secret=str(iflytek_cfg.get("api_secret") or ""),
         iflytek_language=str(iflytek_cfg.get("language") or "zh_cn"),
         iflytek_accent=str(iflytek_cfg.get("accent") or "mandarin"),
+        stream_asr_provider=str(stream_cfg.get("provider") or "").strip(),
+        stream_asr_app_id=str(stream_cfg.get("app_id") or ""),
+        stream_asr_api_key=str(stream_cfg.get("api_key") or ""),
+        stream_asr_api_secret=str(stream_cfg.get("api_secret") or ""),
         live_transcribe=bool(perc_cfg.get("live_transcribe", True)),
         live_min_segment_seconds=float(perc_cfg.get("live_min_segment_seconds", 1.5)),
         live_silence_frames=int(perc_cfg.get("live_silence_frames", 32)),

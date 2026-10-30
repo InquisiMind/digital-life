@@ -3532,9 +3532,30 @@ def _send_voice_local(
             return registry.tool_error(
                 "voice: TTS 未启用（app.yaml perception.tts_enabled: true）"
             )
-        voice = get_tts_voice(iid)
-        rate = get_tts_rate(iid)
-        sent = speak(text, voice=voice, rate=rate)
+        from infrastructure.perception.web_voice import web_tts_rate, web_tts_voice
+
+        voice = web_tts_voice(iid) or get_tts_voice(iid)
+        rate = web_tts_rate()
+        # 语音提前播报（2026-10-28 流式）：流式阶段已按句 TTS 过前 N 个字符，
+        # 这里只播剩余尾巴；conversation_log 仍记全文。前缀为空/越界视为未提前播。
+        prespeak = 0
+        try:
+            from domain.lifecycle.runtime_context import get_voice_prespeak_offset
+
+            prespeak = get_voice_prespeak_offset()
+        except Exception:
+            prespeak = 0
+        speak_text = text[prespeak:] if prespeak > 0 else text
+        # 尾巴为空（整句已提前播完）→ 不再调 TTS；prespeak>0 保证日志仍记全文
+        sent = (bool(speak(speak_text, voice=voice, rate=rate)) if speak_text.strip() else False) or prespeak > 0
+        # 网页语音会话在听：回复文字下发前端（打断时音频停了文字还在）+
+        # 作为 barge-in 的 partial 比对基准
+        try:
+            from infrastructure.perception.web_voice import get_web_voice_hub
+
+            get_web_voice_hub().notify_agent_voice_reply(iid, text)
+        except Exception:
+            pass
     except FileNotFoundError:
         err = "/usr/bin/say not found（仅支持 macOS）"
     except Exception as exc:

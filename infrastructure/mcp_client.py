@@ -64,23 +64,32 @@ def _server_cfg(server: str) -> dict[str, Any] | None:
 
 
 def _result_text(result: Any) -> str:
-    """MCP CallToolResult → 文本（text 块拼接；结构化数据 JSON 化）。"""
+    """MCP CallToolResult → 文本。
+
+    content 文本块优先——协议规定带 structuredContent 时 content 必须携带
+    完整内容，二者是同一份数据的两种视图；structuredContent 只在 content
+    没有任何文本时兜底。两者都拼会把同一份 JSON 喂给模型两遍（FastMCP
+    对纯字符串返回也包一层 {"result": ...} structuredContent）。
+    """
     parts: list[str] = []
+    has_text = False
     for block in (getattr(result, "content", None) or []):
         block_type = getattr(block, "type", None)
         if block_type == "text" and getattr(block, "text", None):
             parts.append(block.text)
+            has_text = True
         else:
             import json
 
             parts.append(json.dumps(
                 {"type": block_type or "unknown", "data": str(block)},
                 ensure_ascii=False, default=str))
-    structured = getattr(result, "structuredContent", None)
-    if structured:
-        import json
+    if not has_text:
+        structured = getattr(result, "structuredContent", None)
+        if structured:
+            import json
 
-        parts.append(json.dumps(structured, ensure_ascii=False, default=str))
+            parts.append(json.dumps(structured, ensure_ascii=False, default=str))
     if getattr(result, "isError", False):
         raise RuntimeError("; ".join(p for p in parts) or "MCP tool error")
     return "\n".join(parts) or "(empty result)"

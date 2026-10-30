@@ -18,6 +18,8 @@ from pathlib import Path
 def _setup(tmp_path, monkeypatch):
     import domain.messages as M
     monkeypatch.setattr(M, "_INSTANCE_DATA_PATH_OVERRIDE", tmp_path)
+    # state.db 等走 get_project_root 的路径一并隔离（否则污染真实 apps/self-iid）
+    monkeypatch.setattr("infrastructure.config.get_project_root", lambda: tmp_path)
     monkeypatch.setenv("DIGITAL_LIFE_INSTANCE_ID", "self-iid")
     from infrastructure.config import set_current_instance_id
     try:

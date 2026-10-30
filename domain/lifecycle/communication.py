@@ -56,9 +56,9 @@ def check_before_send(
             if not eid or eid in seen_ids:
                 continue
             kind = ev.get("kind", "")
+            payload = ev.get("payload", {}) if isinstance(ev.get("payload"), dict) else {}
             if kind in ("message", "group_message"):
                 type_def = get_event_type(kind)
-                payload = ev.get("payload", {}) if isinstance(ev.get("payload"), dict) else {}
                 raw_text = (payload.get("text") or "").strip()
                 sender = payload.get("sender_name", "")
                 seen_ids.add(eid)
@@ -68,6 +68,17 @@ def check_before_send(
                     "display_name": type_def.display_name if type_def else kind,
                     "text": raw_text,
                     "sender": sender,
+                })
+            elif kind == "perception_signal" and payload.get("reply_channel") == "voice":
+                # 语音会话句（2026-10-28 zhp：发言前保证回复基于最新语音消息——
+                # 语音句走同一道未读闸，模型会带着新句重写回复再发）
+                seen_ids.add(eid)
+                unread.append({
+                    "event_id": eid,
+                    "kind": kind,
+                    "display_name": "新的语音消息",
+                    "text": (payload.get("transcript") or "").strip(),
+                    "sender": "用户",
                 })
     except Exception:
         pass
@@ -81,8 +92,8 @@ def check_before_send(
             if not eid or eid in seen_ids:
                 continue
             kind = ev.get("kind", "")
+            payload = ev.get("payload", {}) if isinstance(ev.get("payload"), dict) else {}
             if kind in ("message", "group_message"):
-                payload = ev.get("payload", {}) if isinstance(ev.get("payload"), dict) else {}
                 raw_text = (payload.get("text") or "").strip()
                 seen_ids.add(eid)
                 unread.append({
@@ -91,6 +102,15 @@ def check_before_send(
                     "display_name": ev.get("display_name") or "新消息",
                     "text": raw_text,
                     "sender": payload.get("sender_name", ""),
+                })
+            elif kind == "perception_signal" and payload.get("reply_channel") == "voice":
+                seen_ids.add(eid)
+                unread.append({
+                    "event_id": eid,
+                    "kind": kind,
+                    "display_name": "新的语音消息",
+                    "text": (payload.get("transcript") or "").strip(),
+                    "sender": "用户",
                 })
     except Exception:
         pass

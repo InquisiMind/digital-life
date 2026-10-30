@@ -89,7 +89,7 @@
             <el-input-number v-else-if="field.type === 'number'" v-model="draft[field.key]" />
             <el-select v-else-if="field.type === 'array'" v-model="draft[field.key]" multiple filterable allow-create />
             <el-select v-else-if="field.options && field.options.length" v-model="draft[field.key]" filterable>
-              <el-option v-for="o in field.options" :key="o" :label="o" :value="o" />
+              <el-option v-for="o in field.options" :key="o" :label="(field.option_labels && field.option_labels[o]) || o" :value="o" />
             </el-select>
             <!-- 快捷键录制控件：点击后按下组合键自动捕获 -->
             <div v-else-if="field.type === 'hotkey'" class="hotkey-input-wrap">

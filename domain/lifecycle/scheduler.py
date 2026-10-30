@@ -1221,7 +1221,7 @@ def _wake_digital_life_inner_safe(
     _session_db = None
     session_id = ""
     try:
-        from infrastructure.ai import AIAgent, SessionDB, load_runtime_config, parse_reasoning_effort, resolve_runtime_provider
+        from infrastructure.ai import AIAgent, SessionDB, load_runtime_config, parse_reasoning_depth, resolve_runtime_provider
 
         # load_runtime_config() 内部自动解析到当前实例的 apps/<id>/config/app.yaml
         # 不要传 get_runtime_config_path()——那是已废弃的 data/config.yaml 路径，
@@ -1252,8 +1252,15 @@ def _wake_digital_life_inner_safe(
             _rollback_to_blocked(affair_id)
             return summary
 
-        effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
-        reasoning_config = parse_reasoning_effort(effort)
+        # 这个人的思考深度（agent.reasoning_depth，三层合并）——每次调用就按它
+        reasoning_config = parse_reasoning_depth(_cfg)
+
+        # 网页语音会话首轮速答（2026-10-28）：事件 payload 带 quick_first_reply
+        # → 本 wake 第一次 LLM 调用降 quick 档（先应一声再干活），后续回基本档。
+        _first_quick = any(
+            bool((ev.get("payload") or {}).get("quick_first_reply"))
+            for ev in (pending_events or [])
+        )
 
         # 来自实例 app.yaml 的 agent.max_turns（ConfigCenter「实例配置 → 任务策略」编辑）；
         # 没配置时用 999 给足空间，让长任务不被切断（保持与历史行为一致）。
@@ -1386,6 +1393,7 @@ def _wake_digital_life_inner_safe(
             api_mode=runtime.get("api_mode"),
             max_iterations=max_iterations,
             reasoning_config=reasoning_config,
+            first_call_depth="quick" if _first_quick else "",
             quiet_mode=True,
             platform="l4_wake",
             session_id=session_id,

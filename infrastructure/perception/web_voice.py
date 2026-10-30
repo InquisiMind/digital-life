@@ -488,7 +488,7 @@ class WebVoiceSession:
             if not voice:
                 voice = voice_output.get_tts_voice(self.instance_id)
             rate = web_tts_rate()
-            spoke = sum(1 for t in texts if voice_output.speak(t, voice=voice, rate=rate))
+            spoke = sum(1 for t in texts if voice_output.speak(t, voice=voice, rate=rate, instance_id=self.instance_id))
         except Exception:
             logger.debug("recovery speak failed", exc_info=True)
             return

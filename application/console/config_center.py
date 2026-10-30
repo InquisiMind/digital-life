@@ -49,6 +49,7 @@ SECTION_META: dict[str, dict[str, str]] = {
     "runtime":   {"label": "运行节律 / 精力策略", "description": "心跳、token 上限、精力折算系数。"},
     "tasks":     {"label": "任务执行策略", "description": "最大轮数、思考深度。"},
     "perception": {"label": "感知系统", "description": "快捷键触发录屏录音，视觉模型理解后注入事件。需授予辅助功能/屏幕录制/麦克风权限。改动后需重启网关。"},
+    "voice":     {"label": "语音对话", "description": "网页全双工语音控制台（/voice）的讯飞凭据：流式听写(ASR)与语音合成(TTS)共用同一应用授权。保存后下一次语音会话生效，无需重启。"},
     "social":    {"label": "社交接管范围", "description": "飞书全接管的群聊白名单/黑名单。控制数字生命以你的身份拉取哪些群的消息（隐私边界）。改动后下一轮拉取生效。"},
 }
 
@@ -250,6 +251,36 @@ FIELDS: tuple[ConfigField, ...] = (
         "perception.wake_words", "唤醒词", "perception", "yaml", "array",
         path="perception.wake_words", default=[],
         description="语音唤醒词列表（持续监听模式用）。填入实例名及 ASR 变体，如 zero/Zero/塞罗/吉洛。系统自动识别并路由到本实例。",
+    ),
+
+    # ════════════ 语音对话（网页全双工控制台 /voice）════════════
+    # 落盘到 perception.stream_asr（与实例感知配置同段），运行时由
+    # perception.load_config(ASR) 与 voice_output._xfyun_creds(TTS) 读取；
+    # 全局 config/voice_sense.yaml（不入库）作为未配置实例的兜底。
+    ConfigField(
+        "voice.stream_asr_provider", "ASR 提供商", "voice", "yaml",
+        path="perception.stream_asr.provider", default="iflytek_rtasr",
+        options=("iflytek_rtasr",),
+        restart_required=False,
+        description="流式听写提供商。当前支持讯飞 RTASR。",
+    ),
+    ConfigField(
+        "voice.stream_asr_app_id", "讯飞 App ID", "voice", "yaml",
+        path="perception.stream_asr.app_id",
+        restart_required=False,
+        description="讯飞控制台的应用 ID。ASR 与网页语音 TTS 共用同一应用授权。",
+    ),
+    ConfigField(
+        "voice.xfyun_api_key", "讯飞 API Key", "voice", "yaml", secret=True,
+        path="perception.stream_asr.api_key",
+        restart_required=False,
+        description="讯飞 APIKey（敏感）。留空保存 = 保留当前值。",
+    ),
+    ConfigField(
+        "voice.xfyun_api_secret", "讯飞 APISecret", "voice", "yaml", secret=True,
+        path="perception.stream_asr.api_secret",
+        restart_required=False,
+        description="讯飞 APISecret（敏感）。留空保存 = 保留当前值。",
     ),
     ConfigField(
         "social.takeover.mode", "接管范围模式", "social", "yaml",

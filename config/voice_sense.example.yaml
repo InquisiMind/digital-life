@@ -8,7 +8,13 @@
 # 凭据，属实例本地配置（与 config/local.yaml 同一惯例）。
 #
 # 没有这个文件时系统会用内置默认值：语音控制台页面能开，但
-# ASR/TTS 不可用，需在下面 stream_asr 段填入讯飞凭据后重启。
+# ASR/TTS 不可用。
+#
+# 推荐做法（2026-10-30 起）：凭据配到实例级——管理台
+# /instance/<实例id>/config 的「语音对话」段直接填写（落盘到
+# apps/<id>/config/app.yaml 的 perception.stream_asr，ASR 与 TTS 共用），
+# 保存后下一次语音会话生效，无需重启。本文件的 stream_asr 段仅作
+# 未配置实例的全局兜底。
 enabled: false
 kws:
   model_dir: models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01

@@ -181,7 +181,7 @@ def _notify_turn_anchor(iid: str, key: str) -> None:
         pass
 
 
-def speak(text: str, *, voice: str = "", rate: str = "+0%") -> bool:
+def speak(text: str, *, voice: str = "", rate: str = "+0%", instance_id: str = "") -> bool:
     """语音播报一段文本（排队，异步）。返回是否成功入队。
 
     多次调用自动排队串行播放（zero 可以分多次表达，不会叠音）；
@@ -194,6 +194,8 @@ def speak(text: str, *, voice: str = "", rate: str = "+0%") -> bool:
             edge-tts 名（"zh-CN-YunxiNeural"…）→ 云端合成（高音质，有抖动）。
             空串 = 引擎默认声（say→Reed / edge→云希 / kokoro→zf_001）。
         rate: 语速调整（"+0%" 正常 / "+60%" 快60%；edge 和 Kokoro 引擎均生效）
+        instance_id: 显式指定实例（master 侧无 ContextVar 的调用方用；省略时
+            从调用线程 ContextVar 解析）。决定 web sink 推送目标与讯飞凭据来源。
     """
     clean = _clean_text_for_tts(text)
     if not clean:
@@ -206,13 +208,15 @@ def speak(text: str, *, voice: str = "", rate: str = "+0%") -> bool:
     _ensure_player()
     _write_tts_marker()  # 入队即写：合成期间也算"即将播"，防回声句钻合成间隙
     # 实例 ID 必须在调用线程（唤醒线程，ContextVar 有效）捕获——合成/播放
-    # 线程没有实例上下文，web sink 推送会找错对象（2026-10-28 实测踩坑）
+    # 线程没有实例上下文，web sink 推送会找错对象（2026-10-28 实测踩坑）。
+    # master 侧调用方（如 web_voice 假打断恢复）没有 ContextVar，显式传
+    # instance_id 覆盖；讯飞凭据也按同一实例解析（管理台「语音对话」段）。
     try:
         from infrastructure.config import get_app_instance_id as _gii
 
-        iid = _gii() or ""
+        iid = instance_id or _gii() or ""
     except Exception:
-        iid = ""
+        iid = instance_id
     # 讯飞在线：入队时按句切块（2026-10-30 首段延迟实测根因——整句一次合成
     # RTF≈0.2，8s 长句要合成 2s，"文字到了声音姗姗来迟"的大头）。句级块独立
     # seq，3 个合成线程并行出声：首句 ~0.3-0.8s 即起播，浏览器队列无缝续播。
@@ -344,7 +348,7 @@ def _synth_worker_loop() -> None:
             _store_ready(seq, None)
             continue
         try:
-            data, ext = _synth_one(text, voice, rate, gen)
+            data, ext = _synth_one(text, voice, rate, gen, iid)
             result = (data, ext, text, gen, iid) if gen == _generation else None
         except Exception as exc:
             logger.warning("TTS synth failed: %s (%s)", exc, text[:30])
@@ -594,13 +598,41 @@ def _kokoro_synth(text: str, voice: str, rate: str, timeout: int = 30) -> bytes:
 # 音色以 "xf:" 前缀路由（如 xf:xiaoyan）。实测整句合成+传输 ≈0.13s
 # （本地 Kokoro 同句 1-3.3s 且单调劣化）。输出 raw PCM 16k → 这里包 WAV。
 
-def _xfyun_creds() -> tuple[str, str, str]:
-    """(app_id, api_key, api_secret) 从 voice_sense.yaml stream_asr 段读。"""
+def _xfyun_creds(instance_id: str | None = None) -> tuple[str, str, str]:
+    """(app_id, api_key, api_secret)。
+
+    实例级优先：apps/<id>/config/app.yaml 的 perception.stream_asr（管理台
+    「语音对话」段写入，ASR 与 TTS 共用同一讯飞应用授权）；三件套齐全才生效，
+    缺省回退全局 config/voice_sense.yaml 的 web_voice.stream_asr。
+    """
+    iid = instance_id or ""
+    if not iid:
+        try:
+            from infrastructure.config import get_app_instance_id as _gii
+
+            iid = _gii() or ""
+        except Exception:
+            iid = ""
+    if iid:
+        try:
+            from infrastructure.config import get_project_root
+            import yaml
+
+            p = get_project_root() / "apps" / iid / "config" / "app.yaml"
+            if p.exists():
+                cfg = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+                sa = (cfg.get("perception") or {}).get("stream_asr") or {}
+                trip = tuple(str(sa.get(k) or "").strip() for k in ("app_id", "api_key", "api_secret"))
+                if all(trip):
+                    return trip  # type: ignore[return-value]
+        except Exception:
+            logger.debug("instance xfyun creds read failed", exc_info=True)
     try:
+        from infrastructure.config import get_project_root
         import yaml
 
         cfg = yaml.safe_load(
-            (Path(__file__).resolve().parents[2] / "config" / "voice_sense.yaml").read_text(encoding="utf-8")
+            (get_project_root() / "config" / "voice_sense.yaml").read_text(encoding="utf-8")
         ) or {}
         sa = (cfg.get("web_voice") or {}).get("stream_asr") or {}
         return str(sa.get("app_id") or ""), str(sa.get("api_key") or ""), str(sa.get("api_secret") or "")
@@ -608,7 +640,7 @@ def _xfyun_creds() -> tuple[str, str, str]:
         return ("", "", "")
 
 
-def _xfyun_synth(text: str, voice: str, rate: str, timeout: int = 15) -> bytes:
+def _xfyun_synth(text: str, voice: str, rate: str, timeout: int = 15, instance_id: str = "") -> bytes:
     """讯飞 v2 TTS 合成 → WAV 字节（16k/16bit/mono）。"""
     import base64 as _b64
     import hashlib as _hl
@@ -620,7 +652,7 @@ def _xfyun_synth(text: str, voice: str, rate: str, timeout: int = 15) -> bytes:
     from urllib.parse import urlencode as _ue
     from websocket import create_connection as _cw
 
-    app_id, api_key, api_secret = _xfyun_creds()
+    app_id, api_key, api_secret = _xfyun_creds(instance_id)
     if not (app_id and api_key and api_secret):
         raise RuntimeError("xfyun TTS credentials missing (voice_sense.yaml stream_asr)")
 
@@ -718,7 +750,7 @@ def _trim_edge_silence(
         return pcm  # 裁剪失败宁可留静音也不能坏音频
 
 
-def _xf_super_synth(text: str, vcn: str, rate: str, timeout: int = 15) -> bytes:
+def _xf_super_synth(text: str, vcn: str, rate: str, timeout: int = 15, instance_id: str = "") -> bytes:
     """超拟人合成 → WAV 字节（24k/16bit/mono，副语言更自然）。凭据同 v2。"""
     import base64 as _b64
     import hashlib as _hl
@@ -730,7 +762,7 @@ def _xf_super_synth(text: str, vcn: str, rate: str, timeout: int = 15) -> bytes:
     from urllib.parse import urlencode as _ue
     from websocket import create_connection as _cw
 
-    app_id, api_key, api_secret = _xfyun_creds()
+    app_id, api_key, api_secret = _xfyun_creds(instance_id)
     if not (app_id and api_key and api_secret):
         raise RuntimeError("xfyun super TTS credentials missing (voice_sense.yaml stream_asr)")
 
@@ -914,17 +946,17 @@ def _voxcpm_synth(text: str, voice: str) -> bytes:
     return buf.getvalue()
 
 
-def _synth_one(text: str, voice: str, rate: str, gen: int) -> tuple[bytes, str]:
+def _synth_one(text: str, voice: str, rate: str, gen: int, iid: str = "") -> tuple[bytes, str]:
     """合成一段文本为音频字节 ``(data, ext)``。引擎按 voice 名分流，失败自动降级 say。"""
     if (voice or "").startswith("xfs:"):
         # 超拟人（2026-10-30 zhp 指定）：xfs:<vcn>。失败降级 v2 → 本地链
         try:
-            return _xf_super_synth(text, voice[4:], rate), "wav"
+            return _xf_super_synth(text, voice[4:], rate, instance_id=iid), "wav"
         except Exception as exc:
             logger.warning("xfyun super synth failed: %s (%s) — fallback v2/local",
                            str(exc)[:120], text[:30])
             try:
-                return _xfyun_synth(text, "xiaoyan", rate), "wav"
+                return _xfyun_synth(text, "xiaoyan", rate, instance_id=iid), "wav"
             except Exception:
                 pass
             if _ensure_kokoro_server():
@@ -936,7 +968,7 @@ def _synth_one(text: str, voice: str, rate: str, gen: int) -> tuple[bytes, str]:
     if (voice or "").startswith("xf:"):
         # 讯飞在线合成（2026-10-30）：默认引擎。失败降级本地链，语音不中断
         try:
-            return _xfyun_synth(text, voice[3:], rate), "wav"
+            return _xfyun_synth(text, voice[3:], rate, instance_id=iid), "wav"
         except Exception as exc:
             logger.warning("xfyun synth failed: %s (%s) — fallback local", str(exc)[:120], text[:30])
             if _ensure_kokoro_server():

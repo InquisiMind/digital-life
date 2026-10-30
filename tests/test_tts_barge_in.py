@@ -75,7 +75,7 @@ def _patch_synth(monkeypatch):
     """
     events: list[tuple] = []
 
-    def fake_synth_one(text, voice, rate, gen):
+    def fake_synth_one(text, voice, rate, gen, iid=""):
         return b"RIFF-fake-wav", "wav"
 
     def fake_play_bytes(data, ext, gen, text, iid="", seq=-1):
